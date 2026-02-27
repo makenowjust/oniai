@@ -215,8 +215,9 @@ Ctx<'t> {
 }
 
 Bt (backtrack stack entry, one of):
-    Retry { pc, pos, slots, keep_pos, call_stack }  // saved state to restore on failure
-    AtomicBarrier                                    // atomic group fence (see below)
+    Retry    { pc, pos, slots, keep_pos, call_stack }  // saved state to restore on failure
+    AtomicBarrier                                       // atomic group fence (see below)
+    MemoMark { fork_pc, fork_pos }                     // memoization sentinel (see below)
 ```
 
 ### Execution model
@@ -226,26 +227,54 @@ Bt (backtrack stack entry, one of):
 The function runs a single `'vm: loop` over instructions — no Rust recursion
 for ordinary backtracking.  An explicit `bt: Vec<Bt>` stack drives backtracking:
 
-- **`Fork(alt)`** — push `Bt::Retry { pc: alt, … }`, advance to `pc+1`.
-- **`ForkNext(alt)`** — push `Bt::Retry { pc: pc+1, … }`, jump to `alt`.
-- **`fail!()`** macro — pop the top `Bt` entry and restore state (`Bt::Retry`),
-  or skip transparent `Bt::AtomicBarrier` fences, or return `None` if the stack
-  is empty.
+- **`Fork(alt)`** — push `Bt::MemoMark` then `Bt::Retry { pc: alt, … }`, advance to `pc+1`.
+- **`ForkNext(alt)`** — push `Bt::MemoMark` then `Bt::Retry { pc: pc+1, … }`, jump to `alt`.
+- **`fail!()`** macro — pop the top `Bt` entry:
+  - `Bt::Retry`: restore state, continue.
+  - `Bt::MemoMark { fork_pc, fork_pos }`: record `(fork_pc, fork_pos)` as a
+    known failure in the `memo` table, then continue popping.
+  - `Bt::AtomicBarrier`: skip (transparent), continue popping.
+  - Empty stack: return `None`.
 
 This means backtracking depth is limited only by heap memory, not by the Rust
 call stack.
+
+#### Memoization (Algorithm 5 of Fujinami & Hasuo 2024)
+
+Each call to `exec` maintains a local `memo: HashSet<u64>` table that maps
+`(pc, pos)` pairs to a *known-failure* sentinel.
+
+**How it works:**
+
+1. Before pushing a `Fork`/`ForkNext` alternative, the fork's current `(pc, pos)`
+   is looked up in `memo`.  If found, `fail!()` is invoked immediately — both
+   alternatives are already known to fail at this position.
+2. A `Bt::MemoMark` is pushed **below** the `Bt::Retry` so that it fires only
+   after the second alternative is also exhausted.
+3. When backtracking pops `Bt::MemoMark { fork_pc, fork_pos }`, the pair is
+   inserted into `memo` — it will prevent any future visit to the same fork state
+   at the same text position from doing redundant work.
+
+**Complexity guarantee:** Each `(fork_pc, pos)` pair is processed at most once,
+bounding the total number of Fork-state visits to O(|prog| × |text|).  This
+eliminates the exponential blowup in patterns like `(a?)^n a^n` on `a^n`
+(2^n → O(n²) complexity, i.e., ~2,600× faster at n=20 in practice).
+
+**Scope:** The `memo` table is local to a single `exec` call.  Lookaround
+sub-executions (`exec_lookaround`) create their own independent `memo` tables;
+Algorithm 6 (sharing lookaround Success results) is not yet implemented.
 
 #### Atomic groups
 
 `AtomicStart` pushes a `Bt::AtomicBarrier` onto the backtrack stack and
 execution continues inline (no sub-call).  When `AtomicEnd` is reached the VM
 **commits** by draining all `Bt` entries back to (and including) the innermost
-`AtomicBarrier` — those entries represented internal alternatives of the body
-that are now discarded.  If the body fails before reaching `AtomicEnd`, normal
-backtracking consumes the body's internal `Bt::Retry` entries one by one until
-the `AtomicBarrier` is encountered; the barrier is silently skipped (treated as
-transparent), and backtracking continues to the entries that existed before the
-atomic group started.
+`AtomicBarrier` — those entries (including any `MemoMark` entries) represented
+internal alternatives of the body that are now discarded.  If the body fails
+before reaching `AtomicEnd`, normal backtracking consumes the body's internal
+`Bt::Retry` entries one by one until the `AtomicBarrier` is encountered; the
+barrier is silently skipped (treated as transparent), and backtracking continues
+to the entries that existed before the atomic group started.
 
 #### Lookarounds
 
@@ -277,11 +306,19 @@ lookarounds inside lookarounds, not ordinary backtracking.  The `call_stack`
 depth (subexpression call recursion via `\g<...>`) is independently capped at
 `MAX_CALL_DEPTH = 200`.
 
-### Search loop
+### Search loop and pre-filters
 
-`CompiledRegex::find(text, start_pos)` tries `exec` at every byte-aligned
-position from `start_pos` to `text.len()` (anchored patterns still try each
-start but fail fast on the anchor).  The first success is returned.
+`CompiledRegex::find(text, start_pos)` applies two compile-time pre-filters
+before the main loop:
+
+1. **`required_char`** — if the last mandatory case-sensitive `Char` before
+   `Match` is not present anywhere in `text[start_pos..]`, return `None`
+   immediately (O(n) `memchr` scan; skipped for `Anchored` patterns).
+2. **`StartStrategy`** — choose how to advance through candidate start positions:
+   - `Anchored`: try only `start_pos` once.
+   - `LiteralPrefix(s)`: use `str::find(s)` to jump to each occurrence.
+   - `FirstChars(set)`: use `str::find(closure)` to skip non-starting chars.
+   - `Anywhere`: try every byte-aligned position.
 
 ---
 

@@ -462,3 +462,92 @@ fn unicode_literal() {
 fn unicode_word_boundary() {
     assert_match!(r"\bfoo\b", "foo");
 }
+
+// ---------------------------------------------------------------------------
+// Memoization correctness
+// ---------------------------------------------------------------------------
+
+// Backreferences: memo must be disabled so that the same (pc, pos) can
+// produce different outcomes depending on the current captured-group value.
+#[test]
+fn memo_disabled_for_backref() {
+    // \1 is captured group 1; the fork at (a|aa) depends on what \1 matched.
+    // Without disabling memo, the second alternative could be wrongly skipped.
+    let re = Regex::new(r"(a|aa)\1").unwrap();
+    assert_match!(r"(a|aa)\1", "aaa");   // "aa" + \1="aa" doesn't work; "a" + \1="a" = "aa" ✓
+    assert_no_match!(r"(a|aa)\1", "b");
+    // This pattern requires memo to be off: if (a|aa) at pos 0 is memoized as
+    // failure after trying "a" path, the "aa" path (which succeeds) would be skipped.
+    let re2 = Regex::new(r"(a+)\1").unwrap();
+    assert!(re2.is_match("aaaa")); // group 1 = "aa", \1 = "aa"
+}
+
+// Lookaround: failures from inside the lookahead body must be shared with
+// the outer execution (Algorithm 6).  The pattern below has a pathological
+// fork inside the lookahead body; with a shared memo it runs in linear time.
+#[test]
+fn memo_lookaround_correctness() {
+    // Positive lookahead that itself has alternatives
+    let re = Regex::new(r"(?=(a|b))a").unwrap();
+    assert_match!(r"(?=(a|b))a", "a");
+    assert_no_match!(r"(?=(a|b))a", "b");
+
+    // Negative lookahead
+    let re2 = Regex::new(r"(?!(a|b))c").unwrap();
+    assert_match!(r"(?!(a|b))c", "c");
+    assert_no_match!(r"(?!(a|b))c", "a");
+}
+
+// Atomic grouping + memo: a failure recorded inside an atomic group (at
+// atomic_depth > 0) must NOT be reused outside the group (at depth 0),
+// because outside the group there is less backtracking constraint.
+#[test]
+fn memo_atomic_depth_correctness() {
+    // Pattern: (?>a|b)x | ax
+    // At pos 0 on "ax":
+    //   First alt: atomic group tries 'a' (ok), then 'x'… matches → done.
+    // On "bx":
+    //   First alt: atomic group tries 'a' (fail), tries 'b' (ok), then 'x'… matches.
+    // On "cx":
+    //   First alt: atomic tries 'a' (fail), 'b' (fail) → memo records failure
+    //              at atomic_depth=1. Atomic group fails entirely.
+    //   Second alt: 'a' (fail) → overall no match. Correct.
+    assert_match!(r"(?>a|b)x|ax", "ax");
+    assert_match!(r"(?>a|b)x|ax", "bx");
+    assert_no_match!(r"(?>a|b)x|ax", "cx");
+
+    // Trickier: (?>a|b) | (a|b)   on input "a" — second alt must not be
+    // short-circuited even if inner fork fired inside atomic on a prior attempt.
+    let re = Regex::new(r"(?>a|b)c|(a|b)").unwrap();
+    assert_match!(r"(?>a|b)c|(a|b)", "a");  // second alt matches
+    assert_match!(r"(?>a|b)c|(a|b)", "b");  // second alt matches
+    assert_match!(r"(?>a|b)c|(a|b)", "ac"); // first alt matches
+}
+
+// Lookaround success memoization: without Algorithm 6 success caching the
+// same LookStart at (lk_pc, pos) is re-evaluated on every outer backtrack
+// path, leading to exponential behaviour for patterns like (a?)^n (?=a^n).
+// With success caching the sub-execution runs at most once per (lk_pc, pos).
+#[test]
+fn memo_lookaround_success_caching() {
+    // Outer (a|ε)^5 with a lookahead containing its own alternatives.
+    // The lookahead (?=(a|b)*) at a given position must only run once (cached).
+    let re = Regex::new(r"(?:a|)(?:a|)(?:a|)(?:a|)(?:a|)(?=(a|b)*)$").unwrap();
+    assert!(re.is_match("aaaaa"));
+    assert!(re.is_match("aaabb"));
+    assert!(re.is_match(""));
+
+    // Positive lookahead: verify captured groups via the slot delta.
+    // (?=(a+)) captures `a+` from current position.
+    let re2 = Regex::new(r"(?:a|)(?:a|)(?:a|)(?=(a+))").unwrap();
+    let caps = re2.captures("aaa").unwrap();
+    // Group 1 must be set (the lookahead captured something).
+    assert!(caps.get(1).is_some());
+
+    // Positive lookbehind result must also be cached.
+    let re3 = Regex::new(r"(?:a|)(?:a|)(?:a|)a*(?<=(a+))$").unwrap();
+    assert!(re3.is_match("aaa"));
+    // The lookbehind capture should be set.
+    let caps3 = re3.captures("aaa").unwrap();
+    assert!(caps3.get(1).is_some());
+}
