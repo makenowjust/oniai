@@ -145,7 +145,9 @@ pub enum Inst {
     /// Backreference to 1-based group number; ignore_case; optional recursion level
     BackRef(u32, bool, Option<i32>),
 
-    /// Relative-backward backreference (1-based relative index)
+    /// Relative-backward backreference — resolved at compile time to `BackRef`;
+    /// kept for documentation purposes but never emitted.
+    #[allow(dead_code)]
     BackRefRelBack(u32, bool),
 
     /// Push (pc+1) onto call stack and jump to absolute target

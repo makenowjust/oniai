@@ -168,7 +168,7 @@ not yet known are patched in a second pass via `patch_jump` / `patch_no_jump`.
 | `Save(slot)` | Record current position into capture slot |
 | `KeepStart` | Reset the effective match start (`\K`) |
 | `BackRef(n, ic, level)` | Match same text as group *n* |
-| `BackRefRelBack(n, ic)` | Relative backward backreference |
+| `BackRefRelBack(n, ic)` | *(never emitted)* relative backref resolved at compile time to `BackRef` |
 | `Call(pc)` | Push `pc+1` onto call stack, jump to `pc` |
 | `Ret` | Pop call stack and jump to saved address |
 | `RetIfCalled` | If call stack non-empty: pop and jump; else fall through |
@@ -194,6 +194,12 @@ not yet known are patched in a second pass via `patch_jump` / `patch_no_jump`.
 the `Save(slot_open)` instruction for that group.  Because the group may not
 have been compiled yet, the target is stored as a *pending call* and
 backfilled after the whole program is assembled.
+
+Relative subexpression calls (`\g<-n>`, `\g<+n>`) are resolved at compile
+time using the `current_group` counter (1-based index of the innermost
+enclosing capture group at the call site).  Relative backreferences
+(`\k<-n>`) are resolved the same way and emitted as ordinary `BackRef`
+instructions.
 
 Every capturing group ends with `RetIfCalled`: in normal (non-called) flow the
 call stack is empty and execution falls through; when the group was entered via
@@ -431,7 +437,5 @@ UTF-8 code point forward to avoid infinite loops.
 - **No JIT / NFA compilation**: the engine is a pure backtracking interpreter;
   exponential worst-case exists for ambiguous patterns on adversarial inputs
   (mitigated for many patterns by the memoization framework).
-- **Relative/forward subexpression calls** (`\g<+n>`, `\g<-n>`) are parsed but
-  the VM returns `None` for them (not yet implemented).
 - **Unicode case folding**: only single-codepoint lowercasing is used; full
   Unicode case-folding tables are not included.

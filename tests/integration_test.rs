@@ -596,3 +596,40 @@ fn memo_lookaround_success_caching() {
     let caps3 = re3.captures("aaa").unwrap();
     assert!(caps3.get(1).is_some());
 }
+
+// ---------------------------------------------------------------------------
+// Relative backreferences (\k<-n>)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn backref_relative_backward() {
+    // \k<-1> inside group 2 refers to group 1
+    assert_match!(r"(a)(\k<-1>)", "aa");
+    assert_no_match!(r"(a)(\k<-1>)", "ab");
+
+    // \k<-2> inside group 3 refers to group 1
+    assert_match!(r"(a)(b)(\k<-2>)", "aba");
+    assert_no_match!(r"(a)(b)(\k<-2>)", "abb");
+
+    // \k<-1> inside group 3 refers to group 2
+    assert_match!(r"(a)(b)(\k<-1>)", "abb");
+    assert_no_match!(r"(a)(b)(\k<-1>)", "aba");
+}
+
+// ---------------------------------------------------------------------------
+// Relative subexpression calls (\g<-n>, \g<+n>)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn subexp_call_relative_backward() {
+    // (a)(\g<-1>) — group 2 calls group 1 (\g<-1> from inside group 2 = group 1)
+    assert_match!(r"(a)(\g<-1>)", "aa");
+    assert_no_match!(r"(a)(\g<-1>)", "ab");
+}
+
+#[test]
+fn subexp_call_relative_forward() {
+    // (\g<+1>)(abc) — group 1 calls group 2 ahead of it (fixed-width body, no backtracking)
+    assert_match!(r"(\g<+1>)(abc)", "abcabc");
+    assert_no_match!(r"(\g<+1>)(abc)", "abc");
+}

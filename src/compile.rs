@@ -25,13 +25,18 @@ struct Compiler {
     charsets: Vec<CharSet>,
     /// Maps 1-based group index → start PC (for subexpression calls)
     subexp_starts: HashMap<u32, usize>,
-    /// Groups that need their start PCs backfilled after compilation
-    pending_calls: Vec<(usize, GroupRef)>,
+    /// Groups that need their start PCs backfilled after compilation.
+    /// Tuple: (call instruction PC, target GroupRef, current_group at call site).
+    pending_calls: Vec<(usize, GroupRef, u32)>,
     named_groups: Vec<(String, u32)>,
     #[allow(dead_code)]
     base_flags: Flags,
     /// Total number of capture groups (1-based max)
     num_groups: u32,
+    /// 1-based index of the innermost capture group being compiled (0 = top-level).
+    /// Used to resolve relative backreferences (`\k<-n>`) and subexpression calls
+    /// (`\g<-n>`, `\g<+n>`) at compile time.
+    current_group: u32,
 }
 
 impl Compiler {
@@ -44,6 +49,7 @@ impl Compiler {
             named_groups,
             base_flags,
             num_groups: 0,
+            current_group: 0,
         }
     }
 
@@ -182,6 +188,8 @@ impl Compiler {
                 if idx > self.num_groups {
                     self.num_groups = idx;
                 }
+                let prev_group = self.current_group;
+                self.current_group = idx;
                 let start_pc = self.pc();
                 self.subexp_starts.insert(idx, start_pc);
                 let slot_open = ((idx - 1) * 2) as usize;
@@ -196,6 +204,7 @@ impl Compiler {
                     self.emit(Inst::Save(slot_close));
                 }
                 self.emit(Inst::RetIfCalled);
+                self.current_group = prev_group;
             }
 
             Node::NamedCapture {
@@ -212,6 +221,8 @@ impl Compiler {
                 if idx > self.num_groups {
                     self.num_groups = idx;
                 }
+                let prev_group = self.current_group;
+                self.current_group = idx;
                 let start_pc = self.pc();
                 self.subexp_starts.insert(idx, start_pc);
                 let slot_open = ((idx - 1) * 2) as usize;
@@ -226,6 +237,7 @@ impl Compiler {
                     self.emit(Inst::Save(slot_close));
                 }
                 self.emit(Inst::RetIfCalled);
+                self.current_group = prev_group;
             }
 
             Node::Group {
@@ -272,7 +284,18 @@ impl Compiler {
                         let idx = self.resolve_name(name)?;
                         Inst::BackRef(idx, ignore_case, *level)
                     }
-                    GroupRef::RelativeBack(n) => Inst::BackRefRelBack(*n, ignore_case),
+                    GroupRef::RelativeBack(n) => {
+                        let abs = self.current_group.checked_sub(*n).filter(|&x| x >= 1);
+                        match abs {
+                            Some(idx) => Inst::BackRef(idx, ignore_case, *level),
+                            None => {
+                                return Err(Error::Compile(format!(
+                                    "relative backreference \\k<-{}> out of range (current group {})",
+                                    n, self.current_group
+                                )));
+                            }
+                        }
+                    }
                     GroupRef::RelativeFwd(_) => {
                         return Err(Error::Compile(
                             "relative-forward backreference not supported".into(),
@@ -289,7 +312,8 @@ impl Compiler {
 
             Node::SubexpCall(target) => {
                 let call_pc = self.emit(Inst::Call(0));
-                self.pending_calls.push((call_pc, target.clone()));
+                self.pending_calls
+                    .push((call_pc, target.clone(), self.current_group));
             }
 
             Node::InlineFlags {
@@ -625,7 +649,7 @@ impl Compiler {
 
     fn backfill_calls(&mut self) -> Result<(), Error> {
         let pending = std::mem::take(&mut self.pending_calls);
-        for (call_pc, target) in pending {
+        for (call_pc, target, call_group) in pending {
             let target_pc = match &target {
                 GroupRef::Index(n) => self.subexp_starts.get(n).copied().ok_or_else(|| {
                     Error::Compile(format!("undefined group {} for subexpr call", n))
@@ -645,10 +669,26 @@ impl Compiler {
                     })?
                 }
                 GroupRef::Whole => 0, // whole pattern starts at 0
-                GroupRef::RelativeBack(_) | GroupRef::RelativeFwd(_) => {
-                    return Err(Error::Compile(
-                        "relative subexpression calls not yet supported".into(),
-                    ));
+                GroupRef::RelativeBack(n) => {
+                    let abs = call_group.checked_sub(*n).filter(|&x| x >= 1);
+                    let idx = abs.ok_or_else(|| {
+                        Error::Compile(format!(
+                            "relative subexpr call \\g<-{}> out of range (current group {})",
+                            n, call_group
+                        ))
+                    })?;
+                    self.subexp_starts.get(&idx).copied().ok_or_else(|| {
+                        Error::Compile(format!("group {} (from \\g<-{}>) has no start PC", idx, n))
+                    })?
+                }
+                GroupRef::RelativeFwd(n) => {
+                    let idx = call_group + n;
+                    self.subexp_starts.get(&idx).copied().ok_or_else(|| {
+                        Error::Compile(format!(
+                            "group {} (from \\g<+{}>) is undefined or not yet compiled",
+                            idx, n
+                        ))
+                    })?
                 }
             };
             match &mut self.prog[call_pc] {

@@ -1211,6 +1211,14 @@ fn parse_group_ref(s: &str) -> Result<GroupRef, Error> {
     if s == "0" {
         return Ok(GroupRef::Whole);
     }
+    // Check explicit relative forward (`+n`) BEFORE trying integer parse, because
+    // Rust's `str::parse::<i32>` accepts a leading '+' and would turn "+1" into
+    // GroupRef::Index(1) rather than GroupRef::RelativeFwd(1).
+    if let Some(rest) = s.strip_prefix('+')
+        && let Ok(n) = rest.parse::<u32>()
+    {
+        return Ok(GroupRef::RelativeFwd(n));
+    }
     if let Ok(n) = s.parse::<i32>() {
         if n > 0 {
             return Ok(GroupRef::Index(n as u32));
@@ -1218,24 +1226,23 @@ fn parse_group_ref(s: &str) -> Result<GroupRef, Error> {
             return Ok(GroupRef::RelativeBack((-n) as u32));
         }
     }
-    if s.starts_with('+')
-        && let Ok(n) = s[1..].parse::<u32>()
-    {
-        return Ok(GroupRef::RelativeFwd(n));
-    }
     // Name
     Ok(GroupRef::Name(s.to_string()))
 }
 
 fn parse_backref_target(content: &str) -> Result<(GroupRef, Option<i32>), Error> {
-    // Check for level: name+N or name-N
+    // Check for level suffix: name+N or name-N
+    // Only treat as level when there's a non-empty prefix (i.e. the sign is not the very
+    // first character — a leading sign means a relative group number, not a level).
     if let Some(plus) = content.rfind('+')
+        && plus > 0
         && let Ok(level) = content[plus + 1..].parse::<i32>()
     {
         let target = parse_group_ref(&content[..plus])?;
         return Ok((target, Some(level)));
     }
     if let Some(minus) = content.rfind('-')
+        && minus > 0
         && let Ok(level) = content[minus + 1..].parse::<i32>()
     {
         let target = parse_group_ref(&content[..minus])?;
