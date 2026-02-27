@@ -32,6 +32,27 @@ No external dependencies are used.
 | `src/vm.rs` | Backtracking executor: `Vec<Inst>` × `&str` → match |
 | `src/charset.rs` | Character-property helpers (POSIX, Unicode, shorthands) |
 | `src/error.rs` | `Error` enum (`Parse`, `Compile`) |
+| `src/bin/aigumo.rs` | `grep`-like CLI binary |
+
+---
+
+## Code style
+
+All source code is formatted with **`rustfmt`** (stable defaults) and must
+pass **`cargo clippy --tests`** with zero warnings.  Run both before
+committing:
+
+```sh
+cargo fmt
+cargo clippy --tests
+```
+
+Notable lint decisions carried in the source:
+
+| Annotation | Location | Reason |
+|------------|----------|--------|
+| `#[allow(dead_code)]` | `Inst::Ret`, `GroupRef::RelativeFwd`, `NamedCapture::name`, `Compiler::base_flags`, `CompiledProgram::subexp_starts` | Planned for future use; suppressed rather than removed |
+| `#[allow(clippy::too_many_arguments)]` | `exec_lookaround`, `check_inner_in_range` | Internal helpers that take many closely-related parameters; refactoring would obscure the algorithm |
 
 ---
 

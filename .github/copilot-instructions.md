@@ -1,5 +1,23 @@
 # Copilot Instructions
 
+## Code Style
+
+All Rust source must be formatted with **`rustfmt`** and must pass
+**`cargo clippy --tests`** with zero warnings before committing.
+
+```sh
+cargo fmt           # format
+cargo clippy --tests  # lint
+```
+
+- `rustfmt` uses stable defaults (no custom `rustfmt.toml`).
+- Clippy runs at default lint level; the only in-source suppressions are
+  `#[allow(dead_code)]` on planned-but-unused items and
+  `#[allow(clippy::too_many_arguments)]` on two internal VM helpers where
+  extracting a struct would obscure the algorithm.
+- Run `cargo clippy --fix --allow-dirty --tests` to apply auto-fixable
+  suggestions automatically.
+
 ## Version Control
 
 This repository uses **Jujutsu (`jj`)** for version control. Use `jj` commands for day-to-day workflow (e.g., `jj new`, `jj describe`, `jj squash`) rather than raw `git` commands.
@@ -8,7 +26,8 @@ This repository uses **Jujutsu (`jj`)** for version control. Use `jj` commands f
 
 **Aigumo** is a pure-Rust regular expression engine compatible with
 [Onigmo](https://github.com/k-takata/Onigmo) (the regex library used by Ruby).
-It has no external dependencies.
+The library core (`src/lib.rs` and its modules) has no external dependencies;
+the CLI binary (`src/bin/aigumo.rs`) uses `clap` for argument parsing.
 
 The `doc/RE` file is the authoritative reference for **Onigmo (Oniguruma-mod)
 Regular Expressions v6.1.0** — consult it when working on parser or compiler
