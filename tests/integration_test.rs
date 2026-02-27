@@ -13,24 +13,36 @@ macro_rules! assert_match {
 macro_rules! assert_no_match {
     ($pat:expr, $text:expr) => {{
         let re = Regex::new($pat).expect(concat!("compile: ", $pat));
-        assert!(!re.is_match($text), "/{}/  should NOT match {:?}", $pat, $text);
+        assert!(
+            !re.is_match($text),
+            "/{}/  should NOT match {:?}",
+            $pat,
+            $text
+        );
     }};
 }
 macro_rules! assert_find {
     ($pat:expr, $text:expr, $expected:expr) => {{
         let re = Regex::new($pat).expect(concat!("compile: ", $pat));
-        let m = re.find($text).expect(concat!("find failed for /", $pat, "/"));
+        let m = re
+            .find($text)
+            .expect(concat!("find failed for /", $pat, "/"));
         assert_eq!(m.as_str(), $expected, "/{}/  on {:?}", $pat, $text);
     }};
 }
 macro_rules! assert_capture {
     ($pat:expr, $text:expr, $idx:expr, $expected:expr) => {{
         let re = Regex::new($pat).expect(concat!("compile: ", $pat));
-        let caps = re.captures($text).expect(concat!("captures failed for /", $pat, "/"));
+        let caps = re
+            .captures($text)
+            .expect(concat!("captures failed for /", $pat, "/"));
         assert_eq!(
             caps.get($idx).map(|m| m.as_str()),
             $expected,
-            "/{}/  capture {} on {:?}", $pat, $idx, $text
+            "/{}/  capture {} on {:?}",
+            $pat,
+            $idx,
+            $text
         );
     }};
 }
@@ -39,21 +51,37 @@ macro_rules! assert_capture {
 // §2 Characters — escape sequences
 // ---------------------------------------------------------------------------
 #[test]
-fn esc_tab() { assert_match!(r"\t", "\t"); }
+fn esc_tab() {
+    assert_match!(r"\t", "\t");
+}
 #[test]
-fn esc_newline() { assert_match!(r"\n", "\n"); }
+fn esc_newline() {
+    assert_match!(r"\n", "\n");
+}
 #[test]
-fn esc_cr() { assert_match!(r"\r", "\r"); }
+fn esc_cr() {
+    assert_match!(r"\r", "\r");
+}
 #[test]
-fn esc_hex() { assert_match!(r"\x41", "A"); }
+fn esc_hex() {
+    assert_match!(r"\x41", "A");
+}
 #[test]
-fn esc_hex_braces() { assert_match!(r"\x{41}", "A"); }
+fn esc_hex_braces() {
+    assert_match!(r"\x{41}", "A");
+}
 #[test]
-fn esc_unicode_u() { assert_match!(r"\u0041", "A"); }
+fn esc_unicode_u() {
+    assert_match!(r"\u0041", "A");
+}
 #[test]
-fn esc_control() { assert_match!(r"\cA", "\x01"); }
+fn esc_control() {
+    assert_match!(r"\cA", "\x01");
+}
 #[test]
-fn esc_octal() { assert_match!(r"\101", "A"); }
+fn esc_octal() {
+    assert_match!(r"\101", "A");
+}
 
 // ---------------------------------------------------------------------------
 // §3 Character types
@@ -298,7 +326,7 @@ fn group_lookbehind_variable_length() {
     // Unbounded quantifier inside lookbehind (was previously restricted).
     assert_match!(r"(?<=a+)b", "aaab");
     assert_no_match!(r"(?<=a+)b", "b");
-    assert_match!(r"(?<=a*)b", "b");       // zero a's is allowed by a*
+    assert_match!(r"(?<=a*)b", "b"); // zero a's is allowed by a*
     assert_match!(r"(?<=a*)b", "aaab");
     // Alternation producing different lengths
     assert_match!(r"(?<=foo|fo)bar", "foobar");
@@ -362,7 +390,7 @@ fn group_conditional_num() {
 }
 #[test]
 fn group_conditional_name() {
-    let re = Regex::new(r"(?<x>a)?(<x>b|c)").unwrap();
+    let _re = Regex::new(r"(?<x>a)?(<x>b|c)").unwrap();
     // When group x matched: match b; else: match c
     // Note: using (?(cond)) syntax
     let re = Regex::new(r"(?<x>a)?(?(x)b|c)").unwrap();
@@ -416,7 +444,10 @@ fn subexp_call_whole() {
 #[test]
 fn find_iter_basic() {
     let re = Regex::new(r"\d+").unwrap();
-    let matches: Vec<&str> = re.find_iter("one1two22three333").map(|m| m.as_str()).collect();
+    let matches: Vec<&str> = re
+        .find_iter("one1two22three333")
+        .map(|m| m.as_str())
+        .collect();
     assert_eq!(matches, vec!["1", "22", "333"]);
 }
 #[test]
@@ -426,7 +457,7 @@ fn captures_iter_basic() {
         .captures_iter("a=1 b=22 c=333")
         .map(|c| (c.get(1).unwrap().as_str(), c.get(2).unwrap().as_str()))
         .collect();
-    assert_eq!(pairs, vec![("a","1"),("b","22"),("c","333")]);
+    assert_eq!(pairs, vec![("a", "1"), ("b", "22"), ("c", "333")]);
 }
 #[test]
 fn find_iter_empty_matches() {
@@ -487,8 +518,8 @@ fn unicode_word_boundary() {
 fn memo_disabled_for_backref() {
     // \1 is captured group 1; the fork at (a|aa) depends on what \1 matched.
     // Without disabling memo, the second alternative could be wrongly skipped.
-    let re = Regex::new(r"(a|aa)\1").unwrap();
-    assert_match!(r"(a|aa)\1", "aaa");   // "aa" + \1="aa" doesn't work; "a" + \1="a" = "aa" ✓
+    let _re = Regex::new(r"(a|aa)\1").unwrap();
+    assert_match!(r"(a|aa)\1", "aaa"); // "aa" + \1="aa" doesn't work; "a" + \1="a" = "aa" ✓
     assert_no_match!(r"(a|aa)\1", "b");
     // This pattern requires memo to be off: if (a|aa) at pos 0 is memoized as
     // failure after trying "a" path, the "aa" path (which succeeds) would be skipped.
@@ -502,12 +533,12 @@ fn memo_disabled_for_backref() {
 #[test]
 fn memo_lookaround_correctness() {
     // Positive lookahead that itself has alternatives
-    let re = Regex::new(r"(?=(a|b))a").unwrap();
+    let _re = Regex::new(r"(?=(a|b))a").unwrap();
     assert_match!(r"(?=(a|b))a", "a");
     assert_no_match!(r"(?=(a|b))a", "b");
 
     // Negative lookahead
-    let re2 = Regex::new(r"(?!(a|b))c").unwrap();
+    let _re2 = Regex::new(r"(?!(a|b))c").unwrap();
     assert_match!(r"(?!(a|b))c", "c");
     assert_no_match!(r"(?!(a|b))c", "a");
 }
@@ -532,9 +563,9 @@ fn memo_atomic_depth_correctness() {
 
     // Trickier: (?>a|b) | (a|b)   on input "a" — second alt must not be
     // short-circuited even if inner fork fired inside atomic on a prior attempt.
-    let re = Regex::new(r"(?>a|b)c|(a|b)").unwrap();
-    assert_match!(r"(?>a|b)c|(a|b)", "a");  // second alt matches
-    assert_match!(r"(?>a|b)c|(a|b)", "b");  // second alt matches
+    let _re = Regex::new(r"(?>a|b)c|(a|b)").unwrap();
+    assert_match!(r"(?>a|b)c|(a|b)", "a"); // second alt matches
+    assert_match!(r"(?>a|b)c|(a|b)", "b"); // second alt matches
     assert_match!(r"(?>a|b)c|(a|b)", "ac"); // first alt matches
 }
 

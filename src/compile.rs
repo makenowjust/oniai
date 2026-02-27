@@ -1,9 +1,8 @@
-/// Compiler: transforms a parsed AST into a VM instruction sequence.
-
-use std::collections::HashMap;
 use crate::ast::*;
 use crate::error::Error;
 use crate::vm::{CharSet, CharSetItem, Inst};
+/// Compiler: transforms a parsed AST into a VM instruction sequence.
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Options passed to the compiler
@@ -29,6 +28,7 @@ struct Compiler {
     /// Groups that need their start PCs backfilled after compilation
     pending_calls: Vec<(usize, GroupRef)>,
     named_groups: Vec<(String, u32)>,
+    #[allow(dead_code)]
     base_flags: Flags,
     /// Total number of capture groups (1-based max)
     num_groups: u32,
@@ -135,10 +135,19 @@ impl Compiler {
                 self.compile_quantifier(node, range, kind, flags)?;
             }
 
-            Node::Capture { index, node, flags: inner_flags } => {
-                let f = flags.apply_on(&FlagMod { on: *inner_flags, off: Flags::default() });
+            Node::Capture {
+                index,
+                node,
+                flags: inner_flags,
+            } => {
+                let f = flags.apply_on(&FlagMod {
+                    on: *inner_flags,
+                    off: Flags::default(),
+                });
                 let idx = *index;
-                if idx > self.num_groups { self.num_groups = idx; }
+                if idx > self.num_groups {
+                    self.num_groups = idx;
+                }
                 let start_pc = self.pc();
                 self.subexp_starts.insert(idx, start_pc);
                 let slot_open = ((idx - 1) * 2) as usize;
@@ -149,10 +158,20 @@ impl Compiler {
                 self.emit(Inst::RetIfCalled);
             }
 
-            Node::NamedCapture { name: _, index, node, flags: inner_flags } => {
-                let f = flags.apply_on(&FlagMod { on: *inner_flags, off: Flags::default() });
+            Node::NamedCapture {
+                name: _,
+                index,
+                node,
+                flags: inner_flags,
+            } => {
+                let f = flags.apply_on(&FlagMod {
+                    on: *inner_flags,
+                    off: Flags::default(),
+                });
                 let idx = *index;
-                if idx > self.num_groups { self.num_groups = idx; }
+                if idx > self.num_groups {
+                    self.num_groups = idx;
+                }
                 let start_pc = self.pc();
                 self.subexp_starts.insert(idx, start_pc);
                 let slot_open = ((idx - 1) * 2) as usize;
@@ -163,8 +182,14 @@ impl Compiler {
                 self.emit(Inst::RetIfCalled);
             }
 
-            Node::Group { node, flags: inner_flags } => {
-                let f = flags.apply_on(&FlagMod { on: *inner_flags, off: Flags::default() });
+            Node::Group {
+                node,
+                flags: inner_flags,
+            } => {
+                let f = flags.apply_on(&FlagMod {
+                    on: *inner_flags,
+                    off: Flags::default(),
+                });
                 self.compile_node(node, f)?;
             }
 
@@ -210,9 +235,15 @@ impl Compiler {
                     }
                     GroupRef::RelativeBack(n) => Inst::BackRefRelBack(*n, ignore_case),
                     GroupRef::RelativeFwd(_) => {
-                        return Err(Error::Compile("relative-forward backreference not supported".into()));
+                        return Err(Error::Compile(
+                            "relative-forward backreference not supported".into(),
+                        ));
                     }
-                    GroupRef::Whole => return Err(Error::Compile("\\k<0> backreference to whole pattern not supported".into())),
+                    GroupRef::Whole => {
+                        return Err(Error::Compile(
+                            "\\k<0> backreference to whole pattern not supported".into(),
+                        ));
+                    }
                 };
                 self.emit(inst);
             }
@@ -222,7 +253,10 @@ impl Compiler {
                 self.pending_calls.push((call_pc, target.clone()));
             }
 
-            Node::InlineFlags { flags: flag_mod, node } => {
+            Node::InlineFlags {
+                flags: flag_mod,
+                node,
+            } => {
                 let new_flags = flags.apply_on(flag_mod);
                 self.compile_node(node, new_flags)?;
             }
@@ -240,7 +274,9 @@ impl Compiler {
 
     fn resolve_name(&self, name: &str) -> Result<u32, Error> {
         // Find last group with this name (Onigmo semantics)
-        self.named_groups.iter().rev()
+        self.named_groups
+            .iter()
+            .rev()
             .find(|(n, _)| n == name)
             .map(|(_, idx)| *idx)
             .ok_or_else(|| Error::Compile(format!("undefined group name {:?}", name)))
@@ -251,8 +287,12 @@ impl Compiler {
     // -----------------------------------------------------------------------
 
     fn compile_alternation(&mut self, alts: &[Node], flags: Flags) -> Result<(), Error> {
-        if alts.is_empty() { return Ok(()); }
-        if alts.len() == 1 { return self.compile_node(&alts[0], flags); }
+        if alts.is_empty() {
+            return Ok(());
+        }
+        if alts.len() == 1 {
+            return self.compile_node(&alts[0], flags);
+        }
 
         // For N alternatives: emit Fork chain
         let mut fork_pcs = Vec::new();
@@ -363,10 +403,7 @@ impl Compiler {
             // Greedy {n,m}
             (Some(m), QuantKind::Greedy) => {
                 let extra = m - min;
-                let fork_pcs: Vec<usize> = (0..extra).map(|_| {
-                    let fp = self.emit(Inst::Fork(0));
-                    fp
-                }).collect();
+                let fork_pcs: Vec<usize> = (0..extra).map(|_| self.emit(Inst::Fork(0))).collect();
                 // We need to interleave: Fork, body, Fork, body, ...
                 // But we've emitted all forks first which is wrong.
                 // Redo: emit each fork then body
@@ -391,7 +428,7 @@ impl Compiler {
                 // The fix: don't pre-allocate fork_pcs. Instead compile iteratively.
                 // Since this branch is already wrong, let's replace it entirely.
                 // I'll fall through to a different implementation.
-                // 
+                //
                 // REAL FIX: This needs to be rewritten. See below.
                 // For now, emit a hacky version: since we already emitted `extra` Fork(0)
                 // instructions, we need to fill them in. Let's insert bodies between them...
@@ -431,7 +468,7 @@ impl Compiler {
         node: &Node,
         min: u32,
         max: u32,
-        kind: &QuantKind,
+        _kind: &QuantKind,
         flags: Flags,
         pre_emitted_forks: &[usize],
     ) -> Result<(), Error> {
@@ -498,7 +535,11 @@ impl Compiler {
                 ((idx - 1) * 2) as usize
             }
         };
-        let check_pc = self.emit(Inst::CheckGroup { slot: slot_pair, yes_pc: 0, no_pc: 0 });
+        let check_pc = self.emit(Inst::CheckGroup {
+            slot: slot_pair,
+            yes_pc: 0,
+            no_pc: 0,
+        });
         // yes branch starts here
         let yes_pc = self.pc();
         self.compile_node(yes, flags)?;
@@ -522,21 +563,28 @@ impl Compiler {
         let pending = std::mem::take(&mut self.pending_calls);
         for (call_pc, target) in pending {
             let target_pc = match &target {
-                GroupRef::Index(n) => {
-                    self.subexp_starts.get(n).copied()
-                        .ok_or_else(|| Error::Compile(format!("undefined group {} for subexpr call", n)))?
-                }
+                GroupRef::Index(n) => self.subexp_starts.get(n).copied().ok_or_else(|| {
+                    Error::Compile(format!("undefined group {} for subexpr call", n))
+                })?,
                 GroupRef::Name(name) => {
-                    let idx = self.named_groups.iter().rev()
+                    let idx = self
+                        .named_groups
+                        .iter()
+                        .rev()
                         .find(|(n, _)| n == name)
                         .map(|(_, i)| *i)
-                        .ok_or_else(|| Error::Compile(format!("undefined group name {:?}", name)))?;
-                    self.subexp_starts.get(&idx).copied()
-                        .ok_or_else(|| Error::Compile(format!("group {:?} has no start PC", name)))?
+                        .ok_or_else(|| {
+                            Error::Compile(format!("undefined group name {:?}", name))
+                        })?;
+                    self.subexp_starts.get(&idx).copied().ok_or_else(|| {
+                        Error::Compile(format!("group {:?} has no start PC", name))
+                    })?
                 }
                 GroupRef::Whole => 0, // whole pattern starts at 0
                 GroupRef::RelativeBack(_) | GroupRef::RelativeFwd(_) => {
-                    return Err(Error::Compile("relative subexpression calls not yet supported".into()));
+                    return Err(Error::Compile(
+                        "relative subexpression calls not yet supported".into(),
+                    ));
                 }
             };
             match &mut self.prog[call_pc] {
@@ -553,9 +601,21 @@ impl Compiler {
 // ---------------------------------------------------------------------------
 
 pub fn compile_charset(cc: &CharClass, ignore_case: bool, ascii_range: bool) -> CharSet {
-    let items = cc.items.iter().map(|item| compile_class_item(item, ascii_range, ignore_case)).collect();
-    let intersections = cc.intersections.iter().map(|ic| compile_charset(ic, ignore_case, ascii_range)).collect();
-    CharSet { negate: cc.negate, items, intersections }
+    let items = cc
+        .items
+        .iter()
+        .map(|item| compile_class_item(item, ascii_range, ignore_case))
+        .collect();
+    let intersections = cc
+        .intersections
+        .iter()
+        .map(|ic| compile_charset(ic, ignore_case, ascii_range))
+        .collect();
+    CharSet {
+        negate: cc.negate,
+        items,
+        intersections,
+    }
 }
 
 fn compile_class_item(item: &ClassItem, ascii_range: bool, ignore_case: bool) -> CharSetItem {
@@ -565,7 +625,9 @@ fn compile_class_item(item: &ClassItem, ascii_range: bool, ignore_case: bool) ->
         ClassItem::Shorthand(sh) => CharSetItem::Shorthand(*sh, ascii_range),
         ClassItem::Posix(cls, neg) => CharSetItem::Posix(*cls, *neg),
         ClassItem::Unicode(name, neg) => CharSetItem::Unicode(name.clone(), *neg),
-        ClassItem::Nested(inner) => CharSetItem::Nested(compile_charset(inner, ignore_case, ascii_range)),
+        ClassItem::Nested(inner) => {
+            CharSetItem::Nested(compile_charset(inner, ignore_case, ascii_range))
+        }
     }
 }
 
@@ -576,13 +638,14 @@ fn compile_class_item(item: &ClassItem, ascii_range: bool, ignore_case: bool) ->
 /// Returns `true` if `node` can only match strings of bounded (finite) byte length.
 fn is_finite_width(node: &Node) -> bool {
     match node {
-        Node::Quantifier { range, node, .. } => {
-            range.max.is_some() && is_finite_width(node)
-        }
+        Node::Quantifier { range, node, .. } => range.max.is_some() && is_finite_width(node),
         Node::Concat(nodes) => nodes.iter().all(is_finite_width),
         Node::Alternation(alts) => alts.iter().all(is_finite_width),
-        Node::Group { node, .. } | Node::Capture { node, .. } | Node::NamedCapture { node, .. }
-        | Node::Atomic(node) | Node::InlineFlags { node, .. } => is_finite_width(node),
+        Node::Group { node, .. }
+        | Node::Capture { node, .. }
+        | Node::NamedCapture { node, .. }
+        | Node::Atomic(node)
+        | Node::InlineFlags { node, .. } => is_finite_width(node),
         _ => true,
     }
 }
@@ -601,14 +664,21 @@ fn compute_widths(node: &Node) -> Option<Vec<usize>> {
 
 fn collect_widths(node: &Node, base: usize, out: &mut std::collections::BTreeSet<usize>) {
     match node {
-        Node::Empty | Node::Anchor(_) | Node::Keep => { out.insert(base); }
-        Node::Literal(_) | Node::AnyChar | Node::Shorthand(_)
-        | Node::UnicodeProp { .. } | Node::CharClass(_) => {
+        Node::Empty | Node::Anchor(_) | Node::Keep => {
+            out.insert(base);
+        }
+        Node::Literal(_)
+        | Node::AnyChar
+        | Node::Shorthand(_)
+        | Node::UnicodeProp { .. }
+        | Node::CharClass(_) => {
             // Approximate: 1 char = 1-4 bytes; use byte count range.
             // For simplicity, use 1..=4 for non-ASCII capable nodes.
             // For ASCII-only patterns this is 1.
             // We'll insert base+1 to base+4 as possible widths.
-            for bw in 1..=4usize { out.insert(base + bw); }
+            for bw in 1..=4usize {
+                out.insert(base + bw);
+            }
         }
         Node::Concat(nodes) => {
             let mut cur = std::collections::BTreeSet::new();
@@ -627,13 +697,19 @@ fn collect_widths(node: &Node, base: usize, out: &mut std::collections::BTreeSet
                 collect_widths(alt, base, out);
             }
         }
-        Node::Group { node, .. } | Node::Capture { node, .. } | Node::NamedCapture { node, .. }
-        | Node::Atomic(node) | Node::InlineFlags { node, .. } => {
+        Node::Group { node, .. }
+        | Node::Capture { node, .. }
+        | Node::NamedCapture { node, .. }
+        | Node::Atomic(node)
+        | Node::InlineFlags { node, .. } => {
             collect_widths(node, base, out);
         }
         Node::Quantifier { node, range, .. } => {
             let min = range.min as usize;
-            let max = range.max.expect("collect_widths called on unbounded quantifier") as usize;
+            let max = range
+                .max
+                .expect("collect_widths called on unbounded quantifier")
+                as usize;
             for count in min..=max {
                 let mut sub = std::collections::BTreeSet::new();
                 sub.insert(base);
@@ -648,8 +724,12 @@ fn collect_widths(node: &Node, base: usize, out: &mut std::collections::BTreeSet
             }
         }
         // Lookarounds are zero-width
-        Node::LookAround { .. } => { out.insert(base); }
-        _ => { out.insert(base); }
+        Node::LookAround { .. } => {
+            out.insert(base);
+        }
+        _ => {
+            out.insert(base);
+        }
     }
 }
 
@@ -662,6 +742,7 @@ pub struct CompiledProgram {
     pub charsets: Vec<CharSet>,
     pub named_groups: Vec<(String, u32)>,
     pub num_groups: usize,
+    #[allow(dead_code)]
     pub subexp_starts: HashMap<u32, usize>,
 }
 

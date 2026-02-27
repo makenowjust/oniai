@@ -1,4 +1,4 @@
-/// Abstract Syntax Tree for Onigmo-compatible regular expressions.
+//! Abstract Syntax Tree for Onigmo-compatible regular expressions.
 
 /// Flags that can be set via inline options like (?imx)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -12,14 +12,30 @@ pub struct Flags {
 impl Flags {
     pub fn apply_on(&self, other: &FlagMod) -> Flags {
         let mut f = *self;
-        if other.on.ignore_case { f.ignore_case = true; }
-        if other.on.multiline   { f.multiline = true; }
-        if other.on.extended    { f.extended = true; }
-        if other.on.ascii_range { f.ascii_range = true; }
-        if other.off.ignore_case { f.ignore_case = false; }
-        if other.off.multiline   { f.multiline = false; }
-        if other.off.extended    { f.extended = false; }
-        if other.off.ascii_range { f.ascii_range = false; }
+        if other.on.ignore_case {
+            f.ignore_case = true;
+        }
+        if other.on.multiline {
+            f.multiline = true;
+        }
+        if other.on.extended {
+            f.extended = true;
+        }
+        if other.on.ascii_range {
+            f.ascii_range = true;
+        }
+        if other.off.ignore_case {
+            f.ignore_case = false;
+        }
+        if other.off.multiline {
+            f.multiline = false;
+        }
+        if other.off.extended {
+            f.extended = false;
+        }
+        if other.off.ascii_range {
+            f.ascii_range = false;
+        }
         f
     }
 }
@@ -58,12 +74,12 @@ pub enum ClassItem {
 /// \w \d \s \h etc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shorthand {
-    Word,    // \w
-    NonWord, // \W
-    Digit,   // \d
-    NonDigit,// \D
-    Space,   // \s
-    NonSpace,// \S
+    Word,        // \w
+    NonWord,     // \W
+    Digit,       // \d
+    NonDigit,    // \D
+    Space,       // \s
+    NonSpace,    // \S
     HexDigit,    // \h
     NonHexDigit, // \H
 }
@@ -71,8 +87,20 @@ pub enum Shorthand {
 /// [:alnum:] etc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PosixClass {
-    Alnum, Alpha, Ascii, Blank, Cntrl, Digit,
-    Graph, Lower, Print, Punct, Space, Upper, XDigit, Word,
+    Alnum,
+    Alpha,
+    Ascii,
+    Blank,
+    Cntrl,
+    Digit,
+    Graph,
+    Lower,
+    Print,
+    Punct,
+    Space,
+    Upper,
+    XDigit,
+    Word,
 }
 
 /// A character class `[...]`.
@@ -96,9 +124,10 @@ pub enum Condition {
 pub enum GroupRef {
     Index(u32),
     Name(String),
-    RelativeBack(u32),  // \k<-n>
-    RelativeFwd(u32),   // \g<+n>
-    Whole,              // \g<0>
+    RelativeBack(u32), // \k<-n>
+    #[allow(dead_code)]
+    RelativeFwd(u32), // \g<+n>
+    Whole,             // \g<0>
 }
 
 /// Anchor types.
@@ -173,6 +202,7 @@ pub enum Node {
 
     /// Named capturing group
     NamedCapture {
+        #[allow(dead_code)]
         name: String,
         index: u32,
         node: Box<Node>,
@@ -180,10 +210,7 @@ pub enum Node {
     },
 
     /// Non-capturing group
-    Group {
-        node: Box<Node>,
-        flags: Flags,
-    },
+    Group { node: Box<Node>, flags: Flags },
 
     /// Atomic group (?>...)
     Atomic(Box<Node>),
@@ -209,10 +236,7 @@ pub enum Node {
     SubexpCall(GroupRef),
 
     /// Inline options that span to end of group: (?imx) without subexp
-    InlineFlags {
-        flags: FlagMod,
-        node: Box<Node>,
-    },
+    InlineFlags { flags: FlagMod, node: Box<Node> },
 
     /// Absence operator (?~subexp)
     Absence(Box<Node>),

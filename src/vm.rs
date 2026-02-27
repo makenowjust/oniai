@@ -1,13 +1,12 @@
+use crate::ast::{AnchorKind, Flags, LookDir, Shorthand};
+use crate::charset;
+use crate::compile::{CompileOptions, compile};
+use crate::error::Error;
+use crate::parser::parse;
 /// Virtual machine for Onigmo-compatible regular expression matching.
 ///
 /// Uses backtracking search with an explicit save/restore state.
-
 use std::collections::HashMap;
-use crate::ast::{AnchorKind, Flags, LookDir, Shorthand};
-use crate::charset;
-use crate::compile::{compile, CompileOptions};
-use crate::error::Error;
-use crate::parser::parse;
 
 // ---------------------------------------------------------------------------
 // Character set types (used by instructions)
@@ -25,7 +24,7 @@ pub struct CharSet {
 pub enum CharSetItem {
     Char(char),
     Range(char, char),
-    Shorthand(Shorthand, bool),         // ascii_range
+    Shorthand(Shorthand, bool),          // ascii_range
     Posix(crate::ast::PosixClass, bool), // negate
     Unicode(String, bool),               // name, negate
     Nested(CharSet),
@@ -38,11 +37,16 @@ impl CharSet {
         } else {
             ch
         };
-        let base = self.items.iter().any(|item| item.matches(ch, test_ch, ascii_range, ignore_case));
+        let base = self
+            .items
+            .iter()
+            .any(|item| item.matches(ch, test_ch, ascii_range, ignore_case));
         let result = if self.intersections.is_empty() {
             base
         } else {
-            self.intersections.iter().fold(base, |acc, cs| acc && cs.matches(ch, ascii_range, ignore_case))
+            self.intersections.iter().fold(base, |acc, cs| {
+                acc && cs.matches(ch, ascii_range, ignore_case)
+            })
         };
         if self.negate { !result } else { result }
     }
@@ -79,7 +83,9 @@ impl CharSetItem {
 }
 
 fn chars_eq_ci(a: char, b: char) -> bool {
-    if a == b { return true; }
+    if a == b {
+        return true;
+    }
     a.to_lowercase().eq(b.to_lowercase()) || a.to_uppercase().eq(b.to_uppercase())
 }
 
@@ -135,6 +141,7 @@ pub enum Inst {
     Call(usize),
 
     /// Pop call stack and jump to the saved address
+    #[allow(dead_code)]
     Ret,
 
     /// If call stack is non-empty, pop and jump to return addr; otherwise fall through
@@ -161,7 +168,11 @@ pub enum Inst {
     LookEnd,
 
     /// Conditional group: check if group `slot` has matched; jump to yes/no
-    CheckGroup { slot: usize, yes_pc: usize, no_pc: usize },
+    CheckGroup {
+        slot: usize,
+        yes_pc: usize,
+        no_pc: usize,
+    },
 
     /// Absence operator start; inner program at [pc+1..inner_end_pc]
     AbsenceStart(usize),
@@ -211,7 +222,9 @@ struct Ctx<'t> {
 
 impl<'t> Ctx<'t> {
     fn char_at(&self, pos: usize) -> Option<(char, usize)> {
-        if pos >= self.text.len() { return None; }
+        if pos >= self.text.len() {
+            return None;
+        }
         let ch = self.text[pos..].chars().next()?;
         Some((ch, ch.len_utf8()))
     }
@@ -273,7 +286,7 @@ enum LookCacheEntry {
     /// `keep_pos_delta`: new `keep_pos` if the body contained `\K` and
     ///   changed the value; `None` means "leave outer keep_pos unchanged".
     BodyMatched {
-        slot_delta:     Vec<(usize, Option<usize>)>,
+        slot_delta: Vec<(usize, Option<usize>)>,
         keep_pos_delta: Option<Option<usize>>,
     },
     /// The lookaround body did not match.  No outer-state changes occurred.
@@ -297,19 +310,31 @@ struct MemoState {
 
 impl MemoState {
     fn new() -> Self {
-        MemoState { fork_failures: HashMap::new(), look_results: HashMap::new() }
+        MemoState {
+            fork_failures: HashMap::new(),
+            look_results: HashMap::new(),
+        }
     }
 }
 
 /// Compute which capture slots changed between `pre` and `post`.
 /// Returns `(slot_index, new_value)` pairs for every slot that differs.
-fn compute_slot_delta(pre: &[Option<usize>], post: &[Option<usize>]) -> Vec<(usize, Option<usize>)> {
+fn compute_slot_delta(
+    pre: &[Option<usize>],
+    post: &[Option<usize>],
+) -> Vec<(usize, Option<usize>)> {
     let len = pre.len().max(post.len());
-    (0..len).filter_map(|i| {
-        let old = pre.get(i).copied().flatten();
-        let new = post.get(i).copied().flatten();
-        if old != new { Some((i, post.get(i).copied().flatten())) } else { None }
-    }).collect()
+    (0..len)
+        .filter_map(|i| {
+            let old = pre.get(i).copied().flatten();
+            let new = post.get(i).copied().flatten();
+            if old != new {
+                Some((i, post.get(i).copied().flatten()))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn push_retry(bt: &mut Vec<Bt>, pc: usize, pos: usize, state: &State) {
@@ -350,13 +375,20 @@ fn do_backtrack(
                     let key = memo_key(fork_pc, fork_pos);
                     // Keep the minimum depth: a lower depth is more general
                     // and can be reused in more contexts.
-                    memo.fork_failures.entry(key)
+                    memo.fork_failures
+                        .entry(key)
                         .and_modify(|d| *d = (*d).min(*atomic_depth))
                         .or_insert(*atomic_depth);
                 }
                 continue;
             }
-            Some(Bt::Retry { pc: rpc, pos: rpos, slots, keep_pos, call_stack }) => {
+            Some(Bt::Retry {
+                pc: rpc,
+                pos: rpos,
+                slots,
+                keep_pos,
+                call_stack,
+            }) => {
                 *pc = rpc;
                 *pos = rpos;
                 state.slots = slots;
@@ -384,7 +416,14 @@ const MAX_CALL_DEPTH: usize = 200;
 /// 2024); it is created once per `find()` call and shared across all
 /// sub-executions so that failures discovered inside lookarounds are
 /// propagated back to the outer execution.
-fn exec(ctx: &Ctx<'_>, start_pc: usize, start_pos: usize, state: &mut State, depth: usize, memo: &mut MemoState) -> Option<usize> {
+fn exec(
+    ctx: &Ctx<'_>,
+    start_pc: usize,
+    start_pos: usize,
+    state: &mut State,
+    depth: usize,
+    memo: &mut MemoState,
+) -> Option<usize> {
     if depth > MAX_DEPTH {
         return None;
     }
@@ -401,7 +440,15 @@ fn exec(ctx: &Ctx<'_>, start_pc: usize, start_pos: usize, state: &mut State, dep
         // Macro: trigger backtracking or return None if the stack is empty.
         macro_rules! fail {
             () => {{
-                if !do_backtrack(&mut bt, &mut pc, &mut pos, state, memo, &mut atomic_depth, ctx.use_memo) {
+                if !do_backtrack(
+                    &mut bt,
+                    &mut pc,
+                    &mut pos,
+                    state,
+                    memo,
+                    &mut atomic_depth,
+                    ctx.use_memo,
+                ) {
                     return None;
                 }
                 continue 'vm;
@@ -414,47 +461,61 @@ fn exec(ctx: &Ctx<'_>, start_pc: usize, start_pos: usize, state: &mut State, dep
             // Terminators for sub-executions (lookaround / absence inner program)
             Inst::LookEnd | Inst::AbsenceEnd => return Some(pos),
 
-            Inst::Char(ch, ignore_case) => {
-                match ctx.char_at(pos) {
-                    Some((c, len)) if *ignore_case && chars_eq_ci(*ch, c) => { pos += len; pc += 1; }
-                    Some((c, len)) if !ignore_case && *ch == c            => { pos += len; pc += 1; }
-                    _ => fail!(),
+            Inst::Char(ch, ignore_case) => match ctx.char_at(pos) {
+                Some((c, len)) if *ignore_case && chars_eq_ci(*ch, c) => {
+                    pos += len;
+                    pc += 1;
                 }
-            }
+                Some((c, len)) if !ignore_case && *ch == c => {
+                    pos += len;
+                    pc += 1;
+                }
+                _ => fail!(),
+            },
 
-            Inst::AnyChar(dotall) => {
-                match ctx.char_at(pos) {
-                    Some((c, len)) if *dotall || c != '\n' => { pos += len; pc += 1; }
-                    _ => fail!(),
+            Inst::AnyChar(dotall) => match ctx.char_at(pos) {
+                Some((c, len)) if *dotall || c != '\n' => {
+                    pos += len;
+                    pc += 1;
                 }
-            }
+                _ => fail!(),
+            },
 
-            Inst::Class(idx, ignore_case) => {
-                match ctx.char_at(pos) {
-                    Some((c, len)) if ctx.charsets[*idx].matches(c, false, *ignore_case) => { pos += len; pc += 1; }
-                    _ => fail!(),
+            Inst::Class(idx, ignore_case) => match ctx.char_at(pos) {
+                Some((c, len)) if ctx.charsets[*idx].matches(c, false, *ignore_case) => {
+                    pos += len;
+                    pc += 1;
                 }
-            }
+                _ => fail!(),
+            },
 
-            Inst::Shorthand(sh, ascii_range) => {
-                match ctx.char_at(pos) {
-                    Some((c, len)) if charset::matches_shorthand(*sh, c, *ascii_range) => { pos += len; pc += 1; }
-                    _ => fail!(),
+            Inst::Shorthand(sh, ascii_range) => match ctx.char_at(pos) {
+                Some((c, len)) if charset::matches_shorthand(*sh, c, *ascii_range) => {
+                    pos += len;
+                    pc += 1;
                 }
-            }
+                _ => fail!(),
+            },
 
-            Inst::Prop(name, negate) => {
-                match ctx.char_at(pos) {
-                    Some((c, len)) if charset::matches_unicode_prop(name, c, *negate) => { pos += len; pc += 1; }
-                    _ => fail!(),
+            Inst::Prop(name, negate) => match ctx.char_at(pos) {
+                Some((c, len)) if charset::matches_unicode_prop(name, c, *negate) => {
+                    pos += len;
+                    pc += 1;
                 }
-            }
+                _ => fail!(),
+            },
 
             Inst::Anchor(kind, flags) => {
-                if matches_anchor(ctx, pos, *kind, *flags) { pc += 1; } else { fail!(); }
+                if matches_anchor(ctx, pos, *kind, *flags) {
+                    pc += 1;
+                } else {
+                    fail!();
+                }
             }
 
-            Inst::Jump(target) => { pc = *target; }
+            Inst::Jump(target) => {
+                pc = *target;
+            }
 
             // Greedy fork: try pc+1 first; save alt as a backtrack point.
             Inst::Fork(alt) => {
@@ -463,11 +524,16 @@ fn exec(ctx: &Ctx<'_>, start_pc: usize, start_pos: usize, state: &mut State, dep
                     // Reuse a recorded failure if it was recorded at a depth ≤
                     // current atomic_depth (Algorithm 7: a failure under fewer
                     // atomic constraints is valid under more constraints too).
-                    if let Some(&d) = memo.fork_failures.get(&key) {
-                        if d <= atomic_depth { fail!(); }
+                    if let Some(&d) = memo.fork_failures.get(&key)
+                        && d <= atomic_depth
+                    {
+                        fail!();
                     }
                     // MemoMark fires after both alternatives are exhausted.
-                    bt.push(Bt::MemoMark { fork_pc: pc, fork_pos: pos });
+                    bt.push(Bt::MemoMark {
+                        fork_pc: pc,
+                        fork_pos: pos,
+                    });
                 }
                 push_retry(&mut bt, *alt, pos, state);
                 pc += 1;
@@ -477,10 +543,15 @@ fn exec(ctx: &Ctx<'_>, start_pc: usize, start_pos: usize, state: &mut State, dep
             Inst::ForkNext(alt) => {
                 if ctx.use_memo {
                     let key = memo_key(pc, pos);
-                    if let Some(&d) = memo.fork_failures.get(&key) {
-                        if d <= atomic_depth { fail!(); }
+                    if let Some(&d) = memo.fork_failures.get(&key)
+                        && d <= atomic_depth
+                    {
+                        fail!();
                     }
-                    bt.push(Bt::MemoMark { fork_pc: pc, fork_pos: pos });
+                    bt.push(Bt::MemoMark {
+                        fork_pc: pc,
+                        fork_pos: pos,
+                    });
                 }
                 push_retry(&mut bt, pc + 1, pos, state);
                 pc = *alt;
@@ -488,46 +559,71 @@ fn exec(ctx: &Ctx<'_>, start_pc: usize, start_pos: usize, state: &mut State, dep
 
             Inst::Save(slot) => {
                 let slot = *slot;
-                if slot >= state.slots.len() { state.slots.resize(slot + 1, None); }
+                if slot >= state.slots.len() {
+                    state.slots.resize(slot + 1, None);
+                }
                 state.slots[slot] = Some(pos);
                 pc += 1;
             }
 
-            Inst::KeepStart => { state.keep_pos = Some(pos); pc += 1; }
+            Inst::KeepStart => {
+                state.keep_pos = Some(pos);
+                pc += 1;
+            }
 
             Inst::BackRef(group, ignore_case, _level) => {
-                let slot_open  = ((*group - 1) * 2) as usize;
+                let slot_open = ((*group - 1) * 2) as usize;
                 let slot_close = slot_open + 1;
-                let start = match state.slots.get(slot_open).and_then(|x| *x)  { Some(s) => s, None => fail!() };
-                let end   = match state.slots.get(slot_close).and_then(|x| *x) { Some(e) => e, None => fail!() };
+                let start = match state.slots.get(slot_open).and_then(|x| *x) {
+                    Some(s) => s,
+                    None => fail!(),
+                };
+                let end = match state.slots.get(slot_close).and_then(|x| *x) {
+                    Some(e) => e,
+                    None => fail!(),
+                };
                 let captured = &ctx.text[start..end];
                 if *ignore_case {
-                    if pos + captured.len() > ctx.text.len() { fail!(); }
-                    if !strings_eq_ci(captured, &ctx.text[pos..pos + captured.len()]) { fail!(); }
+                    if pos + captured.len() > ctx.text.len() {
+                        fail!();
+                    }
+                    if !strings_eq_ci(captured, &ctx.text[pos..pos + captured.len()]) {
+                        fail!();
+                    }
                     pos += captured.len();
                 } else {
                     let len = captured.len();
-                    if ctx.text.get(pos..pos + len) != Some(captured) { fail!(); }
+                    if ctx.text.get(pos..pos + len) != Some(captured) {
+                        fail!();
+                    }
                     pos += len;
                 }
                 pc += 1;
             }
 
-            Inst::BackRefRelBack(_n, _ic) => { fail!(); } // not yet implemented
+            Inst::BackRefRelBack(_n, _ic) => {
+                fail!();
+            } // not yet implemented
 
             Inst::Call(target) => {
-                if state.call_stack.len() >= MAX_CALL_DEPTH { fail!(); }
+                if state.call_stack.len() >= MAX_CALL_DEPTH {
+                    fail!();
+                }
                 state.call_stack.push(pc + 1);
                 pc = *target;
             }
 
-            Inst::Ret => {
-                match state.call_stack.pop() { Some(r) => pc = r, None => fail!() }
-            }
+            Inst::Ret => match state.call_stack.pop() {
+                Some(r) => pc = r,
+                None => fail!(),
+            },
 
-            Inst::RetIfCalled => {
-                match state.call_stack.pop() { Some(r) => pc = r, None => { pc += 1; } }
-            }
+            Inst::RetIfCalled => match state.call_stack.pop() {
+                Some(r) => pc = r,
+                None => {
+                    pc += 1;
+                }
+            },
 
             // Atomic group: push a fence so that on AtomicEnd we can drain
             // all the body's backtrack points (preventing outer retry of the body).
@@ -546,17 +642,25 @@ fn exec(ctx: &Ctx<'_>, start_pc: usize, start_pos: usize, state: &mut State, dep
                 loop {
                     match bt.pop() {
                         None => break,
-                        Some(Bt::AtomicBarrier) => { atomic_depth -= 1; break; }
+                        Some(Bt::AtomicBarrier) => {
+                            atomic_depth -= 1;
+                            break;
+                        }
                         Some(Bt::Retry { .. }) | Some(Bt::MemoMark { .. }) => {}
                     }
                 }
                 pc += 1;
             }
 
-            Inst::LookStart { positive, dir, end_pc, behind_lens } => {
+            Inst::LookStart {
+                positive,
+                dir,
+                end_pc,
+                behind_lens,
+            } => {
                 let positive = *positive;
-                let end_pc   = *end_pc;
-                let lk_key   = memo_key(pc, pos);
+                let end_pc = *end_pc;
+                let lk_key = memo_key(pc, pos);
 
                 // Algorithm 6: check the lookaround result cache before
                 // running the (potentially expensive) sub-execution.
@@ -564,7 +668,10 @@ fn exec(ctx: &Ctx<'_>, start_pc: usize, start_pos: usize, state: &mut State, dep
                     if let Some(entry) = memo.look_results.get(&lk_key).cloned() {
                         // Cache hit: apply any slot changes and return cached result.
                         match entry {
-                            LookCacheEntry::BodyMatched { slot_delta, keep_pos_delta } => {
+                            LookCacheEntry::BodyMatched {
+                                slot_delta,
+                                keep_pos_delta,
+                            } => {
                                 if positive {
                                     // Re-apply the slot delta to the current outer state.
                                     for (idx, val) in slot_delta {
@@ -584,16 +691,28 @@ fn exec(ctx: &Ctx<'_>, start_pc: usize, start_pos: usize, state: &mut State, dep
                     } else {
                         // Cache miss: run the sub-execution and cache the result.
                         let pre_slots = state.slots.clone();
-                        let pre_keep  = state.keep_pos;
-                        let m = exec_lookaround(ctx, pc + 1, pos, state, *dir, behind_lens.as_deref(), depth, memo);
+                        let pre_keep = state.keep_pos;
+                        let m = exec_lookaround(
+                            ctx,
+                            pc + 1,
+                            pos,
+                            state,
+                            *dir,
+                            behind_lens.as_deref(),
+                            depth,
+                            memo,
+                        );
                         let entry = if m {
-                            let slot_delta     = compute_slot_delta(&pre_slots, &state.slots);
+                            let slot_delta = compute_slot_delta(&pre_slots, &state.slots);
                             let keep_pos_delta = if state.keep_pos != pre_keep {
                                 Some(state.keep_pos)
                             } else {
                                 None
                             };
-                            LookCacheEntry::BodyMatched { slot_delta, keep_pos_delta }
+                            LookCacheEntry::BodyMatched {
+                                slot_delta,
+                                keep_pos_delta,
+                            }
                         } else {
                             LookCacheEntry::BodyNotMatched
                         };
@@ -601,7 +720,16 @@ fn exec(ctx: &Ctx<'_>, start_pc: usize, start_pos: usize, state: &mut State, dep
                         m
                     }
                 } else {
-                    exec_lookaround(ctx, pc + 1, pos, state, *dir, behind_lens.as_deref(), depth, memo)
+                    exec_lookaround(
+                        ctx,
+                        pc + 1,
+                        pos,
+                        state,
+                        *dir,
+                        behind_lens.as_deref(),
+                        depth,
+                        memo,
+                    )
                 };
 
                 if matched == positive {
@@ -611,17 +739,21 @@ fn exec(ctx: &Ctx<'_>, start_pc: usize, start_pos: usize, state: &mut State, dep
                 }
             }
 
-            Inst::CheckGroup { slot, yes_pc, no_pc } => {
-                let has = state.slots.get(*slot    ).and_then(|x| *x).is_some()
-                       && state.slots.get(*slot + 1).and_then(|x| *x).is_some();
+            Inst::CheckGroup {
+                slot,
+                yes_pc,
+                no_pc,
+            } => {
+                let has = state.slots.get(*slot).and_then(|x| *x).is_some()
+                    && state.slots.get(*slot + 1).and_then(|x| *x).is_some();
                 pc = if has { *yes_pc } else { *no_pc };
             }
 
             Inst::AbsenceStart(inner_end_pc) => {
-                let inner_end        = *inner_end_pc;
-                let continuation_pc  = inner_end + 1;
-                let start            = pos;
-                let text_len         = ctx.text.len();
+                let inner_end = *inner_end_pc;
+                let continuation_pc = inner_end + 1;
+                let start = pos;
+                let text_len = ctx.text.len();
 
                 // Collect valid end positions (longest first).
                 let mut valid_ends: Vec<usize> = (start..=text_len)
@@ -632,7 +764,9 @@ fn exec(ctx: &Ctx<'_>, start_pc: usize, start_pos: usize, state: &mut State, dep
                     !check_inner_in_range(ctx, pc + 1, inner_end, start, end, state, depth, memo)
                 });
 
-                if valid_ends.is_empty() { fail!(); }
+                if valid_ends.is_empty() {
+                    fail!();
+                }
 
                 // Push shorter alternatives as backtrack points (shortest last = popped first
                 // only after the longer ones fail), then jump to the longest.
@@ -640,7 +774,7 @@ fn exec(ctx: &Ctx<'_>, start_pc: usize, start_pos: usize, state: &mut State, dep
                     push_retry(&mut bt, continuation_pc, end, state);
                 }
                 pos = valid_ends[0];
-                pc  = continuation_pc;
+                pc = continuation_pc;
             }
         }
     }
@@ -655,6 +789,7 @@ fn exec(ctx: &Ctx<'_>, start_pc: usize, start_pos: usize, state: &mut State, dep
 /// failures discovered inside a lookaround body are visible to the outer VM
 /// and vice-versa, giving the correct complexity guarantee for patterns that
 /// combine Fork and lookaround.
+#[allow(clippy::too_many_arguments)]
 fn exec_lookaround(
     ctx: &Ctx<'_>,
     body_pc: usize,
@@ -668,9 +803,13 @@ fn exec_lookaround(
 ) -> bool {
     match dir {
         LookDir::Ahead => {
-            let mut sub = State { slots: state.slots.clone(), keep_pos: state.keep_pos, call_stack: Vec::new() };
+            let mut sub = State {
+                slots: state.slots.clone(),
+                keep_pos: state.keep_pos,
+                call_stack: Vec::new(),
+            };
             if exec(ctx, body_pc, pos, &mut sub, depth + 1, memo).is_some() {
-                state.slots    = sub.slots;
+                state.slots = sub.slots;
                 state.keep_pos = sub.keep_pos;
                 true
             } else {
@@ -681,13 +820,19 @@ fn exec_lookaround(
             // Helper: try matching the body starting at `try_pos`, succeeding only
             // if the sub-execution ends exactly at `pos`.
             let mut try_behind = |try_pos: usize, state: &mut State| -> bool {
-                if !ctx.text.is_char_boundary(try_pos) { return false; }
-                let mut sub = State { slots: state.slots.clone(), keep_pos: state.keep_pos, call_stack: Vec::new() };
+                if !ctx.text.is_char_boundary(try_pos) {
+                    return false;
+                }
+                let mut sub = State {
+                    slots: state.slots.clone(),
+                    keep_pos: state.keep_pos,
+                    call_stack: Vec::new(),
+                };
                 if exec(ctx, body_pc, try_pos, &mut sub, depth + 1, memo)
                     .map(|end| end == pos)
                     .unwrap_or(false)
                 {
-                    state.slots    = sub.slots;
+                    state.slots = sub.slots;
                     state.keep_pos = sub.keep_pos;
                     true
                 } else {
@@ -698,8 +843,12 @@ fn exec_lookaround(
                 Some(lens) => {
                     // Fixed or bounded width: only try the pre-computed offsets.
                     for &len in lens {
-                        if pos < len { continue; }
-                        if try_behind(pos - len, state) { return true; }
+                        if pos < len {
+                            continue;
+                        }
+                        if try_behind(pos - len, state) {
+                            return true;
+                        }
                     }
                     false
                 }
@@ -709,8 +858,12 @@ fn exec_lookaround(
                     // Iterate shortest-to-longest (pos, pos-1, …, 0).
                     let mut try_pos = pos;
                     loop {
-                        if try_behind(try_pos, state) { return true; }
-                        if try_pos == 0 { break; }
+                        if try_behind(try_pos, state) {
+                            return true;
+                        }
+                        if try_pos == 0 {
+                            break;
+                        }
                         try_pos -= 1;
                     }
                     false
@@ -720,10 +873,11 @@ fn exec_lookaround(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn check_inner_in_range(
     ctx: &Ctx<'_>,
     inner_start_pc: usize,
-    inner_end_pc: usize,
+    _inner_end_pc: usize,
     range_start: usize,
     range_end: usize,
     state: &mut State,
@@ -733,18 +887,20 @@ fn check_inner_in_range(
     // Check if the inner pattern (at [inner_start_pc..inner_end_pc]) matches
     // at any start position i in [range_start..range_end], ending at some j <= range_end.
     for i in range_start..=range_end {
-        if !ctx.text.is_char_boundary(i) { continue; }
-        let saved_slots    = state.slots.clone();
-        let saved_keep     = state.keep_pos;
+        if !ctx.text.is_char_boundary(i) {
+            continue;
+        }
+        let saved_slots = state.slots.clone();
+        let saved_keep = state.keep_pos;
         let saved_call = state.call_stack.clone();
         let result = exec(ctx, inner_start_pc, i, state, depth + 1, memo);
-        state.slots      = saved_slots;
-        state.keep_pos   = saved_keep;
+        state.slots = saved_slots;
+        state.keep_pos = saved_keep;
         state.call_stack = saved_call;
-        if let Some(j) = result {
-            if j <= range_end {
-                return true;
-            }
+        if let Some(j) = result
+            && j <= range_end
+        {
+            return true;
         }
     }
     false
@@ -754,30 +910,21 @@ fn check_inner_in_range(
 // Anchor matching
 // ---------------------------------------------------------------------------
 
-fn matches_anchor(ctx: &Ctx<'_>, pos: usize, kind: AnchorKind, flags: Flags) -> bool {
+fn matches_anchor(ctx: &Ctx<'_>, pos: usize, kind: AnchorKind, _flags: Flags) -> bool {
     let text = ctx.text;
     match kind {
         AnchorKind::Start => {
-            if flags.multiline {
-                pos == 0 || text.as_bytes().get(pos - 1) == Some(&b'\n')
-            } else {
-                pos == 0 || text.as_bytes().get(pos - 1) == Some(&b'\n')
-                // ^ in Ruby is always multiline (matches after \n)
-            }
+            // ^ in Ruby is always multiline (matches after \n)
+            pos == 0 || text.as_bytes().get(pos - 1) == Some(&b'\n')
         }
         AnchorKind::End => {
-            if flags.multiline || true {
-                // $ in Ruby matches before \n or at end
-                pos == text.len() || text.as_bytes().get(pos) == Some(&b'\n')
-            } else {
-                pos == text.len()
-            }
+            // $ in Ruby matches before \n or at end (always multiline)
+            pos == text.len() || text.as_bytes().get(pos) == Some(&b'\n')
         }
         AnchorKind::StringStart => pos == 0,
         AnchorKind::StringEnd => pos == text.len(),
         AnchorKind::StringEndOrNl => {
-            pos == text.len()
-                || (pos + 1 == text.len() && text.as_bytes().get(pos) == Some(&b'\n'))
+            pos == text.len() || (pos + 1 == text.len() && text.as_bytes().get(pos) == Some(&b'\n'))
         }
         AnchorKind::WordBoundary => is_word_boundary(text, pos),
         AnchorKind::NonWordBoundary => !is_word_boundary(text, pos),
@@ -812,7 +959,9 @@ fn strings_eq_ci(a: &str, b: &str) -> bool {
         match (ai.next(), bi.next()) {
             (None, None) => return true,
             (Some(ac), Some(bc)) => {
-                if !chars_eq_ci(ac, bc) { return false; }
+                if !chars_eq_ci(ac, bc) {
+                    return false;
+                }
             }
             _ => return false,
         }
@@ -841,7 +990,9 @@ enum StartStrategy {
 impl StartStrategy {
     fn compute(prog: &[Inst]) -> Self {
         // Check for anchored start (skip over zero-width Save/KeepStart prefix)
-        let first_real = prog.iter().find(|i| !matches!(i, Inst::Save(_) | Inst::KeepStart));
+        let first_real = prog
+            .iter()
+            .find(|i| !matches!(i, Inst::Save(_) | Inst::KeepStart));
         if matches!(first_real, Some(Inst::Anchor(AnchorKind::StringStart, _))) {
             return StartStrategy::Anchored;
         }
@@ -874,7 +1025,10 @@ fn extract_literal_prefix(prog: &[Inst]) -> String {
         match &prog[pc] {
             Inst::Save(_) | Inst::KeepStart => pc += 1,
             Inst::Anchor(AnchorKind::StringStart, _) => pc += 1,
-            Inst::Char(c, false) => { prefix.push(*c); pc += 1; }
+            Inst::Char(c, false) => {
+                prefix.push(*c);
+                pc += 1;
+            }
             _ => break,
         }
     }
@@ -890,7 +1044,9 @@ fn collect_first_chars(
     out: &mut Vec<char>,
     visited: &mut std::collections::HashSet<usize>,
 ) -> Option<()> {
-    if !visited.insert(pc) { return Some(()); }
+    if !visited.insert(pc) {
+        return Some(());
+    }
     match prog.get(pc)? {
         Inst::Char(c, false) => out.push(*c),
         Inst::Char(c, true) => {
@@ -937,10 +1093,11 @@ fn bypasses(prog: &[Inst], pc: usize, match_pc: usize) -> bool {
             Inst::Fork(t) | Inst::ForkNext(t) | Inst::Jump(t) => Some(*t),
             _ => None,
         };
-        if let Some(t) = target {
-            if t > pc && t <= match_pc {
-                return true;
-            }
+        if let Some(t) = target
+            && t > pc
+            && t <= match_pc
+        {
+            return true;
         }
     }
     false
@@ -998,15 +1155,17 @@ impl CompiledRegex {
             .collect();
 
         let start_strategy = StartStrategy::compute(&prog_data.prog);
-        let required_char  = compute_required_char(&prog_data.prog);
+        let required_char = compute_required_char(&prog_data.prog);
         // Disable memoization for patterns where the fork/lookaround outcome
         // can depend on the current capture-slot state (not just on pc + pos):
         //   • BackRef / BackRefRelBack  — outcome depends on captured text
         //   • CheckGroup               — branches on whether a group matched
-        let use_memo = !prog_data.prog.iter().any(|i| matches!(
-            i,
-            Inst::BackRef(..) | Inst::BackRefRelBack(..) | Inst::CheckGroup { .. }
-        ));
+        let use_memo = !prog_data.prog.iter().any(|i| {
+            matches!(
+                i,
+                Inst::BackRef(..) | Inst::BackRefRelBack(..) | Inst::CheckGroup { .. }
+            )
+        });
 
         Ok(CompiledRegex {
             prog: prog_data.prog,
@@ -1020,8 +1179,19 @@ impl CompiledRegex {
     }
 
     /// Try to match at exactly `pos`.  Returns `(match_start, end, slots)` or `None`.
-    fn try_at(&self, text: &str, pos: usize, memo: &mut MemoState) -> Option<(usize, usize, Vec<Option<usize>>)> {
-        let ctx = Ctx { prog: &self.prog, charsets: &self.charsets, text, search_start: pos, use_memo: self.use_memo };
+    fn try_at(
+        &self,
+        text: &str,
+        pos: usize,
+        memo: &mut MemoState,
+    ) -> Option<(usize, usize, Vec<Option<usize>>)> {
+        let ctx = Ctx {
+            prog: &self.prog,
+            charsets: &self.charsets,
+            text,
+            search_start: pos,
+            use_memo: self.use_memo,
+        };
         let mut state = State::new(self.num_groups);
         let end = exec(&ctx, 0, pos, &mut state, 0, memo)?;
         let match_start = state.keep_pos.unwrap_or(pos);
@@ -1031,21 +1201,16 @@ impl CompiledRegex {
 
     /// Find the leftmost match starting search from `start_pos`.
     /// Returns `(match_start, match_end, capture_slots)`.
-    pub fn find(
-        &self,
-        text: &str,
-        start_pos: usize,
-    ) -> Option<(usize, usize, Vec<Option<usize>>)> {
+    pub fn find(&self, text: &str, start_pos: usize) -> Option<(usize, usize, Vec<Option<usize>>)> {
         // Fast pre-filter: if the pattern requires a specific character, check
         // that it appears before running the search loop.  For `Anchored` we
         // skip the scan (one exec() call is cheaper than a memchr over the whole
         // text).  All other strategies benefit from the early-out.
-        if !matches!(self.start_strategy, StartStrategy::Anchored) {
-            if let Some(rc) = self.required_char {
-                if !text[start_pos..].contains(rc) {
-                    return None;
-                }
-            }
+        if !matches!(self.start_strategy, StartStrategy::Anchored)
+            && let Some(rc) = self.required_char
+            && !text[start_pos..].contains(rc)
+        {
+            return None;
         }
 
         // The memoization table is created once per find() call and shared
@@ -1070,9 +1235,15 @@ impl CompiledRegex {
                         return Some(result);
                     }
                     // Advance one char past the failed candidate
-                    pos = candidate + text[candidate..].chars().next()
-                        .map(|c| c.len_utf8()).unwrap_or(1);
-                    if pos > text.len() { return None; }
+                    pos = candidate
+                        + text[candidate..]
+                            .chars()
+                            .next()
+                            .map(|c| c.len_utf8())
+                            .unwrap_or(1);
+                    if pos > text.len() {
+                        return None;
+                    }
                 }
             }
 
@@ -1087,9 +1258,15 @@ impl CompiledRegex {
                     if let Some(result) = self.try_at(text, candidate, &mut memo) {
                         return Some(result);
                     }
-                    pos = candidate + text[candidate..].chars().next()
-                        .map(|c| c.len_utf8()).unwrap_or(1);
-                    if pos > text.len() { return None; }
+                    pos = candidate
+                        + text[candidate..]
+                            .chars()
+                            .next()
+                            .map(|c| c.len_utf8())
+                            .unwrap_or(1);
+                    if pos > text.len() {
+                        return None;
+                    }
                 }
             }
 
@@ -1100,8 +1277,14 @@ impl CompiledRegex {
                     if let Some(result) = self.try_at(text, pos, &mut memo) {
                         return Some(result);
                     }
-                    if pos >= text.len() { return None; }
-                    pos += text[pos..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+                    if pos >= text.len() {
+                        return None;
+                    }
+                    pos += text[pos..]
+                        .chars()
+                        .next()
+                        .map(|c| c.len_utf8())
+                        .unwrap_or(1);
                 }
             }
         }

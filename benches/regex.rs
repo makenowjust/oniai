@@ -1,5 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use aigumo::Regex;
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
 // ---------------------------------------------------------------------------
 // Benchmark corpus
@@ -157,7 +157,7 @@ fn bench_find_iter_scale(c: &mut Criterion) {
 fn bench_pathological(c: &mut Criterion) {
     let mut group = c.benchmark_group("pathological");
     for n in [10usize, 15, 20] {
-        let pattern = format!("{}{}",  "a?".repeat(n), "a".repeat(n));
+        let pattern = format!("{}{}", "a?".repeat(n), "a".repeat(n));
         let haystack = "a".repeat(n);
         let re = Regex::new(&pattern).unwrap();
         group.bench_with_input(BenchmarkId::from_parameter(n), &haystack, |b, h| {
