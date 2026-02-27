@@ -58,14 +58,13 @@ fn chars_eq_ci(a: char, b: char) -> bool {
     a.case_fold().eq(b.case_fold())
 }
 
-/// Push a `BtJit::Retry` entry, capturing the current slots/keep_pos snapshot.
+/// Push a `BtJit::Retry` entry.  Slots are **not** snapshotted here; instead
+/// each `Save` instruction pushes a `SaveUndo` entry before modifying a slot,
+/// so backtracking naturally reverses every slot write since the last fork.
 unsafe fn push_retry(bt: &mut Vec<BtJit>, ctx: &JitExecCtx, block_id: u32, pos: u64) {
-    let slots =
-        unsafe { std::slice::from_raw_parts(ctx.slots_ptr, ctx.slots_len as usize).to_vec() };
     bt.push(BtJit::Retry {
         block_id,
         pos,
-        slots,
         keep_pos: ctx.keep_pos,
     });
 }
@@ -345,6 +344,17 @@ pub unsafe extern "C" fn jit_save(ctx: *mut JitExecCtx, slot: u32, pos: u64) {
     }
 }
 
+/// Push a `SaveUndo` entry for `slot` with its current value before the
+/// caller writes a new value.  Called from inlined `Save` blocks in JIT code.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn jit_push_save_undo(ctx: *mut JitExecCtx, slot: u32, old_value: u64) {
+    unsafe {
+        let ctx = &mut *ctx;
+        let bt = &mut *(ctx.bt_ptr as *mut Vec<BtJit>);
+        bt.push(BtJit::SaveUndo { slot, old_value });
+    }
+}
+
 /// Set `ctx.keep_pos = pos` (`\K`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn jit_keep_start(ctx: *mut JitExecCtx, pos: u64) {
@@ -480,16 +490,19 @@ pub unsafe extern "C" fn jit_bt_pop(
                             .or_insert(ctx.atomic_depth as usize);
                     }
                 }
+                Some(BtJit::SaveUndo { slot, old_value }) => {
+                    let slots =
+                        std::slice::from_raw_parts_mut(ctx.slots_ptr, ctx.slots_len as usize);
+                    let idx = slot as usize;
+                    if idx < slots.len() {
+                        slots[idx] = old_value;
+                    }
+                }
                 Some(BtJit::Retry {
                     block_id,
                     pos,
-                    slots,
                     keep_pos,
                 }) => {
-                    let slots_out =
-                        std::slice::from_raw_parts_mut(ctx.slots_ptr, ctx.slots_len as usize);
-                    let n = slots.len().min(slots_out.len());
-                    slots_out[..n].copy_from_slice(&slots[..n]);
                     ctx.keep_pos = keep_pos;
                     *out_block_id = block_id;
                     *out_pos = pos;
@@ -528,7 +541,9 @@ pub unsafe extern "C" fn jit_atomic_end(ctx: *mut JitExecCtx) {
                     ctx.atomic_depth -= 1;
                     break;
                 }
-                Some(BtJit::Retry { .. }) | Some(BtJit::MemoMark { .. }) => {}
+                Some(BtJit::Retry { .. })
+                | Some(BtJit::MemoMark { .. })
+                | Some(BtJit::SaveUndo { .. }) => {}
             }
         }
     }
@@ -620,6 +635,7 @@ pub(super) fn register_symbols(jit_builder: &mut cranelift_jit::JITBuilder) {
     sym!(jit_match_prop_back);
     sym!(jit_check_anchor);
     sym!(jit_save);
+    sym!(jit_push_save_undo);
     sym!(jit_keep_start);
     sym!(jit_check_group);
     sym!(jit_fork);

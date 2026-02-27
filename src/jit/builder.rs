@@ -189,6 +189,8 @@ fn emit_function(
         [types::I64, types::I64, types::I32, types::I32] => [types::I32]);
     let _h_save = decl_helper!(module, builder, "jit_save",
         [types::I64, types::I32, types::I64] => []);
+    let h_push_save_undo = decl_helper!(module, builder, "jit_push_save_undo",
+        [types::I64, types::I32, types::I64] => []);
     let h_keep_start = decl_helper!(module, builder, "jit_keep_start",
         [types::I64, types::I64] => []);
     let h_check_group = decl_helper!(module, builder, "jit_check_group",
@@ -481,7 +483,15 @@ fn emit_function(
             Inst::Save(slot) => {
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
-                inline_save(builder, &inst_blocks, ctx_v, pos_v, pc, *slot);
+                inline_save(
+                    builder,
+                    &inst_blocks,
+                    ctx_v,
+                    pos_v,
+                    pc,
+                    *slot,
+                    h_push_save_undo,
+                );
             }
             Inst::KeepStart => {
                 let ctx_v = builder.use_var(var_ctx);
@@ -1251,21 +1261,29 @@ fn inline_save(
     pos_v: Value,
     pc: usize,
     slot: usize,
+    h_push_save_undo: FuncRef,
 ) {
     let slots_ptr = builder
         .ins()
         .load(types::I64, MemFlags::trusted(), ctx_v, CTX_SLOTS_PTR);
     let offset = slot as i64 * 8; // each slot is u64 (8 bytes)
-    if offset == 0 {
-        builder
-            .ins()
-            .store(MemFlags::trusted(), pos_v, slots_ptr, 0);
+    let slot_addr = if offset == 0 {
+        slots_ptr
     } else {
-        let slot_addr = builder.ins().iadd_imm(slots_ptr, offset);
-        builder
-            .ins()
-            .store(MemFlags::trusted(), pos_v, slot_addr, 0);
-    }
+        builder.ins().iadd_imm(slots_ptr, offset)
+    };
+    // Load old value and push a SaveUndo entry so backtracking can undo this write.
+    let old_value = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), slot_addr, 0);
+    let slot_imm = builder.ins().iconst(types::I32, slot as i64);
+    builder
+        .ins()
+        .call(h_push_save_undo, &[ctx_v, slot_imm, old_value]);
+    // Write new value.
+    builder
+        .ins()
+        .store(MemFlags::trusted(), pos_v, slot_addr, 0);
     builder.ins().jump(inst_blocks[pc + 1], &[]);
 }
 

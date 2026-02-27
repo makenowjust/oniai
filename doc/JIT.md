@@ -175,14 +175,24 @@ a `call_indirect` with `tail` convention so no extra stack frame is created.
          └────────────────────────────────────────────────────────────────────┘
 ```
 
-### 4.4 Snapshot compression
+### 4.4 Capture-delta undo log
 
-To keep bt stack pushes cheap, `Bt::Retry` in the JIT variant stores a
-**copy-on-write** slot snapshot: a `(Vec<Option<usize>>, Option<usize>,
-Vec<usize>)` triple cloned at each `Fork`.  This matches exactly what the
-interpreter already does, so no new correctness complexity is introduced.
-Future work may apply diff-encoding (store only changed slots) to reduce
-allocation pressure.
+To keep bt stack pushes allocation-free, `Save` instructions use an
+**undo-log** approach (the same strategy used by Onigmo and Oniguruma):
+
+- **Before each slot write** the inlined `Save` block calls
+  `jit_push_save_undo(ctx, slot, old_value)`, which pushes a tiny
+  `BtJit::SaveUndo { slot: u32, old_value: u64 }` entry onto the bt stack
+  (~16 bytes, no heap allocation).
+- **`BtJit::Retry` no longer contains a `slots` field.**  It stores only
+  `{ block_id: u32, pos: u64, keep_pos: u64 }` — 20 bytes, entirely on the
+  stack.
+- **On backtrack** (`jit_bt_pop`), entries are popped one-by-one: `SaveUndo`
+  entries restore their slot, `AtomicBarrier` entries adjust `atomic_depth`,
+  `MemoMark` entries record failures, and the first `Retry` entry restores
+  `pos`/`keep_pos` and returns control to the saved block.
+- **`jit_atomic_end`** (committing an atomic group) discards `SaveUndo`
+  entries in the drain loop — the slots already hold the committed values.
 
 ### 4.5 Rust helpers for complex instructions
 

@@ -1439,13 +1439,19 @@ impl CompiledRegex {
 /// `usize` for compact storage and `br_table` dispatch.
 #[cfg(feature = "jit")]
 pub(crate) enum BtJit {
+    /// Retry point pushed by Fork/ForkNext.  Slots are restored by `SaveUndo`
+    /// entries that were pushed above this point (capture-delta undo log).
     Retry {
         block_id: u32,
         pos: u64,
-        /// Capture slots snapshot: `u64::MAX` encodes `None`.
-        slots: Vec<u64>,
         /// `u64::MAX` encodes `None`.
         keep_pos: u64,
+    },
+    /// Undo entry pushed by each `Save` instruction before writing a slot.
+    /// On backtrack, the slot is restored to `old_value`.
+    SaveUndo {
+        slot: u32,
+        old_value: u64,
     },
     AtomicBarrier,
     MemoMark {
