@@ -270,33 +270,34 @@ Added in Phase 1; inlined in Phase 2.  Compiles eligible `Vec<Inst>` programs to
 code via Cranelift, creating one basic block per instruction and routing
 backtracking through a `br_table` dispatch block.
 
-### Phase 1 vs Phase 2 vs Interpreter — median times
+### Phase 1 vs Phase 2 vs Phase 3 vs Interpreter — median times
 
 Phase 1: all instructions as `extern "C"` helper calls.  
-Phase 2: `Char`, `AnyChar`, `Shorthand` (ASCII fast-path), `Save`, `Anchor` inlined as Cranelift IR.
+Phase 2: `Char`, `AnyChar`, `Shorthand` (ASCII fast-path), `Save`, `Anchor` inlined as Cranelift IR.  
+Phase 3: additionally inline `CharClass`/`ClassBack` for simple ASCII charsets (all items ASCII `Char` or `Range`, no negation).
 
-| Benchmark | Interpreter | JIT Phase 1 | JIT Phase 2 |
-|-----------|-------------|-------------|-------------|
-| literal/no\_match\_1k | 49.8 ns | 49.7 ns (1.00×) | 49.5 ns (1.01×) |
-| literal/match\_mid\_1k | 145 ns | 180 ns (0.81×) | 139 ns (**1.04×**) |
-| anchored/no\_match\_1k | 16.1 ns | 47.2 ns (0.34×) | 14.0 ns (**1.15× faster** ✅) |
-| alternation/4\_alts\_match | 18.9 µs | 18.9 µs (1.00×) | 18.9 µs (1.00×) |
-| alternation/4\_alts\_no\_match | 46.8 µs | 46.7 µs (1.00×) | 46.7 µs (1.00×) |
-| quantifier/greedy\_no\_match\_500 | 25.8 ns | 25.8 ns (1.00×) | 27.3 ns (0.95×) |
-| quantifier/greedy\_match\_500 | 9.17 µs | 6.11 µs (**1.50×**) | 5.61 µs (**1.63× faster** ✅) |
-| captures/two\_groups | 612 ns | 603 ns (1.01×) | 627 ns (0.98×) |
-| captures/iter\_all | 2.57 µs | 2.54 µs (1.01×) | 2.62 µs (0.98×) |
-| email/find\_all | 3.25 µs | 4.19 µs (0.78×) | 3.53 µs (0.92×) |
-| charclass/alpha\_iter | 30.8 µs | 38.4 µs (0.80×) | 39.7 µs (0.78×) |
-| charclass/posix\_digit\_iter | 24.4 µs | 37.3 µs (0.65×) | 37.9 µs (0.64×) |
-| case\_insensitive/match | 14.0 µs | 14.2 µs (0.98×) | 14.0 µs (1.00×) |
-| find\_iter\_scale/100 | 2.72 µs | 5.22 µs (0.52×) | 3.37 µs (0.81×) |
-| find\_iter\_scale/500 | 13.3 µs | 25.5 µs (0.52×) | 16.5 µs (0.81×) |
-| find\_iter\_scale/1000 | 26.7 µs | 51.3 µs (0.52×) | 33.1 µs (0.81×) |
-| find\_iter\_scale/5000 | 133 µs | 255 µs (0.52×) | 165 µs (0.81×) |
-| pathological/10 | 4.39 µs | 6.38 µs (0.69×) | 5.30 µs (0.83×) |
-| pathological/15 | 9.94 µs | 14.2 µs (0.70×) | 11.9 µs (0.84×) |
-| pathological/20 | 17.7 µs | 25.0 µs (0.71×) | 21.1 µs (0.84×) |
+| Benchmark | Interpreter | JIT Phase 1 | JIT Phase 2 | JIT Phase 3 |
+|-----------|-------------|-------------|-------------|-------------|
+| literal/no\_match\_1k | 49.8 ns | 49.7 ns (1.00×) | 49.5 ns (1.01×) | 49.8 ns (1.00×) |
+| literal/match\_mid\_1k | 145 ns | 180 ns (0.81×) | 139 ns (**1.04×**) | 138 ns (**1.05×**) |
+| anchored/no\_match\_1k | 16.1 ns | 47.2 ns (0.34×) | 14.0 ns (**1.15×**) | 13.6 ns (**1.18× faster** ✅) |
+| alternation/4\_alts\_match | 18.9 µs | 18.9 µs (1.00×) | 18.9 µs (1.00×) | 18.8 µs (1.00×) |
+| alternation/4\_alts\_no\_match | 46.8 µs | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.7 µs (1.00×) |
+| quantifier/greedy\_no\_match\_500 | 25.8 ns | 25.8 ns (1.00×) | 27.3 ns (0.95×) | 25.8 ns (1.00×) |
+| quantifier/greedy\_match\_500 | 9.17 µs | 6.11 µs (**1.50×**) | 5.61 µs (**1.63×**) | 5.43 µs (**1.69× faster** ✅) |
+| captures/two\_groups | 612 ns | 603 ns (1.01×) | 627 ns (0.98×) | 620 ns (0.99×) |
+| captures/iter\_all | 2.57 µs | 2.54 µs (1.01×) | 2.62 µs (0.98×) | 2.58 µs (1.00×) |
+| email/find\_all | 3.25 µs | 4.19 µs (0.78×) | 3.53 µs (0.92×) | 3.46 µs (0.94×) |
+| charclass/alpha\_iter | 31.2 µs | 38.4 µs (0.80×) | 39.7 µs (0.78×) | **24.9 µs (1.25× faster** ✅) |
+| charclass/posix\_digit\_iter | 24.4 µs | 37.3 µs (0.65×) | 37.9 µs (0.64×) | 37.7 µs (0.65×) |
+| case\_insensitive/match | 14.0 µs | 14.2 µs (0.98×) | 14.0 µs (1.00×) | 13.9 µs (1.01×) |
+| find\_iter\_scale/100 | 2.72 µs | 5.22 µs (0.52×) | 3.37 µs (0.81×) | 3.31 µs (0.82×) |
+| find\_iter\_scale/500 | 13.3 µs | 25.5 µs (0.52×) | 16.5 µs (0.81×) | 16.2 µs (0.82×) |
+| find\_iter\_scale/1000 | 26.7 µs | 51.3 µs (0.52×) | 33.1 µs (0.81×) | 32.6 µs (0.82×) |
+| find\_iter\_scale/5000 | 133 µs | 255 µs (0.52×) | 165 µs (0.81×) | 161 µs (0.83×) |
+| pathological/10 | 4.39 µs | 6.38 µs (0.69×) | 5.30 µs (0.83×) | 5.30 µs (0.83×) |
+| pathological/15 | 9.94 µs | 14.2 µs (0.70×) | 11.9 µs (0.84×) | 11.9 µs (0.84×) |
+| pathological/20 | 17.7 µs | 25.0 µs (0.71×) | 21.1 µs (0.84×) | 21.0 µs (0.84×) |
 
 ### Analysis
 
@@ -344,13 +345,34 @@ still regress (~1.5×) because `CharClass` matching still calls a helper.
 `find_iter_scale` remains 1.24× slower due to residual JIT overhead and the
 non-ASCII fallback call on each character boundary.
 
-### Known bottlenecks and future work (Phase 3)
+#### Phase 3 (inline simple ASCII CharClass)
 
-| Root cause | Current | Phase 3 plan |
-|------------|---------|--------------|
-| `CharClass` matching | helper call ~15 cy | Inline 1–4 range checks as IR |
-| `JitExecCtx` alloc per `exec_jit` | ~20 ns fixed | Reuse ctx across calls with arena |
-| Non-ASCII shorthand fallback | helper call for non-ASCII chars | Inline two-byte / three-byte decode |
-| Cranelift code quality vs LLVM | ~20% throughput gap | Enable `opt_level(Speed)` in JIT codegen |
+Phase 3 adds `is_simple_ascii_charset` to detect charsets containing only
+ASCII `Char`/`Range` items with no negation or intersections, and inlines
+both `Class` (forward) and `ClassBack` (backward) for such charsets.
+
+- **`charclass/alpha_iter`: 1.27× slower → 1.25× faster** — the pattern
+  `[a-zA-Z]+` has two ASCII ranges; inlining them as two `(byte - lo) ≤ span`
+  unsigned comparisons eliminates the `jit_match_class` call, making the JIT
+  25% faster than the interpreter.
+- **`quantifier/greedy_match_500`: 1.63× → 1.69× faster** — minor further
+  improvement from reduced code-cache pressure.
+- **`anchored/no_match_1k`: 1.15× → 1.18× faster** — slight improvement.
+- **`charclass/posix_digit_iter`**: unchanged at 0.65× — this pattern uses
+  a POSIX character class (`\p{Digit}`), which requires a helper call and is
+  not inlinable.
+
+**Remaining regressions** — POSIX/Unicode charsets and case-insensitive
+`CharClass` still fall back to the helper.  `find_iter_scale` (`\d+` with
+shorthand) remains 1.18× slower because shorthand non-ASCII paths still call
+the helper.
+
+### Known bottlenecks and future work
+
+| Root cause | Current | Future plan |
+|------------|---------|-------------|
+| POSIX / Unicode `CharClass` | helper call ~15 cy | Could inline POSIX digit/alpha/space as range chains |
+| Non-ASCII shorthand fallback | helper call for non-ASCII chars | Inline two/three-byte UTF-8 decode for common cases |
+| `find_iter_scale` residual overhead | 1.18× slower | Eliminate remaining indirect branches in shorthand loop |
 
 See `doc/JIT.md` for the full design.

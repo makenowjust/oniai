@@ -44,7 +44,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::ast::{AnchorKind, Shorthand};
-use crate::vm::{CharSet, Inst};
+use crate::vm::{CharSet, CharSetItem, Inst};
 
 // ---------------------------------------------------------------------------
 // Variable indices
@@ -92,7 +92,7 @@ macro_rules! decl_helper {
 pub(super) fn build(
     module: &mut cranelift_jit::JITModule,
     prog: &[Inst],
-    _charsets: &[CharSet],
+    charsets: &[CharSet],
     use_memo: bool,
 ) -> Result<FuncId, String> {
     let mut sig = module.make_signature();
@@ -111,7 +111,7 @@ pub(super) fn build(
     let mut fb_ctx = FunctionBuilderContext::new();
     {
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
-        emit_function(&mut builder, module, prog, use_memo)?;
+        emit_function(&mut builder, module, prog, charsets, use_memo)?;
         builder.finalize();
     }
 
@@ -130,6 +130,7 @@ fn emit_function(
     builder: &mut FunctionBuilder<'_>,
     module: &mut cranelift_jit::JITModule,
     prog: &[Inst],
+    charsets: &[CharSet],
     _use_memo: bool,
 ) -> Result<(), String> {
     let n = prog.len();
@@ -289,10 +290,24 @@ fn emit_function(
             Inst::Class(idx, ic) => {
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
-                let i = builder.ins().iconst(types::I32, *idx as i64);
-                let ic_v = builder.ins().iconst(types::I32, *ic as i64);
-                let call = builder.ins().call(h_match_class, &[ctx_v, pos_v, i, ic_v]);
-                emit_match_call!(call, pc + 1);
+                if !ic && is_simple_ascii_charset(&charsets[*idx]) {
+                    inline_charclass_fwd(
+                        builder,
+                        &inst_blocks,
+                        bt_resume_block,
+                        var_pos,
+                        var_ctx,
+                        ctx_v,
+                        pos_v,
+                        pc,
+                        &charsets[*idx],
+                    );
+                } else {
+                    let i = builder.ins().iconst(types::I32, *idx as i64);
+                    let ic_v = builder.ins().iconst(types::I32, *ic as i64);
+                    let call = builder.ins().call(h_match_class, &[ctx_v, pos_v, i, ic_v]);
+                    emit_match_call!(call, pc + 1);
+                }
             }
             Inst::Shorthand(sh, ar) => {
                 let ctx_v = builder.use_var(var_ctx);
@@ -347,12 +362,26 @@ fn emit_function(
             Inst::ClassBack(idx, ic) => {
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
-                let i = builder.ins().iconst(types::I32, *idx as i64);
-                let ic_v = builder.ins().iconst(types::I32, *ic as i64);
-                let call = builder
-                    .ins()
-                    .call(h_match_class_back, &[ctx_v, pos_v, i, ic_v]);
-                emit_match_call!(call, pc + 1);
+                if !ic && is_simple_ascii_charset(&charsets[*idx]) {
+                    inline_charclass_back(
+                        builder,
+                        &inst_blocks,
+                        bt_resume_block,
+                        var_pos,
+                        var_ctx,
+                        ctx_v,
+                        pos_v,
+                        pc,
+                        &charsets[*idx],
+                    );
+                } else {
+                    let i = builder.ins().iconst(types::I32, *idx as i64);
+                    let ic_v = builder.ins().iconst(types::I32, *ic as i64);
+                    let call = builder
+                        .ins()
+                        .call(h_match_class_back, &[ctx_v, pos_v, i, ic_v]);
+                    emit_match_call!(call, pc + 1);
+                }
             }
             Inst::ShorthandBack(sh, ar) => {
                 let ctx_v = builder.use_var(var_ctx);
@@ -855,7 +884,160 @@ fn shorthand_ascii_check(builder: &mut FunctionBuilder<'_>, sh: Shorthand, byte:
     }
 }
 
-/// Inline `Save(slot)`: store `pos` directly into `ctx.slots_ptr[slot]`.
+// ---------------------------------------------------------------------------
+// CharClass inlining helpers (Phase 3)
+// ---------------------------------------------------------------------------
+
+/// Returns `true` when `cs` can be fully inlined as pure Cranelift IR:
+/// - no negation, no intersections
+/// - all items are ASCII `Char` or ASCII `Range`
+fn is_simple_ascii_charset(cs: &CharSet) -> bool {
+    if cs.negate || !cs.intersections.is_empty() {
+        return false;
+    }
+    cs.items.iter().all(|item| match item {
+        CharSetItem::Char(c) => c.is_ascii(),
+        CharSetItem::Range(lo, hi) => lo.is_ascii() && hi.is_ascii(),
+        _ => false,
+    })
+}
+
+/// Emit I8 boolean: 1 if `byte` (I32) matches the simple ASCII charset.
+fn charset_ascii_check(builder: &mut FunctionBuilder<'_>, cs: &CharSet, byte: Value) -> Value {
+    let mut result = builder.ins().iconst(types::I8, 0);
+    for item in &cs.items {
+        let item_match: Value = match item {
+            CharSetItem::Char(c) => {
+                let cv = builder.ins().iconst(types::I32, *c as i64);
+                builder.ins().icmp(IntCC::Equal, byte, cv)
+            }
+            CharSetItem::Range(lo, hi) => {
+                let lo_v = builder.ins().iconst(types::I32, *lo as i64);
+                let adj = builder.ins().isub(byte, lo_v);
+                let span_v = builder.ins().iconst(types::I32, *hi as i64 - *lo as i64);
+                builder
+                    .ins()
+                    .icmp(IntCC::UnsignedLessThanOrEqual, adj, span_v)
+            }
+            _ => unreachable!("caller must check is_simple_ascii_charset"),
+        };
+        result = builder.ins().bor(result, item_match);
+    }
+    result
+}
+
+/// Inline forward `CharClass` match for a simple ASCII charset.
+/// Creates two sub-blocks.
+#[allow(clippy::too_many_arguments)]
+fn inline_charclass_fwd(
+    builder: &mut FunctionBuilder<'_>,
+    inst_blocks: &[Block],
+    bt_resume: Block,
+    var_pos: Variable,
+    var_ctx: Variable,
+    ctx_v: Value,
+    pos_v: Value,
+    pc: usize,
+    cs: &CharSet,
+) {
+    // --- bounds check ---
+    let text_len = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_LEN);
+    let in_bounds = builder.ins().icmp(IntCC::UnsignedLessThan, pos_v, text_len);
+    let read_block = builder.create_block();
+    builder
+        .ins()
+        .brif(in_bounds, read_block, &[], bt_resume, &[]);
+
+    // --- read_block: load byte, ASCII check ---
+    builder.switch_to_block(read_block);
+    let ctx_v = builder.use_var(var_ctx);
+    let pos_v = builder.use_var(var_pos);
+    let text_ptr = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_PTR);
+    let byte_ptr = builder.ins().iadd(text_ptr, pos_v);
+    let byte = builder
+        .ins()
+        .uload8(types::I32, MemFlags::trusted(), byte_ptr, 0);
+
+    let check_block = builder.create_block();
+    let c80 = builder.ins().iconst(types::I32, 0x80);
+    let is_ascii = builder.ins().icmp(IntCC::UnsignedLessThan, byte, c80);
+    // Pass byte as block param so check_block can use it.
+    builder
+        .ins()
+        .brif(is_ascii, check_block, &[byte], bt_resume, &[]);
+
+    // --- check_block: range/eq checks ---
+    builder.append_block_param(check_block, types::I32);
+    builder.switch_to_block(check_block);
+    let byte_p = builder.block_params(check_block)[0];
+    let pos_v = builder.use_var(var_pos);
+    let ok = charset_ascii_check(builder, cs, byte_p);
+    let new_pos = builder.ins().iadd_imm(pos_v, 1);
+    builder.def_var(var_pos, new_pos);
+    builder
+        .ins()
+        .brif(ok, inst_blocks[pc + 1], &[], bt_resume, &[]);
+}
+
+/// Inline backward `CharClass` match for a simple ASCII charset.
+/// Creates two sub-blocks.
+#[allow(clippy::too_many_arguments)]
+fn inline_charclass_back(
+    builder: &mut FunctionBuilder<'_>,
+    inst_blocks: &[Block],
+    bt_resume: Block,
+    var_pos: Variable,
+    var_ctx: Variable,
+    _ctx_v: Value,
+    pos_v: Value,
+    pc: usize,
+    cs: &CharSet,
+) {
+    // --- pos > 0 check ---
+    let zero = builder.ins().iconst(types::I64, 0);
+    let not_at_start = builder.ins().icmp(IntCC::UnsignedGreaterThan, pos_v, zero);
+    let read_block = builder.create_block();
+    builder
+        .ins()
+        .brif(not_at_start, read_block, &[], bt_resume, &[]);
+
+    // --- read_block: load byte at pos-1, ASCII check ---
+    builder.switch_to_block(read_block);
+    let ctx_v = builder.use_var(var_ctx);
+    let pos_v = builder.use_var(var_pos);
+    let text_ptr = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_PTR);
+    let prev_idx = builder.ins().iadd_imm(pos_v, -1_i64);
+    let byte_ptr = builder.ins().iadd(text_ptr, prev_idx);
+    let byte = builder
+        .ins()
+        .uload8(types::I32, MemFlags::trusted(), byte_ptr, 0);
+
+    let check_block = builder.create_block();
+    let c80 = builder.ins().iconst(types::I32, 0x80);
+    let is_ascii = builder.ins().icmp(IntCC::UnsignedLessThan, byte, c80);
+    builder
+        .ins()
+        .brif(is_ascii, check_block, &[byte], bt_resume, &[]);
+
+    // --- check_block: range/eq checks ---
+    builder.append_block_param(check_block, types::I32);
+    builder.switch_to_block(check_block);
+    let byte_p = builder.block_params(check_block)[0];
+    let pos_v = builder.use_var(var_pos);
+    let ok = charset_ascii_check(builder, cs, byte_p);
+    let new_pos = builder.ins().iadd_imm(pos_v, -1_i64);
+    builder.def_var(var_pos, new_pos);
+    builder
+        .ins()
+        .brif(ok, inst_blocks[pc + 1], &[], bt_resume, &[]);
+}
+
 fn inline_save(
     builder: &mut FunctionBuilder<'_>,
     inst_blocks: &[Block],
