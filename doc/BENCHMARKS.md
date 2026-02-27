@@ -132,9 +132,9 @@ Classic exponential-backtracking pattern — the **headline result** for memoiza
 
 | n | Baseline | +RequiredChar | **+Memoization** | Speedup |
 |---|----------|---------------|------------------|---------|
-| 10 | ~30 µs | ~30 µs | **4.2 µs** | **7×** |
-| 15 | ~1.15 ms | ~1.15 ms | **9.6 µs** | **120×** |
-| 20 | ~45.6 ms | ~45.6 ms | **17.4 µs** | **2,600×** |
+| 10 | ~30 µs | ~30 µs | **4.4 µs** | **7×** |
+| 15 | ~1.15 ms | ~1.15 ms | **10.0 µs** | **115×** |
+| 20 | ~45.6 ms | ~45.6 ms | **17.8 µs** | **2,560×** |
 
 `RequiredChar` does not help (every `a?` matches `'a'`, so `'a'` is present).
 Memoization records each `(fork_pc, pos)` pair when both alternatives fail.
@@ -143,22 +143,32 @@ reducing the complexity from **O(2^n)** to **O(n²)** for this pattern class.
 
 ---
 
-### Other benchmarks (+Memoization timings)
+### Other benchmarks (current timings)
 
-The extra `Bt::MemoMark` push per Fork adds ~20–30% overhead on patterns with
-many Fork instructions and few backtrack paths (no catastrophic backtracking).
-
-| Benchmark | +RequiredChar | +Memoization | Change |
-|-----------|---------------|--------------|--------|
-| captures/two_groups | 480 ns | 625 ns | +30% |
-| captures/iter_all | 2.1 µs | 2.5 µs | +19% |
-| email/find_all | 2.8 µs | ~2.8 µs | ~same |
-| charclass/alpha_iter | 21.8 µs | ~21 µs | ~same |
-| case_insensitive/match | 846 ns | ~847 ns | ~same |
-| find_iter_scale/100 | 2.3 µs | 2.3 µs | ~same |
-| find_iter_scale/1000 | 22.9 µs | 22.9 µs | ~same |
+| Benchmark | Time | Notes |
+|-----------|------|-------|
+| captures/two_groups | 621 ns | |
+| captures/iter_all | 2.61 µs | |
+| email/find_all | 3.29 µs | |
+| charclass/alpha_iter | 31.2 µs | |
+| charclass/posix_digit_iter | 24.8 µs | |
+| case_insensitive/match | 14.1 µs | `FoldSeq` forces `Anywhere` start strategy (see note below) |
+| find_iter_scale/100 | 2.73 µs | |
+| find_iter_scale/500 | 13.4 µs | |
+| find_iter_scale/1000 | 26.7 µs | |
+| find_iter_scale/5000 | 133 µs | |
 
 `find_iter_scale` confirms linear scaling continues to hold.
+
+> **Note — `case_insensitive/match`**: Prior to the `FoldSeq` instruction (see
+> §4 below), the pattern `(?i)hello` was compiled to five individual
+> `Char(c, true)` instructions, giving a `FirstChars({'h','H'})` start strategy
+> and a ~1 µs match time.  With `FoldSeq(['h','e','l','l','o'])`,
+> `collect_first_chars` conservatively returns `None` for multi-char fold
+> sequences (because a single Unicode source char can fold to a string
+> *starting with* the target char, e.g. ẖ→h+\u{331}), forcing `Anywhere`
+> and ~14 µs.  Improving `StartStrategy` for multi-char `FoldSeq` is a
+> known optimisation opportunity.
 
 ---
 
@@ -222,6 +232,25 @@ capture state and therefore cannot be keyed on `(pc, pos)` alone.
 
 ---
 
+### 4. `FoldSeq` / `FoldSeqBack` — multi-codepoint Unicode case folding
+
+Case-insensitive patterns (e.g. `(?i)hello`) are compiled to `FoldSeq` /
+`FoldSeqBack` instructions instead of individual `Char(c, true)` /
+`CharBack(c, true)`.  This enables correct matching across multi-codepoint
+Unicode case folds such as `ß` ↔ `ss` and `ﬁ` ↔ `fi`.
+
+**`fold_advance`** (forward, used by `FoldSeq`): allocates one small `Vec<char>`
+per `exec()` call, accumulates the Unicode case folds of successive text chars,
+and returns as soon as the accumulated sequence equals the compiled fold
+sequence.
+
+**`fold_retreat`** (backward, used by `FoldSeqBack` in lookbehind): previously
+allocated two new `Vec<char>` allocations per iteration.  Fixed to extend the
+existing buffer then `rotate_right` in-place, reducing allocations to
+amortised O(1).
+
+---
+
 ## Known remaining bottlenecks
 
 | Pattern class | Behaviour | Fix |
@@ -231,3 +260,4 @@ capture state and therefore cannot be keyed on `(pc, pos)` alone.
 | Look-around in inner loops | ✅ sub-exec results cached (Alg. 6) | ✅ implemented |
 | Back-references, subexpression calls | Cannot use DFA/NFA simulation; memo disabled | Inherent in feature set |
 | Greedy match itself (`a+` on long text) | O(n) per start pos attempted | Inherent; mitigated by `LiteralPrefix`/`FirstChars` |
+| Case-insensitive multi-char patterns (`(?i)hello`) | `FoldSeq` forces `Anywhere` start strategy | `FoldFirstChar` start strategy (future work) |
