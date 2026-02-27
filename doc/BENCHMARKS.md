@@ -177,13 +177,13 @@ reducing the complexity from **O(2^n)** to **O(n²)** for this pattern class.
 Haystack: *A Study in Scarlet* by Arthur Conan Doyle (~260 KB plain text).
 Measures full `find_iter().count()` over the entire text.
 
-| Benchmark | Pattern | Interpreter | JIT Phase 4 | JIT Phase 5 | Speedup |
-|-----------|---------|-------------|-------------|-------------|---------|
-| `real_world/literal_count` | `Holmes` | 132.6 µs | 132.3 µs | 131.3 µs | 1.01× |
-| `real_world/capitalized_words` | `[A-Z][a-z]+` | 4.33 ms | **2.75 ms** | **2.67 ms** | **1.62×** ✅ |
-| `real_world/posix_digits` | `[[:digit:]]+` | 3.21 ms | **2.25 ms** | **2.23 ms** | **1.44×** ✅ |
-| `real_world/quoted_strings` | `"[^"]*"` | 7.38 ms | **6.78 ms** | **5.85 ms** | **1.26×** ✅ |
-| `real_world/title_name` | `Mrs?\. [A-Z][a-z]+` | 148.2 µs | 143.3 µs | 141.0 µs | 1.05× |
+| Benchmark | Pattern | Interpreter | JIT Phase 4 | JIT Phase 5 | JIT Phase 6 | Speedup |
+|-----------|---------|-------------|-------------|-------------|-------------|---------|
+| `real_world/literal_count` | `Holmes` | 132.6 µs | 132.3 µs | 131.3 µs | 138.5 µs | 0.96× |
+| `real_world/capitalized_words` | `[A-Z][a-z]+` | 4.33 ms | **2.75 ms** | **2.67 ms** | **2.25 ms** | **1.92×** ✅ |
+| `real_world/posix_digits` | `[[:digit:]]+` | 3.21 ms | **2.25 ms** | **2.23 ms** | **1.91 ms** | **1.68×** ✅ |
+| `real_world/quoted_strings` | `"[^"]*"` | 7.38 ms | **6.78 ms** | **5.85 ms** | **5.66 ms** | **1.30×** ✅ |
+| `real_world/title_name` | `Mrs?\. [A-Z][a-z]+` | 148.2 µs | 143.3 µs | 141.0 µs | 140.7 µs | 1.05× |
 
 **Notes:**
 - `literal_count` uses the `LiteralPrefix` start strategy (SIMD `str::find`), so both paths are dominated by the same scan; JIT overhead is negligible.
@@ -297,30 +297,31 @@ Phase 1: all instructions as `extern "C"` helper calls.
 Phase 2: `Char`, `AnyChar`, `Shorthand` (ASCII fast-path), `Save`, `Anchor` inlined as Cranelift IR.  
 Phase 3: additionally inline `CharClass`/`ClassBack` for simple ASCII charsets (all items ASCII `Char` or `Range`, no negation).  
 Phase 4: extend `CharClass`/`ClassBack` inline to POSIX always-ASCII classes and ASCII-safe `Shorthand` items; inline `ShorthandBack`.  
-Phase 5: capture-delta undo log — push `SaveUndo` before each slot write instead of snapshotting the full `slots` Vec on every `Fork`.
+Phase 5: capture-delta undo log — push `SaveUndo` before each slot write instead of snapshotting the full `slots` Vec on every `Fork`.  
+Phase 6: inline fork push and bt-pop fast path — write `MemoMark` + `Retry` directly in Cranelift IR; peek-and-pop top `Retry` inline; hoist `Vec<BtJit>` allocation across `exec_jit` calls; 24-byte `repr(C)` `BtJit` struct (stable layout, zero padding waste).
 
-| Benchmark | Interpreter | JIT Phase 1 | JIT Phase 2 | JIT Phase 3 | JIT Phase 4 | JIT Phase 5 |
-|-----------|-------------|-------------|-------------|-------------|-------------|-------------|
-| literal/no\_match\_1k | 49.8 ns | 49.7 ns (1.00×) | 49.5 ns (1.01×) | 49.8 ns (1.00×) | 50.3 ns (0.99×) | 50.0 ns (1.00×) |
-| literal/match\_mid\_1k | 145 ns | 180 ns (0.81×) | 139 ns (**1.04×**) | 138 ns (**1.05×**) | 140 ns (**1.04×**) | 138 ns (**1.05×**) |
-| anchored/no\_match\_1k | 16.1 ns | 47.2 ns (0.34×) | 14.0 ns (**1.15×**) | 13.6 ns (**1.18×** ✅) | 13.7 ns (**1.17×** ✅) | 13.4 ns (**1.20×** ✅) |
-| alternation/4\_alts\_match | 18.9 µs | 18.9 µs (1.00×) | 18.9 µs (1.00×) | 18.8 µs (1.00×) | 18.9 µs (1.00×) | 18.8 µs (1.00×) |
-| alternation/4\_alts\_no\_match | 46.8 µs | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.6 µs (1.00×) |
-| quantifier/greedy\_no\_match\_500 | 25.8 ns | 25.8 ns (1.00×) | 27.3 ns (0.95×) | 25.8 ns (1.00×) | 25.7 ns (1.00×) | 25.8 ns (1.00×) |
-| quantifier/greedy\_match\_500 | 9.17 µs | 6.11 µs (**1.50×**) | 5.61 µs (**1.63×**) | 5.43 µs (**1.69×** ✅) | 5.45 µs (**1.68×** ✅) | **3.00 µs (3.06×** ✅) |
-| captures/two\_groups | 612 ns | 603 ns (1.01×) | 627 ns (0.98×) | 620 ns (0.99×) | 616 ns (0.99×) | 617 ns (0.99×) |
-| captures/iter\_all | 2.57 µs | 2.54 µs (1.01×) | 2.62 µs (0.98×) | 2.58 µs (1.00×) | 2.59 µs (0.99×) | 2.57 µs (1.00×) |
-| email/find\_all | 3.25 µs | 4.19 µs (0.78×) | 3.53 µs (0.92×) | 3.46 µs (0.94×) | 3.50 µs (0.93×) | 3.28 µs (0.99×) |
-| charclass/alpha\_iter | 31.2 µs | 38.4 µs (0.80×) | 39.7 µs (0.78×) | **24.9 µs (1.25×** ✅) | **25.0 µs (1.25×** ✅) | **21.0 µs (1.49×** ✅) |
-| charclass/posix\_digit\_iter | 24.4 µs | 37.3 µs (0.65×) | 37.9 µs (0.64×) | 37.7 µs (0.65×) | **21.4 µs (1.14×** ✅) | **19.1 µs (1.28×** ✅) |
-| case\_insensitive/match | 14.0 µs | 14.2 µs (0.98×) | 14.0 µs (1.00×) | 13.9 µs (1.01×) | 14.1 µs (0.99×) | 14.0 µs (1.00×) |
-| find\_iter\_scale/100 | 2.72 µs | 5.22 µs (0.52×) | 3.37 µs (0.81×) | 3.31 µs (0.82×) | 3.29 µs (0.83×) | 3.14 µs (0.87×) |
-| find\_iter\_scale/500 | 13.3 µs | 25.5 µs (0.52×) | 16.5 µs (0.81×) | 16.2 µs (0.82×) | 16.2 µs (0.82×) | 15.3 µs (0.87×) |
-| find\_iter\_scale/1000 | 26.7 µs | 51.3 µs (0.52×) | 33.1 µs (0.81×) | 32.6 µs (0.82×) | 32.3 µs (0.83×) | 30.6 µs (0.87×) |
-| find\_iter\_scale/5000 | 133 µs | 255 µs (0.52×) | 165 µs (0.81×) | 161 µs (0.83×) | 162 µs (0.82×) | 153 µs (0.87×) |
-| pathological/10 | 4.39 µs | 6.38 µs (0.69×) | 5.30 µs (0.83×) | 5.30 µs (0.83×) | 5.29 µs (0.83×) | 5.09 µs (0.86×) |
-| pathological/15 | 9.94 µs | 14.2 µs (0.70×) | 11.9 µs (0.84×) | 11.9 µs (0.84×) | 11.95 µs (0.83×) | 11.54 µs (0.86×) |
-| pathological/20 | 17.7 µs | 25.0 µs (0.71×) | 21.1 µs (0.84×) | 21.0 µs (0.84×) | 21.2 µs (0.84×) | 20.5 µs (0.86×) |
+| Benchmark | Interpreter | JIT Phase 1 | JIT Phase 2 | JIT Phase 3 | JIT Phase 4 | JIT Phase 5 | JIT Phase 6 |
+|-----------|-------------|-------------|-------------|-------------|-------------|-------------|-------------|
+| literal/no\_match\_1k | 49.8 ns | 49.7 ns (1.00×) | 49.5 ns (1.01×) | 49.8 ns (1.00×) | 50.3 ns (0.99×) | 50.0 ns (1.00×) | 50.0 ns (1.00×) |
+| literal/match\_mid\_1k | 145 ns | 180 ns (0.81×) | 139 ns (**1.04×**) | 138 ns (**1.05×**) | 140 ns (**1.04×**) | 138 ns (**1.05×**) | 138 ns (**1.05×**) |
+| anchored/no\_match\_1k | 16.1 ns | 47.2 ns (0.34×) | 14.0 ns (**1.15×**) | 13.6 ns (**1.18×** ✅) | 13.7 ns (**1.17×** ✅) | 13.4 ns (**1.20×** ✅) | 13.0 ns (**1.24×** ✅) |
+| alternation/4\_alts\_match | 18.9 µs | 18.9 µs (1.00×) | 18.9 µs (1.00×) | 18.8 µs (1.00×) | 18.9 µs (1.00×) | 18.8 µs (1.00×) | 18.7 µs (1.01×) |
+| alternation/4\_alts\_no\_match | 46.8 µs | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.6 µs (1.00×) | 46.7 µs (1.00×) |
+| quantifier/greedy\_no\_match\_500 | 25.8 ns | 25.8 ns (1.00×) | 27.3 ns (0.95×) | 25.8 ns (1.00×) | 25.7 ns (1.00×) | 25.8 ns (1.00×) | 25.8 ns (1.00×) |
+| quantifier/greedy\_match\_500 | 9.17 µs | 6.11 µs (**1.50×**) | 5.61 µs (**1.63×**) | 5.43 µs (**1.69×** ✅) | 5.45 µs (**1.68×** ✅) | **3.00 µs (3.06×** ✅) | **1.83 µs (5.01×** ✅) |
+| captures/two\_groups | 612 ns | 603 ns (1.01×) | 627 ns (0.98×) | 620 ns (0.99×) | 616 ns (0.99×) | 617 ns (0.99×) | 597 ns (**1.03×**) |
+| captures/iter\_all | 2.57 µs | 2.54 µs (1.01×) | 2.62 µs (0.98×) | 2.58 µs (1.00×) | 2.59 µs (0.99×) | 2.57 µs (1.00×) | 2.54 µs (1.01×) |
+| email/find\_all | 3.25 µs | 4.19 µs (0.78×) | 3.53 µs (0.92×) | 3.46 µs (0.94×) | 3.50 µs (0.93×) | 3.28 µs (0.99×) | **2.71 µs (1.20×** ✅) |
+| charclass/alpha\_iter | 31.2 µs | 38.4 µs (0.80×) | 39.7 µs (0.78×) | **24.9 µs (1.25×** ✅) | **25.0 µs (1.25×** ✅) | **21.0 µs (1.49×** ✅) | **17.4 µs (1.79×** ✅) |
+| charclass/posix\_digit\_iter | 24.4 µs | 37.3 µs (0.65×) | 37.9 µs (0.64×) | 37.7 µs (0.65×) | **21.4 µs (1.14×** ✅) | **19.1 µs (1.28×** ✅) | **13.6 µs (1.79×** ✅) |
+| case\_insensitive/match | 14.0 µs | 14.2 µs (0.98×) | 14.0 µs (1.00×) | 13.9 µs (1.01×) | 14.1 µs (0.99×) | 14.0 µs (1.00×) | 14.0 µs (1.00×) |
+| find\_iter\_scale/100 | 2.72 µs | 5.22 µs (0.52×) | 3.37 µs (0.81×) | 3.31 µs (0.82×) | 3.29 µs (0.83×) | 3.14 µs (0.87×) | **2.48 µs (1.10×** ✅) |
+| find\_iter\_scale/500 | 13.3 µs | 25.5 µs (0.52×) | 16.5 µs (0.81×) | 16.2 µs (0.82×) | 16.2 µs (0.82×) | 15.3 µs (0.87×) | **12.1 µs (1.10×** ✅) |
+| find\_iter\_scale/1000 | 26.7 µs | 51.3 µs (0.52×) | 33.1 µs (0.81×) | 32.6 µs (0.82×) | 32.3 µs (0.83×) | 30.6 µs (0.87×) | **24.2 µs (1.10×** ✅) |
+| find\_iter\_scale/5000 | 133 µs | 255 µs (0.52×) | 165 µs (0.81×) | 161 µs (0.83×) | 162 µs (0.82×) | 153 µs (0.87×) | **121 µs (1.10×** ✅) |
+| pathological/10 | 4.39 µs | 6.38 µs (0.69×) | 5.30 µs (0.83×) | 5.30 µs (0.83×) | 5.29 µs (0.83×) | 5.09 µs (0.86×) | 4.75 µs (0.92×) |
+| pathological/15 | 9.94 µs | 14.2 µs (0.70×) | 11.9 µs (0.84×) | 11.9 µs (0.84×) | 11.95 µs (0.83×) | 11.54 µs (0.86×) | 10.96 µs (0.91×) |
+| pathological/20 | 17.7 µs | 25.0 µs (0.71×) | 21.1 µs (0.84×) | 21.0 µs (0.84×) | 21.2 µs (0.84×) | 20.5 µs (0.86×) | 19.5 µs (0.91×) |
 
 ### Analysis
 
@@ -434,13 +435,66 @@ the undo log at all inside the loop.
 - **`pathological`: 0.84× → 0.86×** — slight improvement from smaller `Retry`.
 - `captures` and `case_insensitive` benchmarks are within noise.
 
+#### Phase 6 (inline fork push and bt-pop fast path)
+
+Phase 6 is a set of mutually-reinforcing changes that together eliminate almost
+all `extern "C"` overhead from the hot fork/backtrack loop:
+
+1. **24-byte `repr(C)` `BtJit` struct** — replaces the `#[repr(C, u32)]` enum
+   (32 bytes due to C-ABI discriminant + 4-byte padding gap) with a `repr(C)`
+   struct `{ tag: u32, a: u32, b: u64, c: u64 }` (4+4+8+8 = 24 bytes, same
+   size as Rust's niche-optimised non-repr layout but with stable field offsets).
+   The 33% reduction in stack-entry size cuts cache pressure: at peak the
+   `find_iter_scale/1000` bt stack is ~48 KB vs the regressed ~64 KB.
+
+2. **Inline bt-pop fast path** — at the start of `bt_resume_block`, the JIT
+   peeks at the top entry's tag without a function call.  If `tag == 0` (Retry),
+   it decrements `bt_len`, reads `a/b/c` directly, updates `ctx.keep_pos` and
+   `ctx.bt_retry_count`, then jumps to the dispatch table.  The `extern "C"`
+   `jit_bt_pop` call is only issued when the top entry is not a Retry (i.e.,
+   there is a `SaveUndo`, `AtomicBarrier`, or `MemoMark` to process first).
+
+3. **Inline fork push** — `Fork` and `ForkNext` now emit Cranelift IR that
+   writes the `MemoMark` and `Retry` entries directly to the raw bt buffer,
+   bypassing `jit_fork` / `jit_fork_next` entirely when two conditions hold:
+   (a) `bt_len + N ≤ bt_cap` (capacity check — no realloc needed), and
+   (b) `memo_has_failures == 0` (no recorded fork failures — the memo fast-path
+   short-circuit check is not needed).
+   When either condition fails the slow path calls the `extern "C"` helper.
+
+4. **Hoisted bt allocation** — `exec_jit` now transfers ownership of the
+   `Vec<BtJit>` allocation to `JitExecCtx` via raw-pointer fields
+   (`bt_data_ptr`, `bt_len`, `bt_cap`) and reclaims it after each call.  The
+   allocation is pre-sized once and reused across all `exec_jit` calls within a
+   `find()` invocation (typically hundreds of calls for `find_iter`).
+
+5. **`bt_retry_count` guard** — `jit_push_save_undo` returns immediately when
+   `ctx.bt_retry_count == 0` (no active retry points), skipping the push
+   entirely for every `Save` instruction that fires before any `Fork`.
+
+- **`quantifier/greedy_match_500`: 3.06× → 5.01× faster** ✅ — the tight
+  `Fork → Char → Jump` loop with no captures now runs entirely in inlined
+  Cranelift IR; every fork avoids two extern C calls.
+- **`charclass/alpha_iter`: 1.49× → 1.79× faster** ✅ — same: inline charclass
+  IR + inline fork together make the tight `[a-zA-Z]+` loop nearly overhead-free.
+- **`charclass/posix_digit_iter`: 1.28× → 1.79× faster** ✅ — same gains.
+- **`find_iter_scale`: 0.87× → 1.10× faster** ✅ — the JIT is now faster than
+  the interpreter for `\d+` scanning.  The `bt_retry_count` guard eliminates the
+  `jit_push_save_undo` call for every start-of-match `Save(0)` before the first
+  `Fork`, and the inline fork eliminates `jit_fork` / `jit_bt_pop` from the
+  tight inner loop.
+- **`email/find_all`: 0.99× → 1.20× faster** ✅ — similar pattern to find_iter.
+- **`pathological`: 0.86× → 0.91×** — still below interpreter speed.  For the
+  `(a?)^n a^n` pattern, `memo_has_failures` becomes 1 after the first few failed
+  fork states, causing every subsequent fork to fall back to the slow `jit_fork`
+  path that checks the failure cache.
+
 ### Known bottlenecks and future work
 
 | Root cause | Current | Future plan |
 |------------|---------|-------------|
-| `find_iter_scale` residual overhead | 0.87× | Eliminate `exec_jit` setup cost; pre-allocate `Vec<BtJit>` across attempts |
+| `pathological` overhead | 0.91× | Inline memoisation check in JIT IR; currently falls back to extern C once any failure is recorded |
 | Non-ASCII shorthand fallback | helper call per non-ASCII char | Inline two/three-byte UTF-8 decode for common cases |
 | Unicode / negated `CharClass` | helper call ~15 cy | Inline POSIX Alpha/Word for `ascii_range=true` patterns |
-| `pathological` overhead | 0.86× | The `jit_push_save_undo` call on each match-boundary `Save` adds ~1 call/fork |
 
 See `doc/JIT.md` for the full design.

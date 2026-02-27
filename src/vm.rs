@@ -1309,6 +1309,7 @@ impl CompiledRegex {
         text: &str,
         pos: usize,
         memo: &mut MemoState,
+        scratch: &mut ExecScratch,
     ) -> Option<(usize, usize, Vec<Option<usize>>)> {
         #[cfg(feature = "jit")]
         if let Some(ref jit) = self.jit {
@@ -1321,8 +1322,10 @@ impl CompiledRegex {
                 self.num_groups,
                 self.use_memo,
                 memo,
+                scratch,
             );
         }
+        let _ = scratch; // unused in interpreter path
 
         let ctx = Ctx {
             prog: &self.prog,
@@ -1359,10 +1362,15 @@ impl CompiledRegex {
         // the outer execution, and failures found at one starting position can
         // be reused at later starting positions for the same (pc, pos) pair.
         let mut memo = MemoState::new();
+        // Scratch buffers reused across all try_at calls (JIT path only).
+        #[cfg(feature = "jit")]
+        let mut scratch = ExecScratch::new();
+        #[cfg(not(feature = "jit"))]
+        let mut scratch = ExecScratch;
 
         match &self.start_strategy {
             // Only one position to try.
-            StartStrategy::Anchored => self.try_at(text, start_pos, &mut memo),
+            StartStrategy::Anchored => self.try_at(text, start_pos, &mut memo, &mut scratch),
 
             // Use str::find(prefix_str) to jump directly to each candidate.
             StartStrategy::LiteralPrefix(prefix) => {
@@ -1370,7 +1378,7 @@ impl CompiledRegex {
                 loop {
                     let offset = text[pos..].find(prefix.as_str())?;
                     let candidate = pos + offset;
-                    if let Some(result) = self.try_at(text, candidate, &mut memo) {
+                    if let Some(result) = self.try_at(text, candidate, &mut memo, &mut scratch) {
                         return Some(result);
                     }
                     // Advance one char past the failed candidate
@@ -1395,7 +1403,7 @@ impl CompiledRegex {
                     let offset =
                         text[pos..].find(|c| chars.iter().any(|&fc| chars_eq_ci(c, fc)))?;
                     let candidate = pos + offset;
-                    if let Some(result) = self.try_at(text, candidate, &mut memo) {
+                    if let Some(result) = self.try_at(text, candidate, &mut memo, &mut scratch) {
                         return Some(result);
                     }
                     pos = candidate
@@ -1414,7 +1422,7 @@ impl CompiledRegex {
             StartStrategy::Anywhere => {
                 let mut pos = start_pos;
                 loop {
-                    if let Some(result) = self.try_at(text, pos, &mut memo) {
+                    if let Some(result) = self.try_at(text, pos, &mut memo, &mut scratch) {
                         return Some(result);
                     }
                     if pos >= text.len() {
@@ -1433,32 +1441,79 @@ impl CompiledRegex {
 
 // ---------------------------------------------------------------------------
 // JIT support types and exec-lookaround wrapper (cfg(feature = "jit") only)
+/// Scratch buffers reused across all `exec_jit` calls within a single `find()`.
+/// Allocated lazily on first use and reused on subsequent calls, eliminating
+/// per-attempt heap allocations for patterns that scan many positions.
+#[cfg(feature = "jit")]
+pub(crate) struct ExecScratch {
+    pub bt: Vec<BtJit>,
+    pub slots: Vec<u64>,
+}
+
+#[cfg(feature = "jit")]
+impl ExecScratch {
+    pub fn new() -> Self {
+        ExecScratch {
+            bt: Vec::new(),
+            slots: Vec::new(), // allocated lazily on first exec_jit call
+        }
+    }
+}
+
+/// Zero-sized stub used when the `jit` feature is disabled.
+#[cfg(not(feature = "jit"))]
+pub(crate) struct ExecScratch;
+
 // ---------------------------------------------------------------------------
 
-/// JIT backtrack entry.  Uses a `u32` block id (== instruction PC) instead of
-/// `usize` for compact storage and `br_table` dispatch.
+/// JIT backtrack stack entry — flat `repr(C)` struct so both Rust helpers and
+/// inline Cranelift IR can access fields at stable, known byte offsets.
+///
+/// Layout (24 bytes):
+/// ```text
+/// offset 0  : tag  (u32) — 0=Retry, 1=SaveUndo, 2=AtomicBarrier, 3=MemoMark
+/// offset 4  : a    (u32) — block_id / slot / fork_block_id
+/// offset 8  : b    (u64) — pos / old_value / fork_pos
+/// offset 16 : c    (u64) — keep_pos (Retry); unused otherwise
+/// ```
 #[cfg(feature = "jit")]
-pub(crate) enum BtJit {
-    /// Retry point pushed by Fork/ForkNext.  Slots are restored by `SaveUndo`
-    /// entries that were pushed above this point (capture-delta undo log).
-    Retry {
-        block_id: u32,
-        pos: u64,
-        /// `u64::MAX` encodes `None`.
-        keep_pos: u64,
-    },
-    /// Undo entry pushed by each `Save` instruction before writing a slot.
-    /// On backtrack, the slot is restored to `old_value`.
-    SaveUndo {
-        slot: u32,
-        old_value: u64,
-    },
-    AtomicBarrier,
-    MemoMark {
-        fork_block_id: u32,
-        fork_pos: u64,
-    },
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub(crate) struct BtJit {
+    pub tag: u32,
+    pub a: u32,
+    pub b: u64,
+    pub c: u64,
 }
+
+#[cfg(feature = "jit")]
+impl BtJit {
+    pub const TAG_RETRY: u32 = 0;
+    pub const TAG_SAVE_UNDO: u32 = 1;
+    pub const TAG_ATOMIC_BARRIER: u32 = 2;
+    pub const TAG_MEMO_MARK: u32 = 3;
+
+    #[inline(always)]
+    pub fn retry(block_id: u32, pos: u64, keep_pos: u64) -> Self {
+        Self { tag: 0, a: block_id, b: pos, c: keep_pos }
+    }
+    #[inline(always)]
+    pub fn save_undo(slot: u32, old_value: u64) -> Self {
+        Self { tag: 1, a: slot, b: old_value, c: 0 }
+    }
+    #[inline(always)]
+    pub fn atomic_barrier() -> Self {
+        Self { tag: 2, a: 0, b: 0, c: 0 }
+    }
+    #[inline(always)]
+    pub fn memo_mark(fork_block_id: u32, fork_pos: u64) -> Self {
+        Self { tag: 3, a: fork_block_id, b: fork_pos, c: 0 }
+    }
+}
+
+// Verify layout used by inline JIT IR
+#[cfg(feature = "jit")]
+const _: () = assert!(std::mem::size_of::<BtJit>() == 24);
 
 /// Context block passed by pointer to the JIT-compiled exec function and to
 /// all `extern "C"` helpers.  **Must be `#[repr(C)]`** because the
@@ -1481,10 +1536,58 @@ pub(crate) struct JitExecCtx {
     pub slots_len: u64,
     pub keep_pos: u64, // u64::MAX = None
     // ---- backtrack stack & memo (heap-allocated Rust types) -----------
-    pub bt_ptr: *mut (),   // *mut Vec<BtJit>
+    /// Raw data pointer for the JIT bt stack Vec<BtJit>.
+    /// Updated by helpers that may reallocate the Vec.
+    pub bt_data_ptr: *mut BtJit,
+    /// Current length (number of elements) of the bt stack.
+    pub bt_len: u64,
+    /// Current capacity (number of elements) of the bt stack.
+    pub bt_cap: u64,
     pub memo_ptr: *mut (), // *mut MemoState
+    /// 1 when `fork_failures` is non-empty; inline JIT code fast-paths on this.
+    pub memo_has_failures: u64,
     // ---- atomic group depth ------------------------------------------
     pub atomic_depth: u64,
+    /// Number of `BtJit::Retry` entries currently on the bt stack.
+    /// `SaveUndo` pushes are skipped when this is zero (no retry to backtrack to).
+    pub bt_retry_count: u64,
+}
+
+/// Push one entry onto the raw JIT backtrack stack.  May reallocate.
+///
+/// # Safety
+/// `ctx.bt_data_ptr/bt_len/bt_cap` must be consistent and valid.
+#[cfg(feature = "jit")]
+pub(crate) unsafe fn bt_push(ctx: &mut JitExecCtx, entry: BtJit) {
+    let len = ctx.bt_len as usize;
+    if len < ctx.bt_cap as usize {
+        unsafe { ctx.bt_data_ptr.add(len).write(entry) };
+        ctx.bt_len += 1;
+    } else {
+        // Slow path: grow by reconstructing Vec, pushing, then extracting raw parts.
+        let mut v =
+            unsafe { Vec::from_raw_parts(ctx.bt_data_ptr, len, ctx.bt_cap as usize) };
+        v.push(entry);
+        ctx.bt_data_ptr = v.as_mut_ptr();
+        ctx.bt_cap = v.capacity() as u64;
+        ctx.bt_len = v.len() as u64;
+        std::mem::forget(v);
+    }
+}
+
+/// Pop one entry from the raw JIT backtrack stack.  Returns `None` if empty.
+///
+/// # Safety
+/// Same as `bt_push`.
+#[cfg(feature = "jit")]
+pub(crate) unsafe fn bt_pop(ctx: &mut JitExecCtx) -> Option<BtJit> {
+    if ctx.bt_len == 0 {
+        return None;
+    }
+    ctx.bt_len -= 1;
+    // SAFETY: entry at ctx.bt_len was previously written via bt_push.
+    // BtJit contains no heap-owning fields, so no destructor is needed.
+    Some(unsafe { ctx.bt_data_ptr.add(ctx.bt_len as usize).read() })
 }
 
 /// Run a lookaround body using the **interpreter** from a JIT execution
@@ -1600,9 +1703,23 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
     };
 
     // On success, propagate state changes back into the JIT context.
+    // Push SaveUndo entries for any slot the lookaround body modified so that
+    // backtracking past this point correctly reverts the slot changes.
     if matched {
         let slots_out =
             unsafe { std::slice::from_raw_parts_mut(jctx.slots_ptr, jctx.slots_len as usize) };
+        if jctx.bt_retry_count > 0 {
+            for (i, &s) in state.slots.iter().enumerate() {
+                if i < slots_out.len() {
+                    let new_val = s.map(|v| v as u64).unwrap_or(u64::MAX);
+                    if new_val != slots_out[i] {
+                    unsafe {
+                            bt_push(jctx, BtJit::save_undo(i as u32, slots_out[i]));
+                        }
+                    }
+                }
+            }
+        }
         for (i, &s) in state.slots.iter().enumerate() {
             if i < slots_out.len() {
                 slots_out[i] = s.map(|v| v as u64).unwrap_or(u64::MAX);

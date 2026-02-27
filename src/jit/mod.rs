@@ -10,7 +10,7 @@ pub(crate) mod helpers;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_jit::{JITBuilder, JITModule};
 
-use crate::vm::{BtJit, CharSet, Inst, JitExecCtx, MemoState};
+use crate::vm::{CharSet, ExecScratch, Inst, JitExecCtx, MemoState};
 
 // ---------------------------------------------------------------------------
 // JitModule
@@ -131,10 +131,23 @@ pub(crate) fn exec_jit(
     num_groups: usize,
     use_memo: bool,
     memo: &mut MemoState,
+    scratch: &mut ExecScratch,
 ) -> Option<(usize, usize, Vec<Option<usize>>)> {
-    // Initialise mutable per-exec state on the stack.
-    let mut slots: Vec<u64> = vec![u64::MAX; num_groups * 2];
-    let mut bt_stack: Vec<BtJit> = Vec::new();
+    // Reuse scratch buffers — clear bt and reset slots instead of allocating fresh.
+    // On the first call slots is empty (len=0, no heap alloc yet); resize allocates
+    // exactly once.  On subsequent calls it avoids the allocation entirely.
+    scratch.bt.clear();
+    let slot_count = num_groups * 2;
+    scratch.slots.clear();
+    scratch.slots.resize(slot_count, u64::MAX);
+
+    // "Lend" the bt allocation to ctx so JIT helpers can work with raw pointers.
+    // Take ownership of the internal allocation via mem::forget to prevent double-free
+    // if helpers reallocate. After exec, reconstruct scratch.bt from ctx's raw parts.
+    let bt_raw_data = scratch.bt.as_mut_ptr();
+    let bt_raw_cap = scratch.bt.capacity();
+    let old_bt = std::mem::take(&mut scratch.bt);
+    std::mem::forget(old_bt);
 
     let mut ctx = JitExecCtx {
         text_ptr: text.as_ptr(),
@@ -146,15 +159,26 @@ pub(crate) fn exec_jit(
         prog_ptr: prog.as_ptr() as *const (),
         prog_len: prog.len() as u64,
         num_groups: num_groups as u64,
-        slots_ptr: slots.as_mut_ptr(),
-        slots_len: slots.len() as u64,
+        slots_ptr: scratch.slots.as_mut_ptr(),
+        slots_len: slot_count as u64,
         keep_pos: u64::MAX,
-        bt_ptr: &mut bt_stack as *mut Vec<BtJit> as *mut (),
+        bt_data_ptr: bt_raw_data,
+        bt_len: 0,
+        bt_cap: bt_raw_cap as u64,
         memo_ptr: memo as *mut MemoState as *mut (),
+        memo_has_failures: if memo.fork_failures.is_empty() { 0 } else { 1 },
         atomic_depth: 0,
+        bt_retry_count: 0,
     };
 
     let result = unsafe { (jit.func_ptr)(&mut ctx as *mut JitExecCtx as i64, start_pos as i64) };
+
+    // Reconstruct scratch.bt from ctx's raw parts (may have changed due to realloc).
+    // SAFETY: ctx.bt_data_ptr/bt_len/bt_cap are maintained correctly by all helpers.
+    scratch.bt = unsafe {
+        Vec::from_raw_parts(ctx.bt_data_ptr, ctx.bt_len as usize, ctx.bt_cap as usize)
+    };
+    scratch.bt.clear(); // prepare for next use
 
     if result < 0 {
         return None;
@@ -168,7 +192,8 @@ pub(crate) fn exec_jit(
     };
 
     // Convert slots from u64 (u64::MAX = None) to Option<usize>.
-    let opt_slots: Vec<Option<usize>> = slots
+    let opt_slots: Vec<Option<usize>> = scratch
+        .slots
         .iter()
         .map(|&v| {
             if v == u64::MAX {

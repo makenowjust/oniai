@@ -60,6 +60,21 @@ const VAR_CTX: u32 = 1;
 const CTX_TEXT_PTR: i32 = 0;
 const CTX_TEXT_LEN: i32 = 8;
 const CTX_SLOTS_PTR: i32 = 72;
+const CTX_KEEP_POS: i32 = 88;
+const CTX_BT_DATA_PTR: i32 = 96;
+const CTX_BT_LEN: i32 = 104;
+const CTX_BT_CAP: i32 = 112;
+const CTX_MEMO_HAS_FAILURES: i32 = 128;
+const CTX_BT_RETRY_COUNT: i32 = 144;
+
+// BtJit layout constants (repr(C) struct, size=24)
+// offset 0: tag (u32), offset 4: a (u32), offset 8: b (u64), offset 16: c (u64)
+const BTJIT_SIZE: i64 = 24;
+const BTJIT_TAG_RETRY: i64 = 0;
+const BTJIT_TAG_MEMO_MARK: i64 = 3;
+const BTJIT_OFF_A: i32 = 4;   // block_id / slot / fork_block_id
+const BTJIT_OFF_B: i32 = 8;   // pos / old_value / fork_pos
+const BTJIT_OFF_C: i32 = 16;  // keep_pos (Retry only)
 
 // Compile-time layout verification (will fail to compile if offsets are wrong)
 const _: () = {
@@ -67,6 +82,16 @@ const _: () = {
     assert!(std::mem::offset_of!(JitExecCtx, text_ptr) == CTX_TEXT_PTR as usize);
     assert!(std::mem::offset_of!(JitExecCtx, text_len) == CTX_TEXT_LEN as usize);
     assert!(std::mem::offset_of!(JitExecCtx, slots_ptr) == CTX_SLOTS_PTR as usize);
+    assert!(std::mem::offset_of!(JitExecCtx, keep_pos) == CTX_KEEP_POS as usize);
+    assert!(std::mem::offset_of!(JitExecCtx, bt_data_ptr) == CTX_BT_DATA_PTR as usize);
+    assert!(std::mem::offset_of!(JitExecCtx, bt_len) == CTX_BT_LEN as usize);
+    assert!(std::mem::offset_of!(JitExecCtx, bt_cap) == CTX_BT_CAP as usize);
+    assert!(
+        std::mem::offset_of!(JitExecCtx, memo_has_failures) == CTX_MEMO_HAS_FAILURES as usize
+    );
+    assert!(
+        std::mem::offset_of!(JitExecCtx, bt_retry_count) == CTX_BT_RETRY_COUNT as usize
+    );
 };
 
 // ---------------------------------------------------------------------------
@@ -131,7 +156,7 @@ fn emit_function(
     module: &mut cranelift_jit::JITModule,
     prog: &[Inst],
     charsets: &[CharSet],
-    _use_memo: bool,
+    use_memo: bool,
 ) -> Result<(), String> {
     let n = prog.len();
 
@@ -457,24 +482,38 @@ fn emit_function(
             Inst::Fork(alt) => {
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
-                let fork_pc = builder.ins().iconst(types::I32, pc as i64);
-                let alt_v = builder.ins().iconst(types::I32, *alt as i64);
-                let call = builder.ins().call(h_fork, &[ctx_v, fork_pc, alt_v, pos_v]);
-                let ok = builder.inst_results(call)[0];
-                emit_cond!(ok, pc + 1);
+                inline_fork(
+                    builder,
+                    &inst_blocks,
+                    bt_resume_block,
+                    var_ctx,
+                    var_pos,
+                    ctx_v,
+                    pos_v,
+                    pc,
+                    *alt,
+                    false,
+                    use_memo,
+                    h_fork,
+                );
             }
             Inst::ForkNext(alt) => {
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
-                let fork_pc = builder.ins().iconst(types::I32, pc as i64);
-                let main_v = builder.ins().iconst(types::I32, (pc + 1) as i64);
-                let call = builder
-                    .ins()
-                    .call(h_fork_next, &[ctx_v, fork_pc, main_v, pos_v]);
-                let ok = builder.inst_results(call)[0];
-                builder
-                    .ins()
-                    .brif(ok, inst_blocks[*alt], &[], bt_resume_block, &[]);
+                inline_fork(
+                    builder,
+                    &inst_blocks,
+                    bt_resume_block,
+                    var_ctx,
+                    var_pos,
+                    ctx_v,
+                    pos_v,
+                    pc,
+                    *alt,
+                    true,
+                    use_memo,
+                    h_fork_next,
+                );
             }
 
             // ----------------------------------------------------------------
@@ -568,16 +607,109 @@ fn emit_function(
     // ---- bt_resume_block ----
     builder.switch_to_block(bt_resume_block);
     {
+        // Fast path: if top of stack is Retry, pop it inline (no function call).
+        // Slow path (MemoMark/SaveUndo/AtomicBarrier on top): fall back to h_bt_pop.
         let ctx_v = builder.use_var(var_ctx);
-        let addr_block_id = builder.ins().stack_addr(types::I64, slot_block_id, 0);
-        let addr_pos_out = builder.ins().stack_addr(types::I64, slot_pos_out, 0);
-        let call = builder
-            .ins()
-            .call(h_bt_pop, &[ctx_v, addr_block_id, addr_pos_out]);
-        let ok = builder.inst_results(call)[0];
+        let bt_len = builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_LEN);
+
+        let check_top_block = builder.create_block();
+        let fast_retry_block = builder.create_block();
+        let slow_bt_block = builder.create_block();
+
+        // If stack is empty, fail immediately.
         builder
             .ins()
-            .brif(ok, bt_dispatch_block, &[], return_fail_block, &[]);
+            .brif(bt_len, check_top_block, &[], return_fail_block, &[]);
+
+        // check_top_block: peek at top entry's tag
+        builder.switch_to_block(check_top_block);
+        {
+            let ctx_v = builder.use_var(var_ctx);
+            let bt_len =
+                builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_LEN);
+            let bt_data =
+                builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_DATA_PTR);
+            let new_len = builder.ins().iadd_imm(bt_len, -1);
+            let entry_off = builder.ins().imul_imm(new_len, BTJIT_SIZE);
+            let top_ptr = builder.ins().iadd(bt_data, entry_off);
+            let tag = builder
+                .ins()
+                .load(types::I32, MemFlags::trusted(), top_ptr, 0);
+            let is_retry = builder.ins().icmp_imm(IntCC::Equal, tag, BTJIT_TAG_RETRY);
+            builder
+                .ins()
+                .brif(is_retry, fast_retry_block, &[], slow_bt_block, &[]);
+        }
+
+        // fast_retry_block: top is Retry — pop inline
+        builder.switch_to_block(fast_retry_block);
+        {
+            let ctx_v = builder.use_var(var_ctx);
+            let bt_len =
+                builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_LEN);
+            let bt_data =
+                builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_DATA_PTR);
+            let new_len = builder.ins().iadd_imm(bt_len, -1);
+            let entry_off = builder.ins().imul_imm(new_len, BTJIT_SIZE);
+            let top_ptr = builder.ins().iadd(bt_data, entry_off);
+
+            let block_id = builder.ins().load(
+                types::I32,
+                MemFlags::trusted(),
+                top_ptr,
+                BTJIT_OFF_A,
+            );
+            let ret_pos = builder.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                top_ptr,
+                BTJIT_OFF_B,
+            );
+            let kpos = builder.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                top_ptr,
+                BTJIT_OFF_C,
+            );
+
+            builder
+                .ins()
+                .store(MemFlags::trusted(), new_len, ctx_v, CTX_BT_LEN);
+            builder
+                .ins()
+                .store(MemFlags::trusted(), kpos, ctx_v, CTX_KEEP_POS);
+            let bt_rc =
+                builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_RETRY_COUNT);
+            let new_rc = builder.ins().iadd_imm(bt_rc, -1);
+            builder
+                .ins()
+                .store(MemFlags::trusted(), new_rc, ctx_v, CTX_BT_RETRY_COUNT);
+
+            builder.ins().stack_store(block_id, slot_block_id, 0);
+            builder.ins().stack_store(ret_pos, slot_pos_out, 0);
+            builder.ins().jump(bt_dispatch_block, &[]);
+        }
+
+        // slow_bt_block: non-Retry on top, use h_bt_pop
+        builder.switch_to_block(slow_bt_block);
+        {
+            let ctx_v = builder.use_var(var_ctx);
+            let addr_block_id = builder.ins().stack_addr(types::I64, slot_block_id, 0);
+            let addr_pos_out = builder.ins().stack_addr(types::I64, slot_pos_out, 0);
+            let call = builder
+                .ins()
+                .call(h_bt_pop, &[ctx_v, addr_block_id, addr_pos_out]);
+            let ok = builder.inst_results(call)[0];
+            builder
+                .ins()
+                .brif(ok, bt_dispatch_block, &[], return_fail_block, &[]);
+        }
     }
 
     // ---- bt_dispatch_block ----
@@ -1272,7 +1404,28 @@ fn inline_save(
     } else {
         builder.ins().iadd_imm(slots_ptr, offset)
     };
-    // Load old value and push a SaveUndo entry so backtracking can undo this write.
+
+    // Guard: only push a SaveUndo entry when bt_retry_count > 0.
+    // When there are no active Retry entries on the bt stack, backtracking is
+    // impossible and the undo entry would never be consumed — skip it entirely
+    // to avoid the helper call overhead on the fast (no-backtrack) path.
+    let bt_retry_count = builder.ins().load(
+        types::I64,
+        MemFlags::trusted(),
+        ctx_v,
+        CTX_BT_RETRY_COUNT,
+    );
+    let zero = builder.ins().iconst(types::I64, 0);
+    let needs_undo = builder.ins().icmp(IntCC::NotEqual, bt_retry_count, zero);
+
+    let undo_block = builder.create_block();
+    let write_block = builder.create_block();
+    builder
+        .ins()
+        .brif(needs_undo, undo_block, &[], write_block, &[]);
+
+    builder.switch_to_block(undo_block);
+    builder.seal_block(undo_block);
     let old_value = builder
         .ins()
         .load(types::I64, MemFlags::trusted(), slot_addr, 0);
@@ -1280,6 +1433,10 @@ fn inline_save(
     builder
         .ins()
         .call(h_push_save_undo, &[ctx_v, slot_imm, old_value]);
+    builder.ins().jump(write_block, &[]);
+
+    builder.switch_to_block(write_block);
+    builder.seal_block(write_block);
     // Write new value.
     builder
         .ins()
@@ -1289,6 +1446,154 @@ fn inline_save(
 
 // ---------------------------------------------------------------------------
 // Codec helpers
+// ---------------------------------------------------------------------------
+
+/// Emit Cranelift IR for a Fork or ForkNext instruction.
+///
+/// For `Fork(alt)` (greedy):   try `pc+1` first, save `alt` as the retry block.
+/// For `ForkNext(alt)` (lazy): try `alt` first, save `pc+1` as the retry block.
+///
+/// Fast path (inline push, no function call) when bt has enough capacity AND
+/// (for memo mode) `memo_has_failures == 0`.  Falls back to the `h_fork` /
+/// `h_fork_next` extern helper otherwise.
+#[allow(clippy::too_many_arguments)]
+fn inline_fork(
+    builder: &mut FunctionBuilder<'_>,
+    inst_blocks: &[Block],
+    bt_resume_block: Block,
+    var_ctx: Variable,
+    var_pos: Variable,
+    ctx_v: Value,
+    _pos_v: Value,
+    pc: usize,
+    alt: usize,
+    is_fork_next: bool,
+    use_memo: bool,
+    h_fork: FuncRef,
+) {
+    // retry_block_id: what gets stored as the Retry entry's block_id.
+    // For Fork:     save alt  (alternative) as retry; fall through to pc+1.
+    // For ForkNext: save pc+1 (main)        as retry; jump to alt.
+    let (retry_id, success_pc) = if is_fork_next {
+        (pc + 1, alt)
+    } else {
+        (alt, pc + 1)
+    };
+    let fork_pc_v = builder.ins().iconst(types::I32, pc as i64);
+    let retry_id_v = builder.ins().iconst(types::I32, retry_id as i64);
+
+    let bt_len = builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_LEN);
+    let bt_cap = builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_CAP);
+
+    let fast_block = builder.create_block();
+    let slow_block = builder.create_block();
+    let next_block = inst_blocks[success_pc];
+
+    // Capacity needed: 2 entries for memo (MemoMark + Retry), 1 for no-memo.
+    let entries_needed = if use_memo { 2i64 } else { 1i64 };
+    let bt_after = builder.ins().iadd_imm(bt_len, entries_needed);
+    let has_room = builder.ins().icmp(IntCC::UnsignedLessThanOrEqual, bt_after, bt_cap);
+
+    let can_fast = if use_memo {
+        let memo_hf =
+            builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), ctx_v, CTX_MEMO_HAS_FAILURES);
+        let no_fail = builder.ins().icmp_imm(IntCC::Equal, memo_hf, 0);
+        builder.ins().band(has_room, no_fail)
+    } else {
+        has_room
+    };
+
+    builder.ins().brif(can_fast, fast_block, &[], slow_block, &[]);
+
+    // ---- fast_block: inline push ----
+    builder.switch_to_block(fast_block);
+    {
+        let ctx_v = builder.use_var(var_ctx);
+        let pos_v = builder.use_var(var_pos);
+        let bt_len =
+            builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_LEN);
+        let bt_data =
+            builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_DATA_PTR);
+        let keep_pos =
+            builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_KEEP_POS);
+        let bt_rc =
+            builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_RETRY_COUNT);
+
+        let mut next_len = bt_len;
+
+        if use_memo {
+            // Write MemoMark at bt_data[bt_len]:
+            // { tag=3 at +0, fork_block_id=fork_pc at +4, fork_pos=pos at +8 }
+            let off = builder.ins().imul_imm(bt_len, BTJIT_SIZE);
+            let ptr = builder.ins().iadd(bt_data, off);
+            let tag3 = builder.ins().iconst(types::I32, BTJIT_TAG_MEMO_MARK);
+            builder.ins().store(MemFlags::trusted(), tag3, ptr, 0);
+            builder
+                .ins()
+                .store(MemFlags::trusted(), fork_pc_v, ptr, BTJIT_OFF_A);
+            builder
+                .ins()
+                .store(MemFlags::trusted(), pos_v, ptr, BTJIT_OFF_B);
+            next_len = builder.ins().iadd_imm(bt_len, 1);
+        }
+
+        // Write Retry at bt_data[next_len]:
+        // { tag=0 at +0, block_id=retry_id at +4, pos at +8, keep_pos at +16 }
+        let off2 = builder.ins().imul_imm(next_len, BTJIT_SIZE);
+        let ptr2 = builder.ins().iadd(bt_data, off2);
+        let tag0 = builder.ins().iconst(types::I32, BTJIT_TAG_RETRY);
+        builder.ins().store(MemFlags::trusted(), tag0, ptr2, 0);
+        builder
+            .ins()
+            .store(MemFlags::trusted(), retry_id_v, ptr2, BTJIT_OFF_A);
+        builder
+            .ins()
+            .store(MemFlags::trusted(), pos_v, ptr2, BTJIT_OFF_B);
+        builder
+            .ins()
+            .store(MemFlags::trusted(), keep_pos, ptr2, BTJIT_OFF_C);
+
+        let final_len = builder.ins().iadd_imm(next_len, 1);
+        builder
+            .ins()
+            .store(MemFlags::trusted(), final_len, ctx_v, CTX_BT_LEN);
+        let new_rc = builder.ins().iadd_imm(bt_rc, 1);
+        builder
+            .ins()
+            .store(MemFlags::trusted(), new_rc, ctx_v, CTX_BT_RETRY_COUNT);
+
+        builder.ins().jump(next_block, &[]);
+    }
+
+    // ---- slow_block: fall back to h_fork / h_fork_next ----
+    builder.switch_to_block(slow_block);
+    {
+        let ctx_v = builder.use_var(var_ctx);
+        let pos_v = builder.use_var(var_pos);
+        let call = builder
+            .ins()
+            .call(h_fork, &[ctx_v, fork_pc_v, retry_id_v, pos_v]);
+        let ok = builder.inst_results(call)[0];
+        if is_fork_next {
+            builder
+                .ins()
+                .brif(ok, inst_blocks[alt], &[], bt_resume_block, &[]);
+        } else {
+            builder
+                .ins()
+                .brif(ok, inst_blocks[pc + 1], &[], bt_resume_block, &[]);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Codec helpers (original section, renamed)
 // ---------------------------------------------------------------------------
 
 fn shorthand_code(sh: Shorthand) -> u32 {

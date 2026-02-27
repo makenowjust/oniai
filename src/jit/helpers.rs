@@ -10,7 +10,7 @@
 
 use crate::ast::{AnchorKind, Flags, Shorthand};
 use crate::charset;
-use crate::vm::{BtJit, CharSet, JitExecCtx, MemoState, exec_lookaround_for_jit, memo_key};
+use crate::vm::{BtJit, CharSet, JitExecCtx, MemoState, bt_pop, bt_push, exec_lookaround_for_jit, memo_key};
 use unicode_casefold::UnicodeCaseFold;
 
 // ---------------------------------------------------------------------------
@@ -61,12 +61,11 @@ fn chars_eq_ci(a: char, b: char) -> bool {
 /// Push a `BtJit::Retry` entry.  Slots are **not** snapshotted here; instead
 /// each `Save` instruction pushes a `SaveUndo` entry before modifying a slot,
 /// so backtracking naturally reverses every slot write since the last fork.
-unsafe fn push_retry(bt: &mut Vec<BtJit>, ctx: &JitExecCtx, block_id: u32, pos: u64) {
-    bt.push(BtJit::Retry {
-        block_id,
-        pos,
-        keep_pos: ctx.keep_pos,
-    });
+unsafe fn push_retry(ctx: &mut JitExecCtx, block_id: u32, pos: u64) {
+    ctx.bt_retry_count += 1;
+    unsafe {
+        bt_push(ctx, BtJit::retry(block_id, pos, ctx.keep_pos));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -346,12 +345,16 @@ pub unsafe extern "C" fn jit_save(ctx: *mut JitExecCtx, slot: u32, pos: u64) {
 
 /// Push a `SaveUndo` entry for `slot` with its current value before the
 /// caller writes a new value.  Called from inlined `Save` blocks in JIT code.
+/// Skips the push when there are no active `Retry` entries (no backtracking
+/// possible, so undo data would never be used).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn jit_push_save_undo(ctx: *mut JitExecCtx, slot: u32, old_value: u64) {
     unsafe {
         let ctx = &mut *ctx;
-        let bt = &mut *(ctx.bt_ptr as *mut Vec<BtJit>);
-        bt.push(BtJit::SaveUndo { slot, old_value });
+        if ctx.bt_retry_count == 0 {
+            return;
+        }
+        bt_push(ctx, BtJit::save_undo(slot, old_value));
     }
 }
 
@@ -398,21 +401,20 @@ pub unsafe extern "C" fn jit_fork(
         let use_memo = ctx.use_memo != 0;
 
         if use_memo {
-            let key = memo_key(fork_pc as usize, pos as usize);
-            if let Some(&d) = memo.fork_failures.get(&key)
-                && d <= ctx.atomic_depth as usize
-            {
-                return 0;
+            // Fast-path: skip the hash lookup when no failures have been
+            // recorded yet (common case for non-pathological patterns).
+            if !memo.fork_failures.is_empty() {
+                let key = memo_key(fork_pc as usize, pos as usize);
+                if let Some(&d) = memo.fork_failures.get(&key)
+                    && d <= ctx.atomic_depth as usize
+                {
+                    return 0;
+                }
             }
-            let bt = &mut *(ctx.bt_ptr as *mut Vec<BtJit>);
-            bt.push(BtJit::MemoMark {
-                fork_block_id: fork_pc,
-                fork_pos: pos,
-            });
+            bt_push(ctx, BtJit::memo_mark(fork_pc, pos));
         }
 
-        let bt = &mut *(ctx.bt_ptr as *mut Vec<BtJit>);
-        push_retry(bt, ctx, alt_block, pos);
+        push_retry(ctx, alt_block, pos);
         1
     }
 }
@@ -434,21 +436,18 @@ pub unsafe extern "C" fn jit_fork_next(
         let use_memo = ctx.use_memo != 0;
 
         if use_memo {
-            let key = memo_key(fork_pc as usize, pos as usize);
-            if let Some(&d) = memo.fork_failures.get(&key)
-                && d <= ctx.atomic_depth as usize
-            {
-                return 0;
+            if !memo.fork_failures.is_empty() {
+                let key = memo_key(fork_pc as usize, pos as usize);
+                if let Some(&d) = memo.fork_failures.get(&key)
+                    && d <= ctx.atomic_depth as usize
+                {
+                    return 0;
+                }
             }
-            let bt = &mut *(ctx.bt_ptr as *mut Vec<BtJit>);
-            bt.push(BtJit::MemoMark {
-                fork_block_id: fork_pc,
-                fork_pos: pos,
-            });
+            bt_push(ctx, BtJit::memo_mark(fork_pc, pos));
         }
 
-        let bt = &mut *(ctx.bt_ptr as *mut Vec<BtJit>);
-        push_retry(bt, ctx, main_block, pos);
+        push_retry(ctx, main_block, pos);
         1
     }
 }
@@ -468,44 +467,39 @@ pub unsafe extern "C" fn jit_bt_pop(
 ) -> u32 {
     unsafe {
         let ctx = &mut *ctx;
-        let bt = &mut *(ctx.bt_ptr as *mut Vec<BtJit>);
         let memo = &mut *(ctx.memo_ptr as *mut MemoState);
         let use_memo = ctx.use_memo != 0;
 
         loop {
-            match bt.pop() {
-                None => return 0,
-                Some(BtJit::AtomicBarrier) => {
+            let Some(e) = bt_pop(ctx) else { return 0 };
+            match e.tag {
+                BtJit::TAG_ATOMIC_BARRIER => {
                     ctx.atomic_depth -= 1;
                 }
-                Some(BtJit::MemoMark {
-                    fork_block_id,
-                    fork_pos,
-                }) => {
+                BtJit::TAG_MEMO_MARK => {
                     if use_memo {
-                        let key = memo_key(fork_block_id as usize, fork_pos as usize);
+                        let key = memo_key(e.a as usize, e.b as usize);
                         memo.fork_failures
                             .entry(key)
                             .and_modify(|d| *d = (*d).min(ctx.atomic_depth as usize))
                             .or_insert(ctx.atomic_depth as usize);
+                        ctx.memo_has_failures = 1;
                     }
                 }
-                Some(BtJit::SaveUndo { slot, old_value }) => {
+                BtJit::TAG_SAVE_UNDO => {
                     let slots =
                         std::slice::from_raw_parts_mut(ctx.slots_ptr, ctx.slots_len as usize);
-                    let idx = slot as usize;
+                    let idx = e.a as usize;
                     if idx < slots.len() {
-                        slots[idx] = old_value;
+                        slots[idx] = e.b;
                     }
                 }
-                Some(BtJit::Retry {
-                    block_id,
-                    pos,
-                    keep_pos,
-                }) => {
-                    ctx.keep_pos = keep_pos;
-                    *out_block_id = block_id;
-                    *out_pos = pos;
+                _ => {
+                    // TAG_RETRY
+                    ctx.bt_retry_count -= 1;
+                    ctx.keep_pos = e.c;
+                    *out_block_id = e.a;
+                    *out_pos = e.b;
                     return 1;
                 }
             }
@@ -523,8 +517,7 @@ pub unsafe extern "C" fn jit_atomic_start(ctx: *mut JitExecCtx) {
     unsafe {
         let ctx = &mut *ctx;
         ctx.atomic_depth += 1;
-        let bt = &mut *(ctx.bt_ptr as *mut Vec<BtJit>);
-        bt.push(BtJit::AtomicBarrier);
+        bt_push(ctx, BtJit::atomic_barrier());
     }
 }
 
@@ -533,17 +526,16 @@ pub unsafe extern "C" fn jit_atomic_start(ctx: *mut JitExecCtx) {
 pub unsafe extern "C" fn jit_atomic_end(ctx: *mut JitExecCtx) {
     unsafe {
         let ctx = &mut *ctx;
-        let bt = &mut *(ctx.bt_ptr as *mut Vec<BtJit>);
-        loop {
-            match bt.pop() {
-                None => break,
-                Some(BtJit::AtomicBarrier) => {
+        while let Some(e) = bt_pop(ctx) {
+            match e.tag {
+                BtJit::TAG_ATOMIC_BARRIER => {
                     ctx.atomic_depth -= 1;
                     break;
                 }
-                Some(BtJit::Retry { .. })
-                | Some(BtJit::MemoMark { .. })
-                | Some(BtJit::SaveUndo { .. }) => {}
+                BtJit::TAG_RETRY => {
+                    ctx.bt_retry_count -= 1;
+                }
+                _ => {}
             }
         }
     }
