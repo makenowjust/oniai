@@ -151,7 +151,10 @@ pub enum Inst {
         positive: bool,
         dir: LookDir,
         end_pc: usize,
-        behind_lens: Vec<usize>,
+        /// Pre-computed byte offsets to try for lookbehind.
+        /// `None` means the body has variable/unbounded width — the VM will
+        /// scan all positions from the start of the text up to `pos` at runtime.
+        behind_lens: Option<Vec<usize>>,
     },
 
     /// Marks end of lookaround body
@@ -582,7 +585,7 @@ fn exec(ctx: &Ctx<'_>, start_pc: usize, start_pos: usize, state: &mut State, dep
                         // Cache miss: run the sub-execution and cache the result.
                         let pre_slots = state.slots.clone();
                         let pre_keep  = state.keep_pos;
-                        let m = exec_lookaround(ctx, pc + 1, pos, state, *dir, behind_lens, depth, memo);
+                        let m = exec_lookaround(ctx, pc + 1, pos, state, *dir, behind_lens.as_deref(), depth, memo);
                         let entry = if m {
                             let slot_delta     = compute_slot_delta(&pre_slots, &state.slots);
                             let keep_pos_delta = if state.keep_pos != pre_keep {
@@ -598,7 +601,7 @@ fn exec(ctx: &Ctx<'_>, start_pc: usize, start_pos: usize, state: &mut State, dep
                         m
                     }
                 } else {
-                    exec_lookaround(ctx, pc + 1, pos, state, *dir, behind_lens, depth, memo)
+                    exec_lookaround(ctx, pc + 1, pos, state, *dir, behind_lens.as_deref(), depth, memo)
                 };
 
                 if matched == positive {
@@ -658,7 +661,8 @@ fn exec_lookaround(
     pos: usize,
     state: &mut State,
     dir: LookDir,
-    behind_lens: &[usize],
+    // `Some(lens)`: pre-computed byte offsets; `None`: scan all positions.
+    behind_lens: Option<&[usize]>,
     depth: usize,
     memo: &mut MemoState,
 ) -> bool {
@@ -674,10 +678,10 @@ fn exec_lookaround(
             }
         }
         LookDir::Behind => {
-            for &len in behind_lens {
-                if pos < len { continue; }
-                let try_pos = pos - len;
-                if !ctx.text.is_char_boundary(try_pos) { continue; }
+            // Helper: try matching the body starting at `try_pos`, succeeding only
+            // if the sub-execution ends exactly at `pos`.
+            let mut try_behind = |try_pos: usize, state: &mut State| -> bool {
+                if !ctx.text.is_char_boundary(try_pos) { return false; }
                 let mut sub = State { slots: state.slots.clone(), keep_pos: state.keep_pos, call_stack: Vec::new() };
                 if exec(ctx, body_pc, try_pos, &mut sub, depth + 1, memo)
                     .map(|end| end == pos)
@@ -685,10 +689,33 @@ fn exec_lookaround(
                 {
                     state.slots    = sub.slots;
                     state.keep_pos = sub.keep_pos;
-                    return true;
+                    true
+                } else {
+                    false
+                }
+            };
+            match behind_lens {
+                Some(lens) => {
+                    // Fixed or bounded width: only try the pre-computed offsets.
+                    for &len in lens {
+                        if pos < len { continue; }
+                        if try_behind(pos - len, state) { return true; }
+                    }
+                    false
+                }
+                None => {
+                    // Variable/unbounded width: scan every possible start position
+                    // from the current position back to the beginning of the text.
+                    // Iterate shortest-to-longest (pos, pos-1, …, 0).
+                    let mut try_pos = pos;
+                    loop {
+                        if try_behind(try_pos, state) { return true; }
+                        if try_pos == 0 { break; }
+                        try_pos -= 1;
+                    }
+                    false
                 }
             }
-            false
         }
     }
 }

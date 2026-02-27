@@ -294,6 +294,20 @@ fn group_lookbehind_neg() {
     assert_no_match!(r"(?<!foo)bar", "foobar");
 }
 #[test]
+fn group_lookbehind_variable_length() {
+    // Unbounded quantifier inside lookbehind (was previously restricted).
+    assert_match!(r"(?<=a+)b", "aaab");
+    assert_no_match!(r"(?<=a+)b", "b");
+    assert_match!(r"(?<=a*)b", "b");       // zero a's is allowed by a*
+    assert_match!(r"(?<=a*)b", "aaab");
+    // Alternation producing different lengths
+    assert_match!(r"(?<=foo|fo)bar", "foobar");
+    assert_match!(r"(?<=fo)bar", "fobar");
+    // Negative variable-length lookbehind
+    assert_no_match!(r"(?<!a+)b", "aaab");
+    assert_match!(r"(?<!a+)b", "b");
+}
+#[test]
 fn group_atomic() {
     // (?>a*) is possessive — no backtrack
     assert_no_match!(r"^(?>a*)a$", "aa");

@@ -180,7 +180,7 @@ impl Compiler {
                 let behind_lens = if *dir == LookDir::Behind {
                     compute_widths(node)
                 } else {
-                    Vec::new()
+                    Some(Vec::new())
                 };
                 let positive = *pol == LookPol::Positive;
                 let look_start = self.emit(Inst::LookStart {
@@ -573,12 +573,30 @@ fn compile_class_item(item: &ClassItem, ascii_range: bool, ignore_case: bool) ->
 // Width computation for lookbehind
 // ---------------------------------------------------------------------------
 
-/// Compute the set of possible character widths for a node.
+/// Returns `true` if `node` can only match strings of bounded (finite) byte length.
+fn is_finite_width(node: &Node) -> bool {
+    match node {
+        Node::Quantifier { range, node, .. } => {
+            range.max.is_some() && is_finite_width(node)
+        }
+        Node::Concat(nodes) => nodes.iter().all(is_finite_width),
+        Node::Alternation(alts) => alts.iter().all(is_finite_width),
+        Node::Group { node, .. } | Node::Capture { node, .. } | Node::NamedCapture { node, .. }
+        | Node::Atomic(node) | Node::InlineFlags { node, .. } => is_finite_width(node),
+        _ => true,
+    }
+}
+
+/// Compute the set of possible byte widths for a node.
+/// Returns `None` if the node can match strings of unbounded length (e.g. `a*`).
 /// Used for look-behind to determine how far to step back.
-fn compute_widths(node: &Node) -> Vec<usize> {
+fn compute_widths(node: &Node) -> Option<Vec<usize>> {
+    if !is_finite_width(node) {
+        return None;
+    }
     let mut set = std::collections::BTreeSet::new();
     collect_widths(node, 0, &mut set);
-    set.into_iter().collect()
+    Some(set.into_iter().collect())
 }
 
 fn collect_widths(node: &Node, base: usize, out: &mut std::collections::BTreeSet<usize>) {
@@ -615,7 +633,7 @@ fn collect_widths(node: &Node, base: usize, out: &mut std::collections::BTreeSet
         }
         Node::Quantifier { node, range, .. } => {
             let min = range.min as usize;
-            let max = range.max.unwrap_or(range.min) as usize; // for lookbehind, max must be finite
+            let max = range.max.expect("collect_widths called on unbounded quantifier") as usize;
             for count in min..=max {
                 let mut sub = std::collections::BTreeSet::new();
                 sub.insert(base);
