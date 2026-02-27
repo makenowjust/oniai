@@ -212,77 +212,123 @@ Ctx<'t> {
     charsets:     &[CharSet],
     text:         &str,
     search_start: usize,              // for \G anchor
+    use_memo:     bool,               // false when pattern has BackRef/CheckGroup
 }
 
 Bt (backtrack stack entry, one of):
     Retry    { pc, pos, slots, keep_pos, call_stack }  // saved state to restore on failure
     AtomicBarrier                                       // atomic group fence (see below)
     MemoMark { fork_pc, fork_pos }                     // memoization sentinel (see below)
+
+MemoState {                           // shared across all exec() calls in one find()
+    fork_failures: HashMap<u64, usize>,    // (pc,pos) → min atomic_depth of known failure
+    look_results:  HashMap<u64, LookCacheEntry>,  // (lk_pc,pos) → cached lookaround outcome
+}
+
+LookCacheEntry (one of):
+    BodyMatched    { slot_delta: Vec<(usize,Option<usize>)>, keep_pos_delta: Option<Option<usize>> }
+    BodyNotMatched
 ```
 
 ### Execution model
 
-`exec(ctx, start_pc, start_pos, state, depth) → Option<usize>`
+`exec(ctx, start_pc, start_pos, state, depth, memo) → Option<usize>`
 
 The function runs a single `'vm: loop` over instructions — no Rust recursion
-for ordinary backtracking.  An explicit `bt: Vec<Bt>` stack drives backtracking:
+for ordinary backtracking.  An explicit `bt: Vec<Bt>` stack drives backtracking.
+A local `atomic_depth: usize` counter tracks how many atomic-group barriers are
+currently live on the backtrack stack:
 
-- **`Fork(alt)`** — push `Bt::MemoMark` then `Bt::Retry { pc: alt, … }`, advance to `pc+1`.
-- **`ForkNext(alt)`** — push `Bt::MemoMark` then `Bt::Retry { pc: pc+1, … }`, jump to `alt`.
-- **`fail!()`** macro — pop the top `Bt` entry:
+- **`Fork(alt)`** — if `use_memo`: check `fork_failures` at `(pc, pos)`; if a
+  failure entry exists with `stored_depth ≤ atomic_depth`, invoke `fail!()`.
+  Otherwise push `Bt::MemoMark` then `Bt::Retry { pc: alt, … }`, advance to `pc+1`.
+- **`ForkNext(alt)`** — symmetric lazy version.
+- **`fail!()`** macro — call `do_backtrack`, which pops the top `Bt` entry:
   - `Bt::Retry`: restore state, continue.
-  - `Bt::MemoMark { fork_pc, fork_pos }`: record `(fork_pc, fork_pos)` as a
-    known failure in the `memo` table, then continue popping.
-  - `Bt::AtomicBarrier`: skip (transparent), continue popping.
+  - `Bt::MemoMark { fork_pc, fork_pos }`: if `use_memo`, record
+    `(fork_pc, fork_pos) → min(stored, atomic_depth)` in `fork_failures`,
+    then continue popping.
+  - `Bt::AtomicBarrier`: decrement `atomic_depth`, skip (transparent), continue
+    popping.
   - Empty stack: return `None`.
 
-This means backtracking depth is limited only by heap memory, not by the Rust
-call stack.
+Backtracking depth is limited only by heap memory, not by the Rust call stack.
 
-#### Memoization (Algorithm 5 of Fujinami & Hasuo 2024)
+#### Memoization (Algorithms 5–7 of Fujinami & Hasuo 2024)
 
-Each call to `exec` maintains a local `memo: HashSet<u64>` table that maps
-`(pc, pos)` pairs to a *known-failure* sentinel.
+Implements the memoization framework from:
+> Fujinami, H. & Hasuo, I. (2024).  "Efficient Matching with Memoization for
+> Regexes with Look-around and Atomic Grouping."  arXiv:2401.12639.
 
-**How it works:**
+A single `MemoState` is created in `find()` and shared across every `exec()`
+invocation — including lookaround sub-executions and different search start
+positions.  The state has two tables:
 
-1. Before pushing a `Fork`/`ForkNext` alternative, the fork's current `(pc, pos)`
-   is looked up in `memo`.  If found, `fail!()` is invoked immediately — both
-   alternatives are already known to fail at this position.
-2. A `Bt::MemoMark` is pushed **below** the `Bt::Retry` so that it fires only
-   after the second alternative is also exhausted.
-3. When backtracking pops `Bt::MemoMark { fork_pc, fork_pos }`, the pair is
-   inserted into `memo` — it will prevent any future visit to the same fork state
-   at the same text position from doing redundant work.
+##### Algorithm 5 — Fork-state failure memo (`fork_failures`)
 
-**Complexity guarantee:** Each `(fork_pc, pos)` pair is processed at most once,
-bounding the total number of Fork-state visits to O(|prog| × |text|).  This
-eliminates the exponential blowup in patterns like `(a?)^n a^n` on `a^n`
-(2^n → O(n²) complexity, i.e., ~2,600× faster at n=20 in practice).
+When both alternatives of a `Fork`/`ForkNext` at `(pc, pos)` are exhausted,
+the `(pc, pos)` pair is recorded in `fork_failures`.  Future visits
+short-circuit immediately, bounding Fork-state work to
+**O(|prog| × |text|)**.  This reduces `(a?)^n a^n` from O(2^n) to O(n²)
+(~2,600× faster at n=20 in practice).
 
-**Scope:** The `memo` table is local to a single `exec` call.  Lookaround
-sub-executions (`exec_lookaround`) create their own independent `memo` tables;
-Algorithm 6 (sharing lookaround Success results) is not yet implemented.
+##### Algorithm 7 — Depth-tagged failures (atomic groups)
+
+A failure recorded at `atomic_depth = j` means "both alternatives fail in an
+environment where at least `j` atomic barriers are live."  Failures under more
+constraints cannot be reused in less-constrained contexts:
+
+- Failure at depth `j` is reused when current `atomic_depth ≥ j`.
+- `fork_failures` stores the **minimum** depth seen for each `(pc, pos)`.
+- `AtomicStart` increments `atomic_depth`; `AtomicEnd` (success path) and
+  `Bt::AtomicBarrier` skip (failure path) each decrement it.
+
+##### Algorithm 6 — Lookaround result cache (`look_results`)
+
+Without this, the same `LookStart` at `(lk_pc, pos)` could be re-evaluated on
+every outer backtracking path, giving exponential time for patterns like
+`(a|ε)^n (?=complex_body)`.
+
+`look_results` maps `(lk_pc, pos)` to `LookCacheEntry`:
+- **Cache hit**: re-apply the cached outcome immediately.  For `BodyMatched` with
+  a positive lookahead, the stored `slot_delta` (index/value pairs that changed)
+  is replayed onto `state.slots`.  Only the *delta* is stored — not the full slot
+  vector — so re-application is correct even when outer captures differ.
+- **Cache miss**: run the sub-execution, record the result (including delta), proceed.
+
+##### When memoization is disabled
+
+`use_memo` is `false` (all memo operations skipped) when the compiled program
+contains any of:
+
+| Instruction | Reason |
+|-------------|--------|
+| `BackRef` / `BackRefRelBack` | Fork outcome depends on the captured text, not just `(pc, pos)` |
+| `CheckGroup` | Branches on whether an outer capture group matched; lookaround result depends on outer capture state |
 
 #### Atomic groups
 
-`AtomicStart` pushes a `Bt::AtomicBarrier` onto the backtrack stack and
+`AtomicStart` increments `atomic_depth`, pushes a `Bt::AtomicBarrier`, and
 execution continues inline (no sub-call).  When `AtomicEnd` is reached the VM
 **commits** by draining all `Bt` entries back to (and including) the innermost
-`AtomicBarrier` — those entries (including any `MemoMark` entries) represented
-internal alternatives of the body that are now discarded.  If the body fails
-before reaching `AtomicEnd`, normal backtracking consumes the body's internal
-`Bt::Retry` entries one by one until the `AtomicBarrier` is encountered; the
-barrier is silently skipped (treated as transparent), and backtracking continues
-to the entries that existed before the atomic group started.
+`AtomicBarrier`, decrementing `atomic_depth` once.  `MemoMark` entries inside
+the body are discarded during this drain (body succeeded — no failures to record).
+
+If the body fails before reaching `AtomicEnd`, normal backtracking consumes the
+body's internal `Bt` entries one by one until the `Bt::AtomicBarrier` is
+encountered; it is silently skipped and `atomic_depth` is decremented, then
+backtracking continues to entries that existed before the atomic group started.
 
 #### Lookarounds
 
-`LookStart` calls the helper `exec_lookaround`, which runs the body in an
-**isolated sub-execution** (`exec` with a cloned `State` and depth+1).  The
-result (match/no-match) is used to continue or trigger `fail!()` in the outer
-loop; the outer position is unchanged.  For positive lookarounds the sub-state
-(captures) is merged back into the outer state on success.
+`LookStart` first checks `look_results` for a cached outcome.  On a cache miss
+it calls `exec_lookaround`, which runs the body in an **isolated sub-execution**
+(`exec` with a cloned `State`, depth+1, and the **shared** `MemoState`).
+
+The result (match/no-match) is cached and then used to continue or invoke
+`fail!()` in the outer loop.  For positive lookarounds the sub-state (captures)
+is merged back into the outer state on success; on a cache hit, only the stored
+`slot_delta` is replayed.
 
 `LookEnd` terminates the sub-execution by returning `Some(pos)` from the inner
 `exec` call.

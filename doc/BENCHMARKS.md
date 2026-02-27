@@ -192,21 +192,33 @@ if !text[start_pos..].contains(required_char) {
 Uses Rust's built-in `str::contains(char)` which compiles to a SIMD `memchr`
 on supported platforms.
 
-### 3. Fork-state memoization (Algorithm 5 of Fujinami & Hasuo 2024)
+### 3. Full memoization (Algorithms 5–7 of Fujinami & Hasuo 2024)
 
-Implements the core memoization technique from:
+Implements the complete memoization framework from:
 > Fujinami, H. & Hasuo, I. (2024).  "Efficient Matching with Memoization for
 > Regexes with Look-around and Atomic Grouping."  arXiv:2401.12639.
 
-Each call to `exec()` maintains a local `HashSet<u64>` memo table.  When both
-alternatives of a `Fork`/`ForkNext` instruction fail, the `(pc, pos)` pair is
-recorded.  Future visits to the same fork state at the same text position
-short-circuit immediately, bounding the total Fork-state work to
-**O(|prog| × |text|)**.
+A single `MemoState` is created once per `find()` call and shared across all
+`exec()` invocations (including lookaround sub-executions).  It contains:
 
-The implementation uses a `Bt::MemoMark` stack entry (pushed below the
-`Bt::Retry`) to trigger memo recording only after the second alternative is
-also exhausted — ensuring correctness without any extra recursion.
+- **`fork_failures: HashMap<u64, usize>`** — maps `(pc, pos)` to the minimum
+  `atomic_depth` at which failure was observed.  Future visits short-circuit
+  when `stored_depth ≤ current_atomic_depth`.  Bounding Fork-state visits to
+  **O(|prog| × |text|)** reduces `(a?)^n a^n` from O(2^n) to O(n²).
+
+- **`look_results: HashMap<u64, LookCacheEntry>`** — maps `(lk_pc, pos)` to the
+  cached outcome of a lookaround sub-execution.  Stores only the capture *delta*
+  (index/value pairs that changed) so re-application is correct regardless of
+  outer capture state.  Prevents exponential re-evaluation of the same lookahead
+  body on different backtracking paths (Algorithm 6).
+
+- **Depth-tagged failures** (Algorithm 7) — `Bt::AtomicBarrier` entries track
+  `atomic_depth` so that failures recorded inside an atomic group are not
+  incorrectly reused outside it.
+
+Memoization is disabled when the compiled program contains `BackRef`,
+`BackRefRelBack`, or `CheckGroup` instructions, whose outcomes depend on outer
+capture state and therefore cannot be keyed on `(pc, pos)` alone.
 
 ---
 
@@ -216,6 +228,6 @@ also exhausted — ensuring correctness without any extra recursion.
 |---------------|-----------|-----|
 | Exponential alternation (`a?^n a^n`) | **O(n²)** with memo | ✅ memoization implemented |
 | `a*b` no-match on all-`'a'` text | O(n) with required_char | ✅ required_char implemented |
-| Back-references, subexpression calls | Cannot use DFA/NFA simulation | Inherent in feature set |
-| Look-around in inner loops | Sub-exec memo not shared (Alg. 6) | Future work |
+| Look-around in inner loops | ✅ sub-exec results cached (Alg. 6) | ✅ implemented |
+| Back-references, subexpression calls | Cannot use DFA/NFA simulation; memo disabled | Inherent in feature set |
 | Greedy match itself (`a+` on long text) | O(n) per start pos attempted | Inherent; mitigated by `LiteralPrefix`/`FirstChars` |
