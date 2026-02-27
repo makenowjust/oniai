@@ -412,13 +412,14 @@ UTF-8 code point forward to avoid infinite loops.
 ## Limitations and known gaps
 
 - **No JIT / NFA compilation**: the engine is a pure backtracking interpreter;
-  exponential worst-case exists for ambiguous patterns on adversarial inputs.
-- **Lookbehind width**: only patterns with a finite, statically computable set
-  of widths are supported (variable-length lookbehind will yield an empty
-  `behind_lens` and never match).
+  exponential worst-case exists for ambiguous patterns on adversarial inputs
+  (mitigated for many patterns by the memoization framework).
+- **Lookbehind width**: variable-length lookbehind is fully supported — when the
+  body contains an unbounded quantifier (`a*`, `a+`, …), `compute_widths` returns
+  `None` and the VM scans all byte positions from the current position back to the
+  start of the text at runtime (shortest-to-longest order).  Fixed-width bodies
+  are still handled via the pre-computed `behind_lens` fast path.
 - **Relative/forward subexpression calls** (`\g<+n>`, `\g<-n>`) are parsed but
   the VM returns `None` for them (not yet implemented).
 - **Unicode case folding**: only single-codepoint lowercasing is used; full
   Unicode case-folding tables are not included.
-- **No `ONIG_OPTION_FIND_LONGEST`**: the API always returns the *leftmost*
-  match, not the longest.
