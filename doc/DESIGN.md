@@ -396,7 +396,29 @@ lookarounds inside lookarounds, not ordinary backtracking.  The `call_stack`
 depth (subexpression call recursion via `\g<...>`) is independently capped at
 `MAX_CALL_DEPTH = 200`.
 
-### Search loop and pre-filters
+### Case-insensitive matching
+
+When the `i` flag is active, `Char(c, true)` and `*Back` variants use
+`chars_eq_ci(a, b)`, which compares the full Unicode case folds of both
+characters via the `unicode-casefold` crate (`char.case_fold()` iterator).
+This correctly handles edge cases such as:
+
+- The Kelvin sign `\u{212A}` matching `k`/`K`.
+- Characters whose full case fold is the identity (e.g. `ß` matches `ß` as
+  a single character).
+
+For `BackRef` matching (strings), `caseless_advance(text, pos, pattern)` is
+used instead of a simple character-by-character comparison.  It folds both
+strings one codepoint at a time and handles **multi-codepoint folds** such as
+`ß` ↔ `ss` and the `ﬁ` ligature ↔ `fi`.  Because the text portion consumed
+may have a different byte length from the captured string, `caseless_advance`
+returns the new `pos` after the match rather than a boolean.
+
+The `FirstChars` start-position pre-filter uses `chars_eq_ci` when scanning
+for candidate positions so that e.g. `(?i:k)` correctly finds a Kelvin sign in
+the text.
+
+
 
 `CompiledRegex::find(text, start_pos)` applies two compile-time pre-filters
 before the main loop:
@@ -437,5 +459,3 @@ UTF-8 code point forward to avoid infinite loops.
 - **No JIT / NFA compilation**: the engine is a pure backtracking interpreter;
   exponential worst-case exists for ambiguous patterns on adversarial inputs
   (mitigated for many patterns by the memoization framework).
-- **Unicode case folding**: only single-codepoint lowercasing is used; full
-  Unicode case-folding tables are not included.

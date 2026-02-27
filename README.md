@@ -6,6 +6,8 @@ A pure-Rust regular expression engine compatible with
 Aigumo implements the full Onigmo syntax including look-around (lookahead and
 variable-length lookbehind), atomic groups, backreferences, named captures,
 subexpression calls (`\g<name>`), the absence operator `(?~...)`, and more.
+Case-insensitive matching uses full Unicode case folding (via the
+`unicode-casefold` crate), including multi-codepoint folds such as `ß` ↔ `ss`.
 It is backed by a memoizing backtracking VM that provides near-linear time
 behaviour on a broad class of patterns (see [Performance](#performance)).
 

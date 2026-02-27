@@ -7,6 +7,7 @@ use crate::parser::parse;
 ///
 /// Uses backtracking search with an explicit save/restore state.
 use std::collections::HashMap;
+use unicode_casefold::UnicodeCaseFold;
 
 // ---------------------------------------------------------------------------
 // Character set types (used by instructions)
@@ -33,7 +34,7 @@ pub enum CharSetItem {
 impl CharSet {
     pub fn matches(&self, ch: char, ascii_range: bool, ignore_case: bool) -> bool {
         let test_ch = if ignore_case {
-            ch.to_lowercase().next().unwrap_or(ch)
+            ch.case_fold().next().unwrap_or(ch)
         } else {
             ch
         };
@@ -64,9 +65,9 @@ impl CharSetItem {
             }
             CharSetItem::Range(lo, hi) => {
                 if ignore_case {
-                    let lo_lo = lo.to_lowercase().next().unwrap_or(*lo);
-                    let hi_lo = hi.to_lowercase().next().unwrap_or(*hi);
-                    ch_lo >= lo_lo && ch_lo <= hi_lo
+                    let lo_fold = lo.case_fold().next().unwrap_or(*lo);
+                    let hi_fold = hi.case_fold().next().unwrap_or(*hi);
+                    ch_lo >= lo_fold && ch_lo <= hi_fold
                 } else {
                     ch >= *lo && ch <= *hi
                 }
@@ -86,7 +87,7 @@ fn chars_eq_ci(a: char, b: char) -> bool {
     if a == b {
         return true;
     }
-    a.to_lowercase().eq(b.to_lowercase()) || a.to_uppercase().eq(b.to_uppercase())
+    a.case_fold().eq(b.case_fold())
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +124,12 @@ pub enum Inst {
     ShorthandBack(Shorthand, bool),
     /// Unicode property backward.
     PropBack(String, bool),
+
+    /// Case-fold-sequence match: consume text chars until their accumulated full
+    /// case fold equals `folded`.  Handles multi-codepoint folds (e.g. `ß` ↔ `ss`).
+    FoldSeq(Vec<char>),
+    /// Backward version of `FoldSeq`.
+    FoldSeqBack(Vec<char>),
 
     /// Anchor (`^`, `$`, `\b`, `\A`, etc.)
     Anchor(AnchorKind, Flags),
@@ -567,6 +574,22 @@ fn exec(
                 _ => fail!(),
             },
 
+            Inst::FoldSeq(folded) => match fold_advance(ctx.text, pos, folded) {
+                Some(new_pos) => {
+                    pos = new_pos;
+                    pc += 1;
+                }
+                None => fail!(),
+            },
+
+            Inst::FoldSeqBack(folded) => match fold_retreat(ctx.text, pos, folded) {
+                Some(new_pos) => {
+                    pos = new_pos;
+                    pc += 1;
+                }
+                None => fail!(),
+            },
+
             Inst::Anchor(kind, flags) => {
                 if matches_anchor(ctx, pos, *kind, *flags) {
                     pc += 1;
@@ -646,13 +669,10 @@ fn exec(
                 };
                 let captured = &ctx.text[start..end];
                 if *ignore_case {
-                    if pos + captured.len() > ctx.text.len() {
-                        fail!();
+                    match caseless_advance(ctx.text, pos, captured) {
+                        Some(new_pos) => pos = new_pos,
+                        None => fail!(),
                     }
-                    if !strings_eq_ci(captured, &ctx.text[pos..pos + captured.len()]) {
-                        fail!();
-                    }
-                    pos += captured.len();
                 } else {
                     let len = captured.len();
                     if ctx.text.get(pos..pos + len) != Some(captured) {
@@ -924,20 +944,79 @@ fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-fn strings_eq_ci(a: &str, b: &str) -> bool {
-    let mut ai = a.chars();
-    let mut bi = b.chars();
-    loop {
-        match (ai.next(), bi.next()) {
-            (None, None) => return true,
-            (Some(ac), Some(bc)) => {
-                if !chars_eq_ci(ac, bc) {
-                    return false;
+/// Advance through `text[start..]`, consuming chars until their accumulated
+/// Unicode case fold equals `folded`.  Returns the new position on success.
+fn fold_advance(text: &str, start: usize, folded: &[char]) -> Option<usize> {
+    if folded.is_empty() {
+        return Some(start);
+    }
+    let mut fold_buf: Vec<char> = Vec::with_capacity(folded.len() + 2);
+    let mut pos = start;
+    for ch in text[start..].chars() {
+        fold_buf.extend(ch.case_fold());
+        pos += ch.len_utf8();
+        match fold_buf.len().cmp(&folded.len()) {
+            std::cmp::Ordering::Equal => {
+                return if fold_buf == folded { Some(pos) } else { None };
+            }
+            std::cmp::Ordering::Greater => return None,
+            std::cmp::Ordering::Less => {
+                if folded[..fold_buf.len()] != *fold_buf {
+                    return None;
                 }
             }
-            _ => return false,
         }
     }
+    if fold_buf == folded { Some(pos) } else { None }
+}
+
+/// Retreat backwards through `text[..pos]`, consuming chars (right-to-left)
+/// until their accumulated Unicode case fold equals `folded` (which was built
+/// left-to-right, so we prepend each new char's fold).  Returns the new
+/// (lower) position on success.
+fn fold_retreat(text: &str, mut pos: usize, folded: &[char]) -> Option<usize> {
+    if folded.is_empty() {
+        return Some(pos);
+    }
+    let mut fold_buf: Vec<char> = Vec::with_capacity(folded.len() + 2);
+    loop {
+        let needed = folded.len() - fold_buf.len();
+        if needed == 0 {
+            return if fold_buf == folded { Some(pos) } else { None };
+        }
+        if pos == 0 {
+            return None;
+        }
+        // Find the char ending at `pos`
+        let mut char_start = pos - 1;
+        while char_start > 0 && !text.is_char_boundary(char_start) {
+            char_start -= 1;
+        }
+        let ch = text[char_start..pos].chars().next()?;
+        // Prepend this char's fold to fold_buf (we're going right-to-left)
+        let ch_fold: Vec<char> = ch.case_fold().collect();
+        let mut new_buf = ch_fold;
+        new_buf.extend_from_slice(&fold_buf);
+        fold_buf = new_buf;
+        pos = char_start;
+        // Early-exit: fold_buf may now be longer than folded
+        if fold_buf.len() > folded.len() {
+            return None;
+        }
+        // Check suffix: fold_buf so far should be a suffix of folded
+        let suffix_start = folded.len() - fold_buf.len();
+        if folded[suffix_start..] != *fold_buf {
+            return None;
+        }
+    }
+}
+
+/// Try to match `pattern` case-insensitively at `text[start..]`.
+/// Returns the new position (end of the matched text slice) on success, or `None`.
+/// Handles multi-character Unicode case folds (e.g. `ß` ↔ `ss`, `ﬁ` ↔ `fi`).
+fn caseless_advance(text: &str, start: usize, pattern: &str) -> Option<usize> {
+    let folded: Vec<char> = pattern.case_fold().collect();
+    fold_advance(text, start, &folded)
 }
 
 // ---------------------------------------------------------------------------
@@ -1025,6 +1104,17 @@ fn collect_first_chars(
             out.extend(c.to_lowercase());
             out.extend(c.to_uppercase());
         }
+        Inst::FoldSeq(folded) if folded.len() == 1 => {
+            out.push(folded[0]);
+            out.extend(folded[0].to_uppercase());
+        }
+        Inst::FoldSeq(folded) if !folded.is_empty() => {
+            // Multi-char fold: text could start with a single char that folds
+            // to this sequence (e.g. FoldSeq(['s','s']) can match 'ß'), so we
+            // can't enumerate starting chars.
+            return None;
+        }
+        Inst::FoldSeqBack(_) => return None,
         // Classes / wildcards — first char is unbounded
         Inst::AnyChar(_) | Inst::Class(..) | Inst::Shorthand(..) | Inst::Prop(..) => return None,
         // Greedy fork: both branches may start a match
@@ -1225,7 +1315,8 @@ impl CompiledRegex {
                 let chars = chars.as_slice();
                 let mut pos = start_pos;
                 loop {
-                    let offset = text[pos..].find(|c| chars.contains(&c))?;
+                    let offset =
+                        text[pos..].find(|c| chars.iter().any(|&fc| chars_eq_ci(c, fc)))?;
                     let candidate = pos + offset;
                     if let Some(result) = self.try_at(text, candidate, &mut memo) {
                         return Some(result);

@@ -3,6 +3,7 @@ use crate::error::Error;
 use crate::vm::{CharSet, CharSetItem, Inst};
 /// Compiler: transforms a parsed AST into a VM instruction sequence.
 use std::collections::HashMap;
+use unicode_casefold::UnicodeCaseFold;
 
 // ---------------------------------------------------------------------------
 // Options passed to the compiler
@@ -108,10 +109,15 @@ impl Compiler {
             Node::Empty => {}
 
             Node::Literal(c) => {
-                if backward {
-                    self.emit(Inst::CharBack(*c, ic));
-                } else if ic {
-                    self.emit(Inst::Char(*c, true));
+                if ic {
+                    let folded: Vec<char> = c.case_fold().collect();
+                    if backward {
+                        self.emit(Inst::FoldSeqBack(folded));
+                    } else {
+                        self.emit(Inst::FoldSeq(folded));
+                    }
+                } else if backward {
+                    self.emit(Inst::CharBack(*c, false));
                 } else {
                     self.emit(Inst::Char(*c, false));
                 }
@@ -156,7 +162,39 @@ impl Compiler {
             }
 
             Node::Concat(nodes) => {
-                if backward {
+                if ic {
+                    // Merge consecutive case-insensitive literals into a single
+                    // FoldSeq/FoldSeqBack instruction to handle multi-codepoint
+                    // folds (e.g. ß ↔ ss).
+                    let mut fold_accum: Vec<char> = Vec::new();
+                    let iter: Box<dyn Iterator<Item = &Node>> = if backward {
+                        Box::new(nodes.iter().rev())
+                    } else {
+                        Box::new(nodes.iter())
+                    };
+                    for child in iter {
+                        if let Node::Literal(c) = child {
+                            fold_accum.extend(c.case_fold());
+                            continue;
+                        }
+                        if !fold_accum.is_empty() {
+                            let folded = std::mem::take(&mut fold_accum);
+                            if backward {
+                                self.emit(Inst::FoldSeqBack(folded));
+                            } else {
+                                self.emit(Inst::FoldSeq(folded));
+                            }
+                        }
+                        self.compile_node_inner(child, flags, backward)?;
+                    }
+                    if !fold_accum.is_empty() {
+                        if backward {
+                            self.emit(Inst::FoldSeqBack(fold_accum));
+                        } else {
+                            self.emit(Inst::FoldSeq(fold_accum));
+                        }
+                    }
+                } else if backward {
                     for n in nodes.iter().rev() {
                         self.compile_node_inner(n, flags, backward)?;
                     }
