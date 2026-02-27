@@ -414,11 +414,13 @@ UTF-8 code point forward to avoid infinite loops.
 - **No JIT / NFA compilation**: the engine is a pure backtracking interpreter;
   exponential worst-case exists for ambiguous patterns on adversarial inputs
   (mitigated for many patterns by the memoization framework).
-- **Lookbehind width**: variable-length lookbehind is fully supported — when the
-  body contains an unbounded quantifier (`a*`, `a+`, …), `compute_widths` returns
-  `None` and the VM scans all byte positions from the current position back to the
-  start of the text at runtime (shortest-to-longest order).  Fixed-width bodies
-  are still handled via the pre-computed `behind_lens` fast path.
+- **Lookbehind width**: variable-length lookbehind is fully supported via
+  *backward-matching VM instructions* (`CharBack`, `AnyCharBack`, `ClassBack`,
+  `ShorthandBack`, `PropBack`).  The compiler emits these instructions for
+  lookbehind bodies (with `Concat` children reversed and capture-slot order
+  swapped), so the VM executes the body from the current position moving
+  *backward* — the same way lookahead moves forward.  No position scanning is
+  needed; there is no fixed-width restriction.
 - **Relative/forward subexpression calls** (`\g<+n>`, `\g<-n>`) are parsed but
   the VM returns `None` for them (not yet implemented).
 - **Unicode case folding**: only single-codepoint lowercasing is used; full

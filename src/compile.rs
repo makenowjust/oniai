@@ -88,11 +88,23 @@ impl Compiler {
     // -----------------------------------------------------------------------
 
     fn compile_node(&mut self, node: &Node, flags: Flags) -> Result<(), Error> {
+        self.compile_node_inner(node, flags, false)
+    }
+
+    fn compile_node_inner(
+        &mut self,
+        node: &Node,
+        flags: Flags,
+        backward: bool,
+    ) -> Result<(), Error> {
+        let ic = flags.ignore_case;
         match node {
             Node::Empty => {}
 
             Node::Literal(c) => {
-                if flags.ignore_case {
+                if backward {
+                    self.emit(Inst::CharBack(*c, ic));
+                } else if ic {
                     self.emit(Inst::Char(*c, true));
                 } else {
                     self.emit(Inst::Char(*c, false));
@@ -100,15 +112,27 @@ impl Compiler {
             }
 
             Node::AnyChar => {
-                self.emit(Inst::AnyChar(flags.multiline));
+                if backward {
+                    self.emit(Inst::AnyCharBack(flags.multiline));
+                } else {
+                    self.emit(Inst::AnyChar(flags.multiline));
+                }
             }
 
             Node::Shorthand(sh) => {
-                self.emit(Inst::Shorthand(*sh, flags.ascii_range));
+                if backward {
+                    self.emit(Inst::ShorthandBack(*sh, flags.ascii_range));
+                } else {
+                    self.emit(Inst::Shorthand(*sh, flags.ascii_range));
+                }
             }
 
             Node::UnicodeProp { name, negate } => {
-                self.emit(Inst::Prop(name.clone(), *negate));
+                if backward {
+                    self.emit(Inst::PropBack(name.clone(), *negate));
+                } else {
+                    self.emit(Inst::Prop(name.clone(), *negate));
+                }
             }
 
             Node::Anchor(kind) => {
@@ -116,23 +140,33 @@ impl Compiler {
             }
 
             Node::CharClass(cc) => {
-                let cs = compile_charset(cc, flags.ignore_case, flags.ascii_range);
+                let cs = compile_charset(cc, ic, flags.ascii_range);
                 let idx = self.add_charset(cs);
-                self.emit(Inst::Class(idx, flags.ignore_case));
+                if backward {
+                    self.emit(Inst::ClassBack(idx, ic));
+                } else {
+                    self.emit(Inst::Class(idx, ic));
+                }
             }
 
             Node::Concat(nodes) => {
-                for n in nodes {
-                    self.compile_node(n, flags)?;
+                if backward {
+                    for n in nodes.iter().rev() {
+                        self.compile_node_inner(n, flags, backward)?;
+                    }
+                } else {
+                    for n in nodes {
+                        self.compile_node_inner(n, flags, backward)?;
+                    }
                 }
             }
 
             Node::Alternation(alts) => {
-                self.compile_alternation(alts, flags)?;
+                self.compile_alternation_inner(alts, flags, backward)?;
             }
 
             Node::Quantifier { node, range, kind } => {
-                self.compile_quantifier(node, range, kind, flags)?;
+                self.compile_quantifier_inner(node, range, kind, flags, backward)?;
             }
 
             Node::Capture {
@@ -152,9 +186,15 @@ impl Compiler {
                 self.subexp_starts.insert(idx, start_pc);
                 let slot_open = ((idx - 1) * 2) as usize;
                 let slot_close = slot_open + 1;
-                self.emit(Inst::Save(slot_open));
-                self.compile_node(node, f)?;
-                self.emit(Inst::Save(slot_close));
+                if backward {
+                    self.emit(Inst::Save(slot_close));
+                    self.compile_node_inner(node, f, backward)?;
+                    self.emit(Inst::Save(slot_open));
+                } else {
+                    self.emit(Inst::Save(slot_open));
+                    self.compile_node_inner(node, f, backward)?;
+                    self.emit(Inst::Save(slot_close));
+                }
                 self.emit(Inst::RetIfCalled);
             }
 
@@ -176,9 +216,15 @@ impl Compiler {
                 self.subexp_starts.insert(idx, start_pc);
                 let slot_open = ((idx - 1) * 2) as usize;
                 let slot_close = slot_open + 1;
-                self.emit(Inst::Save(slot_open));
-                self.compile_node(node, f)?;
-                self.emit(Inst::Save(slot_close));
+                if backward {
+                    self.emit(Inst::Save(slot_close));
+                    self.compile_node_inner(node, f, backward)?;
+                    self.emit(Inst::Save(slot_open));
+                } else {
+                    self.emit(Inst::Save(slot_open));
+                    self.compile_node_inner(node, f, backward)?;
+                    self.emit(Inst::Save(slot_close));
+                }
                 self.emit(Inst::RetIfCalled);
             }
 
@@ -190,31 +236,25 @@ impl Compiler {
                     on: *inner_flags,
                     off: Flags::default(),
                 });
-                self.compile_node(node, f)?;
+                self.compile_node_inner(node, f, backward)?;
             }
 
             Node::Atomic(node) => {
-                let atomic_start = self.emit(Inst::AtomicStart(0)); // patch later
-                self.compile_node(node, flags)?;
+                let atomic_start = self.emit(Inst::AtomicStart(0));
+                self.compile_node_inner(node, flags, backward)?;
                 let end_pc = self.pc();
                 self.emit(Inst::AtomicEnd);
                 self.patch_jump(atomic_start, end_pc);
             }
 
             Node::LookAround { dir, pol, node } => {
-                let behind_lens = if *dir == LookDir::Behind {
-                    compute_widths(node)
-                } else {
-                    Some(Vec::new())
-                };
                 let positive = *pol == LookPol::Positive;
+                let inner_backward = *dir == LookDir::Behind;
                 let look_start = self.emit(Inst::LookStart {
                     positive,
-                    dir: *dir,
                     end_pc: 0,
-                    behind_lens,
                 });
-                self.compile_node(node, flags)?;
+                self.compile_node_inner(node, flags, inner_backward)?;
                 let end_pc = self.pc();
                 self.emit(Inst::LookEnd);
                 self.patch_jump(look_start, end_pc);
@@ -229,7 +269,6 @@ impl Compiler {
                 let inst = match target {
                     GroupRef::Index(n) => Inst::BackRef(*n, ignore_case, *level),
                     GroupRef::Name(name) => {
-                        // Resolve name to group index
                         let idx = self.resolve_name(name)?;
                         Inst::BackRef(idx, ignore_case, *level)
                     }
@@ -249,7 +288,7 @@ impl Compiler {
             }
 
             Node::SubexpCall(target) => {
-                let call_pc = self.emit(Inst::Call(0)); // patch later
+                let call_pc = self.emit(Inst::Call(0));
                 self.pending_calls.push((call_pc, target.clone()));
             }
 
@@ -258,7 +297,7 @@ impl Compiler {
                 node,
             } => {
                 let new_flags = flags.apply_on(flag_mod);
-                self.compile_node(node, new_flags)?;
+                self.compile_node_inner(node, new_flags, backward)?;
             }
 
             Node::Absence(inner) => {
@@ -286,12 +325,22 @@ impl Compiler {
     // Alternation
     // -----------------------------------------------------------------------
 
+    #[allow(dead_code)]
     fn compile_alternation(&mut self, alts: &[Node], flags: Flags) -> Result<(), Error> {
+        self.compile_alternation_inner(alts, flags, false)
+    }
+
+    fn compile_alternation_inner(
+        &mut self,
+        alts: &[Node],
+        flags: Flags,
+        backward: bool,
+    ) -> Result<(), Error> {
         if alts.is_empty() {
             return Ok(());
         }
         if alts.len() == 1 {
-            return self.compile_node(&alts[0], flags);
+            return self.compile_node_inner(&alts[0], flags, backward);
         }
 
         // For N alternatives: emit Fork chain
@@ -304,7 +353,7 @@ impl Compiler {
                 let fork_pc = self.emit(Inst::Fork(0)); // patch to next alt
                 fork_pcs.push(fork_pc);
             }
-            self.compile_node(alt, flags)?;
+            self.compile_node_inner(alt, flags, backward)?;
             if i < alts.len() - 1 {
                 let jump_pc = self.emit(Inst::Jump(0)); // patch to after all alts
                 jump_pcs.push(jump_pc);
@@ -325,6 +374,7 @@ impl Compiler {
     // Quantifiers
     // -----------------------------------------------------------------------
 
+    #[allow(dead_code)]
     fn compile_quantifier(
         &mut self,
         node: &Node,
@@ -332,12 +382,23 @@ impl Compiler {
         kind: &QuantKind,
         flags: Flags,
     ) -> Result<(), Error> {
+        self.compile_quantifier_inner(node, range, kind, flags, false)
+    }
+
+    fn compile_quantifier_inner(
+        &mut self,
+        node: &Node,
+        range: &QuantRange,
+        kind: &QuantKind,
+        flags: Flags,
+        backward: bool,
+    ) -> Result<(), Error> {
         let min = range.min;
         let max = range.max;
 
         // Emit `min` mandatory copies
         for _ in 0..min {
-            self.compile_node(node, flags)?;
+            self.compile_node_inner(node, flags, backward)?;
         }
 
         match (max, kind) {
@@ -348,7 +409,7 @@ impl Compiler {
             (None, QuantKind::Greedy) => {
                 // loop: Fork(exit), body, Jump(Fork)
                 let fork_pc = self.emit(Inst::Fork(0));
-                self.compile_node(node, flags)?;
+                self.compile_node_inner(node, flags, backward)?;
                 let jump_pc = self.emit(Inst::Jump(fork_pc));
                 let _ = jump_pc;
                 self.patch_jump(fork_pc, self.pc());
@@ -356,7 +417,7 @@ impl Compiler {
             (None, QuantKind::Reluctant) => {
                 let fork_pc = self.emit(Inst::ForkNext(0)); // try exit first (lazy)
                 let body_start = self.pc();
-                self.compile_node(node, flags)?;
+                self.compile_node_inner(node, flags, backward)?;
                 self.emit(Inst::Jump(fork_pc));
                 let end_pc = self.pc();
                 self.patch_jump(fork_pc, body_start); // on failure: try body
@@ -385,7 +446,7 @@ impl Compiler {
                 // Atomic loop
                 let atomic_start = self.emit(Inst::AtomicStart(0));
                 let fork_pc = self.emit(Inst::Fork(0));
-                self.compile_node(node, flags)?;
+                self.compile_node_inner(node, flags, backward)?;
                 self.emit(Inst::Jump(fork_pc));
                 let loop_end = self.pc();
                 self.emit(Inst::AtomicEnd);
@@ -433,13 +494,14 @@ impl Compiler {
                 // For now, emit a hacky version: since we already emitted `extra` Fork(0)
                 // instructions, we need to fill them in. Let's insert bodies between them...
                 // This is too complex to fix inline. I'll write a separate helper.
-                return self.compile_counted_optional(node, min, m, kind, flags, &fork_pcs);
+                return self
+                    .compile_counted_optional(node, min, m, kind, flags, backward, &fork_pcs);
             }
 
             (Some(m), QuantKind::Reluctant) => {
                 for _ in min..m {
                     let fork_pc = self.emit(Inst::ForkNext(0));
-                    self.compile_node(node, flags)?;
+                    self.compile_node_inner(node, flags, backward)?;
                     let after = self.pc();
                     self.patch_jump(fork_pc, after);
                 }
@@ -451,7 +513,7 @@ impl Compiler {
                 let atomic_start = self.emit(Inst::AtomicStart(0));
                 for _ in 0..extra {
                     let fork_pc = self.emit(Inst::Fork(0));
-                    self.compile_node(node, flags)?;
+                    self.compile_node_inner(node, flags, backward)?;
                     let after = self.pc();
                     self.patch_jump(fork_pc, after); // hmm, all fork to same exit
                 }
@@ -463,6 +525,7 @@ impl Compiler {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn compile_counted_optional(
         &mut self,
         node: &Node,
@@ -470,6 +533,7 @@ impl Compiler {
         max: u32,
         _kind: &QuantKind,
         flags: Flags,
+        backward: bool,
         pre_emitted_forks: &[usize],
     ) -> Result<(), Error> {
         // Remove pre-emitted (wrong) Fork instructions by truncating
@@ -487,7 +551,7 @@ impl Compiler {
         for _ in 0..extra {
             let fp = self.emit(Inst::Fork(0));
             fork_pcs.push(fp);
-            self.compile_node(node, flags)?;
+            self.compile_node_inner(node, flags, backward)?;
         }
         let exit_pc = self.pc();
         for fp in fork_pcs {
@@ -627,108 +691,6 @@ fn compile_class_item(item: &ClassItem, ascii_range: bool, ignore_case: bool) ->
         ClassItem::Unicode(name, neg) => CharSetItem::Unicode(name.clone(), *neg),
         ClassItem::Nested(inner) => {
             CharSetItem::Nested(compile_charset(inner, ignore_case, ascii_range))
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Width computation for lookbehind
-// ---------------------------------------------------------------------------
-
-/// Returns `true` if `node` can only match strings of bounded (finite) byte length.
-fn is_finite_width(node: &Node) -> bool {
-    match node {
-        Node::Quantifier { range, node, .. } => range.max.is_some() && is_finite_width(node),
-        Node::Concat(nodes) => nodes.iter().all(is_finite_width),
-        Node::Alternation(alts) => alts.iter().all(is_finite_width),
-        Node::Group { node, .. }
-        | Node::Capture { node, .. }
-        | Node::NamedCapture { node, .. }
-        | Node::Atomic(node)
-        | Node::InlineFlags { node, .. } => is_finite_width(node),
-        _ => true,
-    }
-}
-
-/// Compute the set of possible byte widths for a node.
-/// Returns `None` if the node can match strings of unbounded length (e.g. `a*`).
-/// Used for look-behind to determine how far to step back.
-fn compute_widths(node: &Node) -> Option<Vec<usize>> {
-    if !is_finite_width(node) {
-        return None;
-    }
-    let mut set = std::collections::BTreeSet::new();
-    collect_widths(node, 0, &mut set);
-    Some(set.into_iter().collect())
-}
-
-fn collect_widths(node: &Node, base: usize, out: &mut std::collections::BTreeSet<usize>) {
-    match node {
-        Node::Empty | Node::Anchor(_) | Node::Keep => {
-            out.insert(base);
-        }
-        Node::Literal(_)
-        | Node::AnyChar
-        | Node::Shorthand(_)
-        | Node::UnicodeProp { .. }
-        | Node::CharClass(_) => {
-            // Approximate: 1 char = 1-4 bytes; use byte count range.
-            // For simplicity, use 1..=4 for non-ASCII capable nodes.
-            // For ASCII-only patterns this is 1.
-            // We'll insert base+1 to base+4 as possible widths.
-            for bw in 1..=4usize {
-                out.insert(base + bw);
-            }
-        }
-        Node::Concat(nodes) => {
-            let mut cur = std::collections::BTreeSet::new();
-            cur.insert(base);
-            for n in nodes {
-                let mut next = std::collections::BTreeSet::new();
-                for &w in &cur {
-                    collect_widths(n, w, &mut next);
-                }
-                cur = next;
-            }
-            out.extend(cur);
-        }
-        Node::Alternation(alts) => {
-            for alt in alts {
-                collect_widths(alt, base, out);
-            }
-        }
-        Node::Group { node, .. }
-        | Node::Capture { node, .. }
-        | Node::NamedCapture { node, .. }
-        | Node::Atomic(node)
-        | Node::InlineFlags { node, .. } => {
-            collect_widths(node, base, out);
-        }
-        Node::Quantifier { node, range, .. } => {
-            let min = range.min as usize;
-            let max = range
-                .max
-                .expect("collect_widths called on unbounded quantifier")
-                as usize;
-            for count in min..=max {
-                let mut sub = std::collections::BTreeSet::new();
-                sub.insert(base);
-                for _ in 0..count {
-                    let mut next = std::collections::BTreeSet::new();
-                    for &w in &sub {
-                        collect_widths(node, w, &mut next);
-                    }
-                    sub = next;
-                }
-                out.extend(sub);
-            }
-        }
-        // Lookarounds are zero-width
-        Node::LookAround { .. } => {
-            out.insert(base);
-        }
-        _ => {
-            out.insert(base);
         }
     }
 }

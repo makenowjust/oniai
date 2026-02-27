@@ -1,4 +1,4 @@
-use crate::ast::{AnchorKind, Flags, LookDir, Shorthand};
+use crate::ast::{AnchorKind, Flags, Shorthand};
 use crate::charset;
 use crate::compile::{CompileOptions, compile};
 use crate::error::Error;
@@ -113,6 +113,17 @@ pub enum Inst {
     /// Unicode property `\p{...}`
     Prop(String, bool),
 
+    /// Match a single character ending at `pos`; decrement pos by char len.
+    CharBack(char, bool),
+    /// `.` backward — match any char ending at `pos`; decrement pos.
+    AnyCharBack(bool),
+    /// Character class backward.
+    ClassBack(usize, bool),
+    /// Shorthand backward.
+    ShorthandBack(Shorthand, bool),
+    /// Unicode property backward.
+    PropBack(String, bool),
+
     /// Anchor (`^`, `$`, `\b`, `\A`, etc.)
     Anchor(AnchorKind, Flags),
 
@@ -154,15 +165,7 @@ pub enum Inst {
     AtomicEnd,
 
     /// Lookaround start
-    LookStart {
-        positive: bool,
-        dir: LookDir,
-        end_pc: usize,
-        /// Pre-computed byte offsets to try for lookbehind.
-        /// `None` means the body has variable/unbounded width — the VM will
-        /// scan all positions from the start of the text up to `pos` at runtime.
-        behind_lens: Option<Vec<usize>>,
-    },
+    LookStart { positive: bool, end_pc: usize },
 
     /// Marks end of lookaround body
     LookEnd,
@@ -227,6 +230,19 @@ impl<'t> Ctx<'t> {
         }
         let ch = self.text[pos..].chars().next()?;
         Some((ch, ch.len_utf8()))
+    }
+
+    fn char_before(&self, pos: usize) -> Option<(char, usize)> {
+        if pos == 0 {
+            return None;
+        }
+        let bytes = self.text.as_bytes();
+        let mut start = pos - 1;
+        while start > 0 && bytes[start] & 0xC0 == 0x80 {
+            start -= 1;
+        }
+        let c = self.text[start..pos].chars().next()?;
+        Some((c, pos - start))
     }
 }
 
@@ -505,6 +521,50 @@ fn exec(
                 _ => fail!(),
             },
 
+            Inst::CharBack(ch, ignore_case) => match ctx.char_before(pos) {
+                Some((c, len)) if *ignore_case && chars_eq_ci(*ch, c) => {
+                    pos -= len;
+                    pc += 1;
+                }
+                Some((c, len)) if !ignore_case && *ch == c => {
+                    pos -= len;
+                    pc += 1;
+                }
+                _ => fail!(),
+            },
+
+            Inst::AnyCharBack(dotall) => match ctx.char_before(pos) {
+                Some((c, len)) if *dotall || c != '\n' => {
+                    pos -= len;
+                    pc += 1;
+                }
+                _ => fail!(),
+            },
+
+            Inst::ClassBack(idx, ignore_case) => match ctx.char_before(pos) {
+                Some((c, len)) if ctx.charsets[*idx].matches(c, false, *ignore_case) => {
+                    pos -= len;
+                    pc += 1;
+                }
+                _ => fail!(),
+            },
+
+            Inst::ShorthandBack(sh, ascii_range) => match ctx.char_before(pos) {
+                Some((c, len)) if charset::matches_shorthand(*sh, c, *ascii_range) => {
+                    pos -= len;
+                    pc += 1;
+                }
+                _ => fail!(),
+            },
+
+            Inst::PropBack(name, negate) => match ctx.char_before(pos) {
+                Some((c, len)) if charset::matches_unicode_prop(name, c, *negate) => {
+                    pos -= len;
+                    pc += 1;
+                }
+                _ => fail!(),
+            },
+
             Inst::Anchor(kind, flags) => {
                 if matches_anchor(ctx, pos, *kind, *flags) {
                     pc += 1;
@@ -652,28 +712,19 @@ fn exec(
                 pc += 1;
             }
 
-            Inst::LookStart {
-                positive,
-                dir,
-                end_pc,
-                behind_lens,
-            } => {
+            Inst::LookStart { positive, end_pc } => {
                 let positive = *positive;
                 let end_pc = *end_pc;
                 let lk_key = memo_key(pc, pos);
 
-                // Algorithm 6: check the lookaround result cache before
-                // running the (potentially expensive) sub-execution.
                 let matched = if ctx.use_memo {
                     if let Some(entry) = memo.look_results.get(&lk_key).cloned() {
-                        // Cache hit: apply any slot changes and return cached result.
                         match entry {
                             LookCacheEntry::BodyMatched {
                                 slot_delta,
                                 keep_pos_delta,
                             } => {
                                 if positive {
-                                    // Re-apply the slot delta to the current outer state.
                                     for (idx, val) in slot_delta {
                                         if idx >= state.slots.len() {
                                             state.slots.resize(idx + 1, None);
@@ -689,19 +740,9 @@ fn exec(
                             LookCacheEntry::BodyNotMatched => false,
                         }
                     } else {
-                        // Cache miss: run the sub-execution and cache the result.
                         let pre_slots = state.slots.clone();
                         let pre_keep = state.keep_pos;
-                        let m = exec_lookaround(
-                            ctx,
-                            pc + 1,
-                            pos,
-                            state,
-                            *dir,
-                            behind_lens.as_deref(),
-                            depth,
-                            memo,
-                        );
+                        let m = exec_lookaround(ctx, pc + 1, pos, state, depth, memo);
                         let entry = if m {
                             let slot_delta = compute_slot_delta(&pre_slots, &state.slots);
                             let keep_pos_delta = if state.keep_pos != pre_keep {
@@ -720,16 +761,7 @@ fn exec(
                         m
                     }
                 } else {
-                    exec_lookaround(
-                        ctx,
-                        pc + 1,
-                        pos,
-                        state,
-                        *dir,
-                        behind_lens.as_deref(),
-                        depth,
-                        memo,
-                    )
+                    exec_lookaround(ctx, pc + 1, pos, state, depth, memo)
                 };
 
                 if matched == positive {
@@ -789,87 +821,25 @@ fn exec(
 /// failures discovered inside a lookaround body are visible to the outer VM
 /// and vice-versa, giving the correct complexity guarantee for patterns that
 /// combine Fork and lookaround.
-#[allow(clippy::too_many_arguments)]
 fn exec_lookaround(
     ctx: &Ctx<'_>,
     body_pc: usize,
     pos: usize,
     state: &mut State,
-    dir: LookDir,
-    // `Some(lens)`: pre-computed byte offsets; `None`: scan all positions.
-    behind_lens: Option<&[usize]>,
     depth: usize,
     memo: &mut MemoState,
 ) -> bool {
-    match dir {
-        LookDir::Ahead => {
-            let mut sub = State {
-                slots: state.slots.clone(),
-                keep_pos: state.keep_pos,
-                call_stack: Vec::new(),
-            };
-            if exec(ctx, body_pc, pos, &mut sub, depth + 1, memo).is_some() {
-                state.slots = sub.slots;
-                state.keep_pos = sub.keep_pos;
-                true
-            } else {
-                false
-            }
-        }
-        LookDir::Behind => {
-            // Helper: try matching the body starting at `try_pos`, succeeding only
-            // if the sub-execution ends exactly at `pos`.
-            let mut try_behind = |try_pos: usize, state: &mut State| -> bool {
-                if !ctx.text.is_char_boundary(try_pos) {
-                    return false;
-                }
-                let mut sub = State {
-                    slots: state.slots.clone(),
-                    keep_pos: state.keep_pos,
-                    call_stack: Vec::new(),
-                };
-                if exec(ctx, body_pc, try_pos, &mut sub, depth + 1, memo)
-                    .map(|end| end == pos)
-                    .unwrap_or(false)
-                {
-                    state.slots = sub.slots;
-                    state.keep_pos = sub.keep_pos;
-                    true
-                } else {
-                    false
-                }
-            };
-            match behind_lens {
-                Some(lens) => {
-                    // Fixed or bounded width: only try the pre-computed offsets.
-                    for &len in lens {
-                        if pos < len {
-                            continue;
-                        }
-                        if try_behind(pos - len, state) {
-                            return true;
-                        }
-                    }
-                    false
-                }
-                None => {
-                    // Variable/unbounded width: scan every possible start position
-                    // from the current position back to the beginning of the text.
-                    // Iterate shortest-to-longest (pos, pos-1, …, 0).
-                    let mut try_pos = pos;
-                    loop {
-                        if try_behind(try_pos, state) {
-                            return true;
-                        }
-                        if try_pos == 0 {
-                            break;
-                        }
-                        try_pos -= 1;
-                    }
-                    false
-                }
-            }
-        }
+    let mut sub = State {
+        slots: state.slots.clone(),
+        keep_pos: state.keep_pos,
+        call_stack: Vec::new(),
+    };
+    if exec(ctx, body_pc, pos, &mut sub, depth + 1, memo).is_some() {
+        state.slots = sub.slots;
+        state.keep_pos = sub.keep_pos;
+        true
+    } else {
+        false
     }
 }
 
