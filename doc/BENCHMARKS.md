@@ -266,38 +266,43 @@ amortised O(1).
 
 ## JIT compilation (`--features jit`)
 
-Added in Phase 1.  Compiles eligible `Vec<Inst>` programs to native machine
+Added in Phase 1; inlined in Phase 2.  Compiles eligible `Vec<Inst>` programs to native machine
 code via Cranelift, creating one basic block per instruction and routing
 backtracking through a `br_table` dispatch block.
 
-### Interpreter vs JIT — median times
+### Phase 1 vs Phase 2 vs Interpreter — median times
 
-| Benchmark | Interpreter | JIT | Ratio |
-|-----------|-------------|-----|-------|
-| literal/no\_match\_1k | 49.8 ns | 49.7 ns | **1.00×** |
-| literal/match\_mid\_1k | 145 ns | 180 ns | 0.81× |
-| anchored/no\_match\_1k | 16.1 ns | 47.2 ns | 0.34× |
-| alternation/4\_alts\_match | 18.9 µs | 18.9 µs | **1.00×** |
-| alternation/4\_alts\_no\_match | 46.8 µs | 46.7 µs | **1.00×** |
-| quantifier/greedy\_no\_match\_500 | 25.8 ns | 25.8 ns | **1.00×** |
-| quantifier/greedy\_match\_500 | 9.17 µs | 6.11 µs | **1.50× faster** ✅ |
-| captures/two\_groups | 612 ns | 603 ns | **1.01×** |
-| captures/iter\_all | 2.57 µs | 2.54 µs | **1.01×** |
-| email/find\_all | 3.25 µs | 4.19 µs | 0.78× |
-| charclass/alpha\_iter | 30.8 µs | 38.4 µs | 0.80× |
-| charclass/posix\_digit\_iter | 24.4 µs | 37.3 µs | 0.65× |
-| case\_insensitive/match | 14.0 µs | 14.2 µs | **0.98×** |
-| find\_iter\_scale/100 | 2.63 µs | 5.05 µs | 0.52× |
-| find\_iter\_scale/500 | 12.9 µs | 24.9 µs | 0.52× |
-| find\_iter\_scale/1000 | 25.8 µs | 49.7 µs | 0.52× |
-| find\_iter\_scale/5000 | 129 µs | 248 µs | 0.52× |
-| pathological/10 | 4.33 µs | 6.38 µs | 0.68× |
-| pathological/15 | 9.94 µs | 14.2 µs | 0.70× |
-| pathological/20 | 17.7 µs | 25.0 µs | 0.71× |
+Phase 1: all instructions as `extern "C"` helper calls.  
+Phase 2: `Char`, `AnyChar`, `Shorthand` (ASCII fast-path), `Save`, `Anchor` inlined as Cranelift IR.
+
+| Benchmark | Interpreter | JIT Phase 1 | JIT Phase 2 |
+|-----------|-------------|-------------|-------------|
+| literal/no\_match\_1k | 49.8 ns | 49.7 ns (1.00×) | 49.5 ns (1.01×) |
+| literal/match\_mid\_1k | 145 ns | 180 ns (0.81×) | 139 ns (**1.04×**) |
+| anchored/no\_match\_1k | 16.1 ns | 47.2 ns (0.34×) | 14.0 ns (**1.15× faster** ✅) |
+| alternation/4\_alts\_match | 18.9 µs | 18.9 µs (1.00×) | 18.9 µs (1.00×) |
+| alternation/4\_alts\_no\_match | 46.8 µs | 46.7 µs (1.00×) | 46.7 µs (1.00×) |
+| quantifier/greedy\_no\_match\_500 | 25.8 ns | 25.8 ns (1.00×) | 27.3 ns (0.95×) |
+| quantifier/greedy\_match\_500 | 9.17 µs | 6.11 µs (**1.50×**) | 5.61 µs (**1.63× faster** ✅) |
+| captures/two\_groups | 612 ns | 603 ns (1.01×) | 627 ns (0.98×) |
+| captures/iter\_all | 2.57 µs | 2.54 µs (1.01×) | 2.62 µs (0.98×) |
+| email/find\_all | 3.25 µs | 4.19 µs (0.78×) | 3.53 µs (0.92×) |
+| charclass/alpha\_iter | 30.8 µs | 38.4 µs (0.80×) | 39.7 µs (0.78×) |
+| charclass/posix\_digit\_iter | 24.4 µs | 37.3 µs (0.65×) | 37.9 µs (0.64×) |
+| case\_insensitive/match | 14.0 µs | 14.2 µs (0.98×) | 14.0 µs (1.00×) |
+| find\_iter\_scale/100 | 2.72 µs | 5.22 µs (0.52×) | 3.37 µs (0.81×) |
+| find\_iter\_scale/500 | 13.3 µs | 25.5 µs (0.52×) | 16.5 µs (0.81×) |
+| find\_iter\_scale/1000 | 26.7 µs | 51.3 µs (0.52×) | 33.1 µs (0.81×) |
+| find\_iter\_scale/5000 | 133 µs | 255 µs (0.52×) | 165 µs (0.81×) |
+| pathological/10 | 4.39 µs | 6.38 µs (0.69×) | 5.30 µs (0.83×) |
+| pathological/15 | 9.94 µs | 14.2 µs (0.70×) | 11.9 µs (0.84×) |
+| pathological/20 | 17.7 µs | 25.0 µs (0.71×) | 21.1 µs (0.84×) |
 
 ### Analysis
 
-**Phase 1 JIT is slower than the interpreter in most cases.**  The sole
+#### Phase 1 (helper calls only)
+
+Phase 1 JIT is slower than the interpreter in most cases.  The sole
 speedup is `quantifier/greedy_match_500` (+50%), where the tight
 `Fork → Char → Jump` loop benefits from direct block-to-block jumps that
 eliminate the interpreter's `match`-dispatch overhead.
@@ -307,35 +312,45 @@ The regressions have two root causes:
 1. **Per-instruction helper calls.**  Every instruction (`Char`, `Class`,
    `Shorthand`, …) emits an `extern "C"` call to a Rust helper function.
    Cranelift eliminates the interpreter's `match` dispatch (~2 cycles), but
-   the C ABI function call costs ~10–20 cycles.  The net result is a
-   regression whenever the instruction mix is dominated by character-matching
-   operations.  The `find_iter_scale` benchmarks, which scan `\d+` over mixed
-   text, show a consistent **1.92× slowdown** because every position check
-   calls `jit_match_shorthand`.  The `charclass/posix_digit_iter` regression
-   (1.53×) has the same cause.
+   the C ABI function call costs ~10–20 cycles.  The `find_iter_scale`
+   benchmarks show a consistent **1.92× slowdown** because every position check
+   calls `jit_match_shorthand`.
 
-2. **`exec_jit` setup per match attempt.**  Each call to `exec_jit` allocates
-   a new `Vec<BtJit>` backtrack stack and fills in a 16-field `JitExecCtx`
-   struct.  For anchored patterns or short haystacks where `exec()` is called
-   very few times, this fixed overhead dominates.  `anchored/no_match_1k`
-   (2.9× slowdown) is a clear example: the interpreter's single-position
-   attempt costs ~16 ns, while JIT setup costs ~47 ns.
+2. **`exec_jit` setup per match attempt.**  Each call allocates a new
+   `Vec<BtJit>` and fills in a 16-field `JitExecCtx` struct.  For short haystacks
+   the fixed overhead dominates.  `anchored/no_match_1k` (2.9× slowdown) is
+   the clearest example.
 
-### Plan for Phase 2
+#### Phase 2 (inlined IR)
 
-The performance gap will be closed by **inlining common instructions as
-Cranelift IR** rather than calling helpers.  Specifically:
+Phase 2 inlines `Char`, `AnyChar`, `Shorthand` (ASCII fast-path), `Save`,
+and `Anchor` instructions as Cranelift IR.  Results:
 
-- `Char(ch, false)` → inline a UTF-8 decode + compare sequence in IR
-- `AnyChar(dotall)` → inline a single byte comparison
-- `Shorthand(Word|Digit|Space, false)` → inline range-check chains in IR
-- `Jump`/`Fork`/`ForkNext` → these already use direct jumps; memo push can
-  be inlined as a direct store to the `Vec<BtJit>` via pointer arithmetic
+- **`anchored/no_match_1k`: 2.9× slower → 1.15× faster** — the Anchor
+  inline eliminates all instruction dispatch for the anchor check, recovering
+  the per-call setup cost almost entirely.
+- **`quantifier/greedy_match_500`: 1.50× → 1.63× faster** — inline `Char`
+  tightens the inner loop further.
+- **`find_iter_scale`: 1.92× → 1.24× slower** — shorthand ASCII fast-path
+  reduces calls to `jit_match_shorthand` for ASCII text, cutting the regression
+  significantly.  Non-ASCII paths still call the helper for correctness.
+- **`literal/match_mid_1k`: 0.81× → 1.04× faster** — inline `Char` beats
+  the interpreter for this pattern.
+- **`pathological`: 0.70× → 0.84×** — consistent improvement across Fork-heavy
+  patterns; the `Save` inline reduces per-iteration overhead.
 
-Inlining these eliminates call overhead entirely for the common fast path and
-allows Cranelift's register allocator to keep `pos` and `ctx_ptr` in
-registers across the entire inner loop.  The expected outcome is a 2–4×
-speedup for `find_iter_scale`-class workloads and a 5–10× speedup for
-`greedy_match_500`-class workloads (no function calls in the tight loop).
+**Remaining regressions** — `charclass/alpha_iter` and `charclass/posix_digit_iter`
+still regress (~1.5×) because `CharClass` matching still calls a helper.
+`find_iter_scale` remains 1.24× slower due to residual JIT overhead and the
+non-ASCII fallback call on each character boundary.
+
+### Known bottlenecks and future work (Phase 3)
+
+| Root cause | Current | Phase 3 plan |
+|------------|---------|--------------|
+| `CharClass` matching | helper call ~15 cy | Inline 1–4 range checks as IR |
+| `JitExecCtx` alloc per `exec_jit` | ~20 ns fixed | Reuse ctx across calls with arena |
+| Non-ASCII shorthand fallback | helper call for non-ASCII chars | Inline two-byte / three-byte decode |
+| Cranelift code quality vs LLVM | ~20% throughput gap | Enable `opt_level(Speed)` in JIT codegen |
 
 See `doc/JIT.md` for the full design.
