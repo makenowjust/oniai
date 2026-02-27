@@ -19,6 +19,10 @@ pub struct CharSet {
     pub items: Vec<CharSetItem>,
     /// AND-intersected classes
     pub intersections: Vec<CharSet>,
+    /// Precomputed sorted, merged ranges of ASCII code points (0–127) that this
+    /// charset matches (case-sensitive, `ascii_range=false`).  Set by
+    /// `compute_ascii_ranges()` after the charset is fully constructed.
+    pub ascii_ranges: Option<Vec<(u8, u8)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -32,7 +36,21 @@ pub enum CharSetItem {
 }
 
 impl CharSet {
-    pub fn matches(&self, ch: char, ascii_range: bool, ignore_case: bool) -> bool {
+    /// Precompute `ascii_ranges` by sampling all 128 ASCII code points.
+    ///
+    /// Must be called after all nested `CharSet` fields have been constructed so
+    /// that the `ascii_ranges` fast-path is already populated for inner charsets.
+    pub fn compute_ascii_ranges(&mut self) {
+        let mut bits = [false; 128];
+        for b in 0u8..128 {
+            bits[b as usize] = self.matches_slow(char::from(b), false, false);
+        }
+        self.ascii_ranges = Some(bits_to_ranges(&bits));
+    }
+
+    /// Slow (item-by-item) match, bypassing the `ascii_ranges` fast path.
+    /// Used only during `compute_ascii_ranges` to avoid circularity.
+    fn matches_slow(&self, ch: char, ascii_range: bool, ignore_case: bool) -> bool {
         let test_ch = if ignore_case {
             ch.case_fold().next().unwrap_or(ch)
         } else {
@@ -51,6 +69,45 @@ impl CharSet {
         };
         if self.negate { !result } else { result }
     }
+
+    pub fn matches(&self, ch: char, ascii_range: bool, ignore_case: bool) -> bool {
+        // Fast path: precomputed ASCII ranges (case-sensitive only).
+        if !ignore_case
+            && let Some(ref ranges) = self.ascii_ranges
+            && (ch as u32) < 128
+        {
+            let b = ch as u8;
+            return ranges
+                .binary_search_by(|&(lo, hi)| {
+                    if b < lo {
+                        std::cmp::Ordering::Greater
+                    } else if b > hi {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
+                .is_ok();
+        }
+        self.matches_slow(ch, ascii_range, ignore_case)
+    }
+}
+
+/// Convert a 128-element boolean array into sorted, merged `(lo, hi)` ranges.
+pub fn bits_to_ranges(bits: &[bool; 128]) -> Vec<(u8, u8)> {
+    let mut ranges: Vec<(u8, u8)> = Vec::new();
+    let mut start: Option<u8> = None;
+    for i in 0u8..128 {
+        if bits[i as usize] {
+            start.get_or_insert(i);
+        } else if let Some(s) = start.take() {
+            ranges.push((s, i - 1));
+        }
+    }
+    if let Some(s) = start {
+        ranges.push((s, 127));
+    }
+    ranges
 }
 
 impl CharSetItem {

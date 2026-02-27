@@ -753,11 +753,18 @@ pub fn compile_charset(cc: &CharClass, ignore_case: bool, ascii_range: bool) -> 
         .iter()
         .map(|ic| compile_charset(ic, ignore_case, ascii_range))
         .collect();
-    CharSet {
+    let mut cs = CharSet {
         negate: cc.negate,
         items,
         intersections,
-    }
+        ascii_ranges: None,
+    };
+    // Precompute sorted/merged ASCII ranges for fast matching and JIT inlining.
+    // Nested charsets already have their own ascii_ranges set (recursive calls
+    // above finished first), so the slow-path sampling here uses those fast paths
+    // for inner charsets automatically.
+    cs.compute_ascii_ranges();
+    cs
 }
 
 fn compile_class_item(item: &ClassItem, ascii_range: bool, ignore_case: bool) -> CharSetItem {

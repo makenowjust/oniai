@@ -43,8 +43,8 @@ use cranelift_codegen::ir::{FuncRef, Value, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{FuncId, Linkage, Module};
 
-use crate::ast::{AnchorKind, PosixClass, Shorthand};
-use crate::vm::{CharSet, CharSetItem, Inst};
+use crate::ast::{AnchorKind, Shorthand};
+use crate::vm::{CharSet, Inst};
 
 // ---------------------------------------------------------------------------
 // Variable indices
@@ -290,17 +290,20 @@ fn emit_function(
             Inst::Class(idx, ic) => {
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
-                if !ic && is_simple_ascii_charset(&charsets[*idx]) {
+                if !ic {
                     inline_charclass_fwd(
                         builder,
+                        module,
                         &inst_blocks,
                         bt_resume_block,
+                        h_match_class,
                         var_pos,
                         var_ctx,
                         ctx_v,
                         pos_v,
                         pc,
                         &charsets[*idx],
+                        *idx,
                     );
                 } else {
                     let i = builder.ins().iconst(types::I32, *idx as i64);
@@ -362,17 +365,20 @@ fn emit_function(
             Inst::ClassBack(idx, ic) => {
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
-                if !ic && is_simple_ascii_charset(&charsets[*idx]) {
+                if !ic {
                     inline_charclass_back(
                         builder,
+                        module,
                         &inst_blocks,
                         bt_resume_block,
+                        h_match_class_back,
                         var_pos,
                         var_ctx,
                         ctx_v,
                         pos_v,
                         pc,
                         &charsets[*idx],
+                        *idx,
                     );
                 } else {
                     let i = builder.ins().iconst(types::I32, *idx as i64);
@@ -979,58 +985,40 @@ fn shorthand_ascii_check(builder: &mut FunctionBuilder<'_>, sh: Shorthand, byte:
 }
 
 // ---------------------------------------------------------------------------
-// CharClass inlining helpers (Phase 3 + Phase 4)
+// CharClass inlining helpers — precomputed ascii_ranges based
 // ---------------------------------------------------------------------------
 
-/// Returns `true` when a POSIX class exclusively matches ASCII characters,
-/// making it safe to use the "fail on non-ASCII byte" fast path.
-fn is_ascii_only_posix(cls: PosixClass) -> bool {
-    matches!(
-        cls,
-        PosixClass::Digit
-            | PosixClass::Space
-            | PosixClass::Blank
-            | PosixClass::XDigit
-            | PosixClass::Ascii
-            | PosixClass::Cntrl
-            | PosixClass::Punct
-    )
-}
-
-/// Returns `true` when a shorthand exclusively matches ASCII characters.
-fn is_ascii_only_shorthand(sh: Shorthand) -> bool {
-    // Digit/Space/HexDigit are defined as ASCII-only regardless of ascii_range.
-    // NonDigit / NonSpace / NonHexDigit / NonWord CAN match non-ASCII bytes,
-    // so they are unsafe for the "fail on non-ASCII" strategy.
-    matches!(
-        sh,
-        Shorthand::Digit | Shorthand::Space | Shorthand::HexDigit
-    )
-}
-
-/// Returns `true` when a single charset item is safe for the ASCII-fast-path
-/// inline: non-ASCII bytes will NEVER match the item, so failing on non-ASCII
-/// is always correct.
-fn is_fast_path_safe(item: &CharSetItem) -> bool {
-    match item {
-        CharSetItem::Char(c) => c.is_ascii(),
-        CharSetItem::Range(lo, hi) => lo.is_ascii() && hi.is_ascii(),
-        // Non-negated POSIX items that are exclusively ASCII.
-        CharSetItem::Posix(cls, false) => is_ascii_only_posix(*cls),
-        // Shorthand items: always-ASCII classes (Digit/Space/HexDigit) are safe
-        // regardless of ar; Word is ASCII-only when ar=true.
-        CharSetItem::Shorthand(sh, ar) => {
-            is_ascii_only_shorthand(*sh) || (matches!(sh, Shorthand::Word) && *ar)
-        }
-        _ => false,
+/// Returns `true` when no non-ASCII char can ever match `cs`
+/// (so non-ASCII bytes can be rejected inline without calling the helper).
+fn is_ascii_only_charset(cs: &CharSet) -> bool {
+    use crate::ast::PosixClass;
+    use crate::vm::CharSetItem;
+    if cs.negate {
+        return false; // negation of ASCII-only items matches all non-ASCII chars
     }
-}
-
-/// Returns `true` when `cs` can be fully inlined as pure Cranelift IR:
-/// - no negation, no intersections
-/// - every item is safe for the "fail on non-ASCII" fast path
-fn is_simple_ascii_charset(cs: &CharSet) -> bool {
-    !cs.negate && cs.intersections.is_empty() && cs.items.iter().all(is_fast_path_safe)
+    cs.intersections.iter().all(is_ascii_only_charset)
+        && cs.items.iter().all(|item| match item {
+            CharSetItem::Char(c) => c.is_ascii(),
+            CharSetItem::Range(lo, hi) => lo.is_ascii() && hi.is_ascii(),
+            CharSetItem::Shorthand(sh, ar) => {
+                matches!(
+                    sh,
+                    Shorthand::Digit | Shorthand::Space | Shorthand::HexDigit
+                ) || (matches!(sh, Shorthand::Word) && *ar)
+            }
+            CharSetItem::Posix(cls, false) => matches!(
+                cls,
+                PosixClass::Digit
+                    | PosixClass::Space
+                    | PosixClass::Blank
+                    | PosixClass::XDigit
+                    | PosixClass::Ascii
+                    | PosixClass::Cntrl
+                    | PosixClass::Punct
+            ),
+            CharSetItem::Nested(inner) => is_ascii_only_charset(inner),
+            _ => false,
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -1053,122 +1041,55 @@ fn emit_eq_check(builder: &mut FunctionBuilder<'_>, byte: Value, ch: u8) -> Valu
     builder.ins().icmp(IntCC::Equal, byte, cv)
 }
 
-/// Emit I8 boolean for a POSIX always-ASCII class.
-fn posix_ascii_check(builder: &mut FunctionBuilder<'_>, cls: PosixClass, byte: Value) -> Value {
-    match cls {
-        PosixClass::Digit => emit_range_check(builder, byte, b'0', b'9'),
-        PosixClass::XDigit => {
-            let d = emit_range_check(builder, byte, b'0', b'9');
-            let u = emit_range_check(builder, byte, b'A', b'F');
-            let l = emit_range_check(builder, byte, b'a', b'f');
-            let t = builder.ins().bor(d, u);
-            builder.ins().bor(t, l)
-        }
-        PosixClass::Space => {
-            // \t (9) .. \r (13)  and  ' ' (32)
-            let ctrl = emit_range_check(builder, byte, b'\t', b'\r');
-            let sp = emit_eq_check(builder, byte, b' ');
-            builder.ins().bor(ctrl, sp)
-        }
-        PosixClass::Blank => {
-            let tab = emit_eq_check(builder, byte, b'\t');
-            let sp = emit_eq_check(builder, byte, b' ');
-            builder.ins().bor(tab, sp)
-        }
-        PosixClass::Ascii => {
-            // All bytes reaching here are already < 0x80, so always true.
-            builder.ins().iconst(types::I8, 1)
-        }
-        PosixClass::Cntrl => {
-            // [0-31] or 127
-            let low = emit_range_check(builder, byte, 0, 31);
-            let del = emit_eq_check(builder, byte, 127);
-            builder.ins().bor(low, del)
-        }
-        PosixClass::Punct => {
-            // ASCII punctuation in four ranges: 33-47, 58-64, 91-96, 123-126
-            let r1 = emit_range_check(builder, byte, b'!', b'/');
-            let r2 = emit_range_check(builder, byte, b':', b'@');
-            let r3 = emit_range_check(builder, byte, b'[', b'`');
-            let r4 = emit_range_check(builder, byte, b'{', b'~');
-            let t1 = builder.ins().bor(r1, r2);
-            let t2 = builder.ins().bor(r3, r4);
-            builder.ins().bor(t1, t2)
-        }
-        _ => unreachable!("caller must check is_ascii_only_posix"),
-    }
-}
-
-/// Emit I8 boolean: 1 if `byte` (I32) matches the simple ASCII charset.
-fn charset_ascii_check(builder: &mut FunctionBuilder<'_>, cs: &CharSet, byte: Value) -> Value {
+/// Emit an I8 boolean: 1 if `byte` (I32, zero-extended u8) matches any
+/// precomputed ASCII range, 0 otherwise.
+///
+/// Emits a cascade of `(byte - lo) <= (hi - lo)` unsigned range checks
+/// OR-ed together.  For an empty slice emits the constant 0.
+fn emit_ascii_ranges_check(
+    builder: &mut FunctionBuilder<'_>,
+    ranges: &[(u8, u8)],
+    byte: Value,
+) -> Value {
     let mut result = builder.ins().iconst(types::I8, 0);
-    for item in &cs.items {
-        let item_match: Value = match item {
-            CharSetItem::Char(c) => emit_eq_check(builder, byte, *c as u8),
-            CharSetItem::Range(lo, hi) => emit_range_check(builder, byte, *lo as u8, *hi as u8),
-            CharSetItem::Posix(cls, false) => posix_ascii_check(builder, *cls, byte),
-            CharSetItem::Shorthand(sh, ar) => {
-                // For Word with ar=true we use the full shorthand_ascii_check.
-                // For always-ascii shorthands (Digit/Space/HexDigit) ar is ignored.
-                shorthand_ascii_check_for_item(builder, *sh, *ar, byte)
-            }
-            _ => unreachable!("caller must ensure is_fast_path_safe"),
+    for &(lo, hi) in ranges {
+        let check = if lo == hi {
+            emit_eq_check(builder, byte, lo)
+        } else {
+            emit_range_check(builder, byte, lo, hi)
         };
-        result = builder.ins().bor(result, item_match);
+        result = builder.ins().bor(result, check);
     }
     result
 }
 
-/// Emit I8 boolean for a shorthand item inside a charset (no negation —
-/// the shorthand enum variant encodes negation separately).
-fn shorthand_ascii_check_for_item(
-    builder: &mut FunctionBuilder<'_>,
-    sh: Shorthand,
-    _ar: bool,
-    byte: Value,
-) -> Value {
-    match sh {
-        Shorthand::Digit => emit_range_check(builder, byte, b'0', b'9'),
-        Shorthand::Space => {
-            let ctrl = emit_range_check(builder, byte, b'\t', b'\r');
-            let sp = emit_eq_check(builder, byte, b' ');
-            builder.ins().bor(ctrl, sp)
-        }
-        Shorthand::HexDigit => {
-            let d = emit_range_check(builder, byte, b'0', b'9');
-            let u = emit_range_check(builder, byte, b'A', b'F');
-            let l = emit_range_check(builder, byte, b'a', b'f');
-            let t = builder.ins().bor(d, u);
-            builder.ins().bor(t, l)
-        }
-        Shorthand::Word => {
-            // Only reached when ar=true (ASCII-only \w).
-            let lo = emit_range_check(builder, byte, b'a', b'z');
-            let up = emit_range_check(builder, byte, b'A', b'Z');
-            let di = emit_range_check(builder, byte, b'0', b'9');
-            let us = emit_eq_check(builder, byte, b'_');
-            let t1 = builder.ins().bor(lo, up);
-            let t2 = builder.ins().bor(t1, di);
-            builder.ins().bor(t2, us)
-        }
-        _ => unreachable!("caller must ensure is_ascii_only_shorthand or Word+ar"),
-    }
-}
-
-/// Inline forward `CharClass` match for a simple ASCII charset.
-/// Creates two sub-blocks.
+/// Inline forward `CharClass` match using precomputed `ascii_ranges`.
+///
+/// For ASCII bytes: emits precomputed range checks (no helper call).
+/// For non-ASCII bytes: either fails inline (ASCII-only charset) or calls
+/// the `jit_match_class` helper for correct Unicode handling.
+///
+/// Creates 2–3 sub-blocks.
 #[allow(clippy::too_many_arguments)]
 fn inline_charclass_fwd(
     builder: &mut FunctionBuilder<'_>,
+    _module: &mut cranelift_jit::JITModule,
     inst_blocks: &[Block],
     bt_resume: Block,
+    h_match_class: FuncRef,
     var_pos: Variable,
     var_ctx: Variable,
     ctx_v: Value,
     pos_v: Value,
     pc: usize,
     cs: &CharSet,
+    idx: usize,
 ) {
+    let ascii_ranges = cs
+        .ascii_ranges
+        .as_deref()
+        .expect("ascii_ranges must be precomputed");
+
     // --- bounds check ---
     let text_len = builder
         .ins()
@@ -1179,7 +1100,7 @@ fn inline_charclass_fwd(
         .ins()
         .brif(in_bounds, read_block, &[], bt_resume, &[]);
 
-    // --- read_block: load byte, ASCII check ---
+    // --- read_block: load leading byte ---
     builder.switch_to_block(read_block);
     let ctx_v = builder.use_var(var_ctx);
     let pos_v = builder.use_var(var_pos);
@@ -1191,20 +1112,43 @@ fn inline_charclass_fwd(
         .ins()
         .uload8(types::I32, MemFlags::trusted(), byte_ptr, 0);
 
-    let check_block = builder.create_block();
+    let ascii_check_block = builder.create_block();
     let c80 = builder.ins().iconst(types::I32, 0x80);
     let is_ascii = builder.ins().icmp(IntCC::UnsignedLessThan, byte, c80);
-    // Pass byte as block param so check_block can use it.
-    builder
-        .ins()
-        .brif(is_ascii, check_block, &[byte], bt_resume, &[]);
 
-    // --- check_block: range/eq checks ---
-    builder.append_block_param(check_block, types::I32);
-    builder.switch_to_block(check_block);
-    let byte_p = builder.block_params(check_block)[0];
+    if is_ascii_only_charset(cs) {
+        // Non-ASCII bytes never match: fail immediately without helper.
+        builder
+            .ins()
+            .brif(is_ascii, ascii_check_block, &[byte], bt_resume, &[]);
+    } else {
+        // Non-ASCII bytes may match: call jit_match_class for correct handling.
+        let nonascii_block = builder.create_block();
+        builder
+            .ins()
+            .brif(is_ascii, ascii_check_block, &[byte], nonascii_block, &[]);
+
+        builder.switch_to_block(nonascii_block);
+        let ctx_v = builder.use_var(var_ctx);
+        let pos_v = builder.use_var(var_pos);
+        let i = builder.ins().iconst(types::I32, idx as i64);
+        let ic_v = builder.ins().iconst(types::I32, 0_i64); // !ic path
+        let call = builder.ins().call(h_match_class, &[ctx_v, pos_v, i, ic_v]);
+        let result = builder.inst_results(call)[0];
+        let neg1 = builder.ins().iconst(types::I64, -1_i64);
+        let is_fail = builder.ins().icmp(IntCC::Equal, result, neg1);
+        builder.def_var(var_pos, result);
+        builder
+            .ins()
+            .brif(is_fail, bt_resume, &[], inst_blocks[pc + 1], &[]);
+    }
+
+    // --- ascii_check_block: precomputed range checks ---
+    builder.append_block_param(ascii_check_block, types::I32);
+    builder.switch_to_block(ascii_check_block);
+    let byte_p = builder.block_params(ascii_check_block)[0];
     let pos_v = builder.use_var(var_pos);
-    let ok = charset_ascii_check(builder, cs, byte_p);
+    let ok = emit_ascii_ranges_check(builder, ascii_ranges, byte_p);
     let new_pos = builder.ins().iadd_imm(pos_v, 1);
     builder.def_var(var_pos, new_pos);
     builder
@@ -1212,20 +1156,29 @@ fn inline_charclass_fwd(
         .brif(ok, inst_blocks[pc + 1], &[], bt_resume, &[]);
 }
 
-/// Inline backward `CharClass` match for a simple ASCII charset.
-/// Creates two sub-blocks.
+/// Inline backward `CharClass` match using precomputed `ascii_ranges`.
+///
+/// Mirrors `inline_charclass_fwd` but reads `pos - 1` and advances backward.
 #[allow(clippy::too_many_arguments)]
 fn inline_charclass_back(
     builder: &mut FunctionBuilder<'_>,
+    _module: &mut cranelift_jit::JITModule,
     inst_blocks: &[Block],
     bt_resume: Block,
+    h_match_class_back: FuncRef,
     var_pos: Variable,
     var_ctx: Variable,
     _ctx_v: Value,
     pos_v: Value,
     pc: usize,
     cs: &CharSet,
+    idx: usize,
 ) {
+    let ascii_ranges = cs
+        .ascii_ranges
+        .as_deref()
+        .expect("ascii_ranges must be precomputed");
+
     // --- pos > 0 check ---
     let zero = builder.ins().iconst(types::I64, 0);
     let not_at_start = builder.ins().icmp(IntCC::UnsignedGreaterThan, pos_v, zero);
@@ -1234,7 +1187,7 @@ fn inline_charclass_back(
         .ins()
         .brif(not_at_start, read_block, &[], bt_resume, &[]);
 
-    // --- read_block: load byte at pos-1, ASCII check ---
+    // --- read_block: load byte at pos-1 ---
     builder.switch_to_block(read_block);
     let ctx_v = builder.use_var(var_ctx);
     let pos_v = builder.use_var(var_pos);
@@ -1247,19 +1200,43 @@ fn inline_charclass_back(
         .ins()
         .uload8(types::I32, MemFlags::trusted(), byte_ptr, 0);
 
-    let check_block = builder.create_block();
+    let ascii_check_block = builder.create_block();
     let c80 = builder.ins().iconst(types::I32, 0x80);
     let is_ascii = builder.ins().icmp(IntCC::UnsignedLessThan, byte, c80);
-    builder
-        .ins()
-        .brif(is_ascii, check_block, &[byte], bt_resume, &[]);
 
-    // --- check_block: range/eq checks ---
-    builder.append_block_param(check_block, types::I32);
-    builder.switch_to_block(check_block);
-    let byte_p = builder.block_params(check_block)[0];
+    if is_ascii_only_charset(cs) {
+        builder
+            .ins()
+            .brif(is_ascii, ascii_check_block, &[byte], bt_resume, &[]);
+    } else {
+        let nonascii_block = builder.create_block();
+        builder
+            .ins()
+            .brif(is_ascii, ascii_check_block, &[byte], nonascii_block, &[]);
+
+        builder.switch_to_block(nonascii_block);
+        let ctx_v = builder.use_var(var_ctx);
+        let pos_v = builder.use_var(var_pos);
+        let i = builder.ins().iconst(types::I32, idx as i64);
+        let ic_v = builder.ins().iconst(types::I32, 0_i64);
+        let call = builder
+            .ins()
+            .call(h_match_class_back, &[ctx_v, pos_v, i, ic_v]);
+        let result = builder.inst_results(call)[0];
+        let neg1 = builder.ins().iconst(types::I64, -1_i64);
+        let is_fail = builder.ins().icmp(IntCC::Equal, result, neg1);
+        builder.def_var(var_pos, result);
+        builder
+            .ins()
+            .brif(is_fail, bt_resume, &[], inst_blocks[pc + 1], &[]);
+    }
+
+    // --- ascii_check_block: precomputed range checks ---
+    builder.append_block_param(ascii_check_block, types::I32);
+    builder.switch_to_block(ascii_check_block);
+    let byte_p = builder.block_params(ascii_check_block)[0];
     let pos_v = builder.use_var(var_pos);
-    let ok = charset_ascii_check(builder, cs, byte_p);
+    let ok = emit_ascii_ranges_check(builder, ascii_ranges, byte_p);
     let new_pos = builder.ins().iadd_imm(pos_v, -1_i64);
     builder.def_var(var_pos, new_pos);
     builder
