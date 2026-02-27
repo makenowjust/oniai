@@ -993,11 +993,12 @@ fn fold_retreat(text: &str, mut pos: usize, folded: &[char]) -> Option<usize> {
             char_start -= 1;
         }
         let ch = text[char_start..pos].chars().next()?;
-        // Prepend this char's fold to fold_buf (we're going right-to-left)
-        let ch_fold: Vec<char> = ch.case_fold().collect();
-        let mut new_buf = ch_fold;
-        new_buf.extend_from_slice(&fold_buf);
-        fold_buf = new_buf;
+        // Prepend this char's fold to fold_buf (we're going right-to-left).
+        // Extend at the end then rotate_right to avoid per-iteration allocation.
+        let old_len = fold_buf.len();
+        fold_buf.extend(ch.case_fold());
+        let ch_fold_len = fold_buf.len() - old_len;
+        fold_buf.rotate_right(ch_fold_len);
         pos = char_start;
         // Early-exit: fold_buf may now be longer than folded
         if fold_buf.len() > folded.len() {
