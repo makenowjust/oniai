@@ -3,9 +3,23 @@ name = "aigumo"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+jit = [
+    "dep:cranelift-codegen",
+    "dep:cranelift-frontend",
+    "dep:cranelift-jit",
+    "dep:cranelift-module",
+    "dep:cranelift-native",
+]
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 unicode-casefold = "0.2"
+cranelift-codegen  = { version = "0.119", optional = true }
+cranelift-frontend = { version = "0.119", optional = true }
+cranelift-jit      = { version = "0.119", optional = true }
+cranelift-module   = { version = "0.119", optional = true }
+cranelift-native   = { version = "0.119", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

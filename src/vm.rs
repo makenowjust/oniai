@@ -197,14 +197,13 @@ pub enum Inst {
 // VM state
 // ---------------------------------------------------------------------------
 
-#[derive(Clone)]
-struct State {
+pub(crate) struct State {
     /// Flat capture slots: slots[2*(n-1)] = start, slots[2*(n-1)+1] = end (1-based groups)
-    slots: Vec<Option<usize>>,
+    pub(crate) slots: Vec<Option<usize>>,
     /// Where `\K` reset the match start
-    keep_pos: Option<usize>,
+    pub(crate) keep_pos: Option<usize>,
     /// Return address stack for subexpression calls
-    call_stack: Vec<usize>,
+    pub(crate) call_stack: Vec<usize>,
 }
 
 impl State {
@@ -221,15 +220,12 @@ impl State {
 // Execution context (immutable per-search data)
 // ---------------------------------------------------------------------------
 
-struct Ctx<'t> {
-    prog: &'t [Inst],
-    charsets: &'t [CharSet],
-    text: &'t str,
-    search_start: usize, // position where the search started (for \G)
-    /// Whether memoization is active for this regex.  Set to `false` when the
-    /// pattern contains backreferences, because `(pc, pos)` alone does not
-    /// determine the match outcome — the current capture-slot state does too.
-    use_memo: bool,
+pub(crate) struct Ctx<'t> {
+    pub(crate) prog: &'t [Inst],
+    pub(crate) charsets: &'t [CharSet],
+    pub(crate) text: &'t str,
+    pub(crate) search_start: usize,
+    pub(crate) use_memo: bool,
 }
 
 impl<'t> Ctx<'t> {
@@ -283,7 +279,7 @@ enum Bt {
 
 /// Pack a `(pc, pos)` pair into a single `u64` key for the memo table.
 #[inline]
-fn memo_key(pc: usize, pos: usize) -> u64 {
+pub(crate) fn memo_key(pc: usize, pos: usize) -> u64 {
     ((pc as u64) << 32) | (pos as u64)
 }
 
@@ -304,7 +300,7 @@ fn memo_key(pc: usize, pos: usize) -> u64 {
 /// slots that actually changed — so that the re-application is correct even
 /// when the outer slot state differs at the time of the cache hit.
 #[derive(Clone)]
-enum LookCacheEntry {
+pub(crate) enum LookCacheEntry {
     /// The lookaround body matched.
     /// `slot_delta`: `(slot_index, new_value)` for every slot whose value
     ///   changed during the successful body execution.
@@ -321,16 +317,16 @@ enum LookCacheEntry {
 /// Shared memoization state, created once per `find()` call and threaded
 /// through the entire `exec` / `exec_lookaround` / `check_inner_in_range`
 /// call tree.
-struct MemoState {
+pub(crate) struct MemoState {
     /// Fork failure depths (Algorithms 5 & 7).
     /// Maps `memo_key(fork_pc, fork_pos)` → minimum atomic depth at which
     /// both alternatives of that fork were exhausted.  An entry with depth `d`
     /// may be reused whenever the current `atomic_depth >= d`.
-    fork_failures: HashMap<u64, usize>,
+    pub(crate) fork_failures: HashMap<u64, usize>,
     /// Lookaround result cache (Algorithm 6).
     /// Maps `memo_key(lk_pc, lk_pos)` → whether the lookaround body matched
     /// and, for positive lookaheads, the capture-slot changes it produced.
-    look_results: HashMap<u64, LookCacheEntry>,
+    pub(crate) look_results: HashMap<u64, LookCacheEntry>,
 }
 
 impl MemoState {
@@ -441,7 +437,7 @@ const MAX_CALL_DEPTH: usize = 200;
 /// 2024); it is created once per `find()` call and shared across all
 /// sub-executions so that failures discovered inside lookarounds are
 /// propagated back to the outer execution.
-fn exec(
+pub(crate) fn exec(
     ctx: &Ctx<'_>,
     start_pc: usize,
     start_pos: usize,
@@ -843,7 +839,7 @@ fn exec(
 /// failures discovered inside a lookaround body are visible to the outer VM
 /// and vice-versa, giving the correct complexity guarantee for patterns that
 /// combine Fork and lookaround.
-fn exec_lookaround(
+pub(crate) fn exec_lookaround(
     ctx: &Ctx<'_>,
     body_pc: usize,
     pos: usize,
@@ -1204,6 +1200,10 @@ pub struct CompiledRegex {
     /// outcome of a Fork at `(pc, pos)` depends on the current capture-slot
     /// values and therefore cannot be memoized by position alone.
     use_memo: bool,
+    /// JIT-compiled executor (present when the `jit` feature is enabled and
+    /// the program is eligible for JIT compilation).
+    #[cfg(feature = "jit")]
+    jit: Option<crate::jit::JitModule>,
 }
 
 impl CompiledRegex {
@@ -1230,6 +1230,9 @@ impl CompiledRegex {
             )
         });
 
+        #[cfg(feature = "jit")]
+        let jit = crate::jit::try_compile(&prog_data.prog, &prog_data.charsets, use_memo);
+
         Ok(CompiledRegex {
             prog: prog_data.prog,
             charsets: prog_data.charsets,
@@ -1238,6 +1241,8 @@ impl CompiledRegex {
             start_strategy,
             required_char,
             use_memo,
+            #[cfg(feature = "jit")]
+            jit,
         })
     }
 
@@ -1248,6 +1253,20 @@ impl CompiledRegex {
         pos: usize,
         memo: &mut MemoState,
     ) -> Option<(usize, usize, Vec<Option<usize>>)> {
+        #[cfg(feature = "jit")]
+        if let Some(ref jit) = self.jit {
+            return crate::jit::exec_jit(
+                jit,
+                &self.prog,
+                &self.charsets,
+                text,
+                pos,
+                self.num_groups,
+                self.use_memo,
+                memo,
+            );
+        }
+
         let ctx = Ctx {
             prog: &self.prog,
             charsets: &self.charsets,
@@ -1353,4 +1372,181 @@ impl CompiledRegex {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// JIT support types and exec-lookaround wrapper (cfg(feature = "jit") only)
+// ---------------------------------------------------------------------------
+
+/// JIT backtrack entry.  Uses a `u32` block id (== instruction PC) instead of
+/// `usize` for compact storage and `br_table` dispatch.
+#[cfg(feature = "jit")]
+pub(crate) enum BtJit {
+    Retry {
+        block_id: u32,
+        pos: u64,
+        /// Capture slots snapshot: `u64::MAX` encodes `None`.
+        slots: Vec<u64>,
+        /// `u64::MAX` encodes `None`.
+        keep_pos: u64,
+    },
+    AtomicBarrier,
+    MemoMark {
+        fork_block_id: u32,
+        fork_pos: u64,
+    },
+}
+
+/// Context block passed by pointer to the JIT-compiled exec function and to
+/// all `extern "C"` helpers.  **Must be `#[repr(C)]`** because the
+/// Cranelift-generated code accesses fields at known byte offsets.
+#[cfg(feature = "jit")]
+#[repr(C)]
+pub(crate) struct JitExecCtx {
+    // ---- immutable for this exec call --------------------------------
+    pub text_ptr: *const u8,
+    pub text_len: u64,
+    pub search_start: u64,
+    pub use_memo: u64,           // 0 or 1, padded to align
+    pub charsets_ptr: *const (), // *const [CharSet]
+    pub charsets_len: u64,
+    pub prog_ptr: *const (), // *const [Inst]  — for lookaround sub-exec
+    pub prog_len: u64,
+    pub num_groups: u64,
+    // ---- mutable capture state ----------------------------------------
+    pub slots_ptr: *mut u64, // len = num_groups * 2; u64::MAX = None
+    pub slots_len: u64,
+    pub keep_pos: u64, // u64::MAX = None
+    // ---- backtrack stack & memo (heap-allocated Rust types) -----------
+    pub bt_ptr: *mut (),   // *mut Vec<BtJit>
+    pub memo_ptr: *mut (), // *mut MemoState
+    // ---- atomic group depth ------------------------------------------
+    pub atomic_depth: u64,
+}
+
+/// Run a lookaround body using the **interpreter** from a JIT execution
+/// context.  Called by the `jit_lookaround` helper.
+///
+/// # Safety
+/// All pointers inside `ctx` must be valid for the lifetime of this call.
+#[cfg(feature = "jit")]
+pub(crate) unsafe fn exec_lookaround_for_jit(
+    ctx: *mut JitExecCtx,
+    lk_pc: usize, // PC of the LookStart instruction (memo key)
+    body_pc: usize,
+    pos: usize,
+    positive: bool,
+) -> bool {
+    let jctx = unsafe { &mut *ctx };
+
+    // Reconstruct the interpreter context from raw pointers.
+    let prog =
+        unsafe { std::slice::from_raw_parts(jctx.prog_ptr as *const Inst, jctx.prog_len as usize) };
+    let charsets = unsafe {
+        std::slice::from_raw_parts(
+            jctx.charsets_ptr as *const CharSet,
+            jctx.charsets_len as usize,
+        )
+    };
+    let text = unsafe {
+        std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+            jctx.text_ptr,
+            jctx.text_len as usize,
+        ))
+    };
+    let interp_ctx = Ctx {
+        prog,
+        charsets,
+        text,
+        search_start: jctx.search_start as usize,
+        use_memo: jctx.use_memo != 0,
+    };
+
+    // Reconstruct State from JitExecCtx slots.
+    let slots_slice =
+        unsafe { std::slice::from_raw_parts(jctx.slots_ptr, jctx.slots_len as usize) };
+    let mut state = State {
+        slots: slots_slice
+            .iter()
+            .map(|&v| {
+                if v == u64::MAX {
+                    None
+                } else {
+                    Some(v as usize)
+                }
+            })
+            .collect(),
+        keep_pos: if jctx.keep_pos == u64::MAX {
+            None
+        } else {
+            Some(jctx.keep_pos as usize)
+        },
+        call_stack: Vec::new(),
+    };
+
+    let memo = unsafe { &mut *(jctx.memo_ptr as *mut MemoState) };
+    let use_memo = jctx.use_memo != 0;
+
+    // Full lookaround logic including the Algorithm-6 look_results cache.
+    let lk_key = memo_key(lk_pc, pos);
+    let matched = if use_memo {
+        if let Some(entry) = memo.look_results.get(&lk_key).cloned() {
+            match entry {
+                LookCacheEntry::BodyMatched {
+                    slot_delta,
+                    keep_pos_delta,
+                } => {
+                    if positive {
+                        for (idx, val) in slot_delta {
+                            if idx >= state.slots.len() {
+                                state.slots.resize(idx + 1, None);
+                            }
+                            state.slots[idx] = val;
+                        }
+                        if let Some(kp) = keep_pos_delta {
+                            state.keep_pos = kp;
+                        }
+                    }
+                    true
+                }
+                LookCacheEntry::BodyNotMatched => false,
+            }
+        } else {
+            let pre_slots = state.slots.clone();
+            let pre_keep = state.keep_pos;
+            let m = exec_lookaround(&interp_ctx, body_pc, pos, &mut state, 0, memo);
+            let entry = if m {
+                let slot_delta = compute_slot_delta(&pre_slots, &state.slots);
+                let keep_pos_delta = if state.keep_pos != pre_keep {
+                    Some(state.keep_pos)
+                } else {
+                    None
+                };
+                LookCacheEntry::BodyMatched {
+                    slot_delta,
+                    keep_pos_delta,
+                }
+            } else {
+                LookCacheEntry::BodyNotMatched
+            };
+            memo.look_results.insert(lk_key, entry);
+            m
+        }
+    } else {
+        exec_lookaround(&interp_ctx, body_pc, pos, &mut state, 0, memo)
+    };
+
+    // On success, propagate state changes back into the JIT context.
+    if matched {
+        let slots_out =
+            unsafe { std::slice::from_raw_parts_mut(jctx.slots_ptr, jctx.slots_len as usize) };
+        for (i, &s) in state.slots.iter().enumerate() {
+            if i < slots_out.len() {
+                slots_out[i] = s.map(|v| v as u64).unwrap_or(u64::MAX);
+            }
+        }
+        jctx.keep_pos = state.keep_pos.map(|v| v as u64).unwrap_or(u64::MAX);
+    }
+
+    matched
 }

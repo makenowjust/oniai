@@ -14,6 +14,8 @@ mod ast;
 mod charset;
 mod compile;
 mod error;
+#[cfg(feature = "jit")]
+mod jit;
 mod parser;
 mod vm;
 

@@ -456,6 +456,9 @@ UTF-8 code point forward to avoid infinite loops.
 
 ## Limitations and known gaps
 
-- **No JIT / NFA compilation**: the engine is a pure backtracking interpreter;
+- **No NFA / DFA compilation**: the engine is a pure backtracking interpreter;
   exponential worst-case exists for ambiguous patterns on adversarial inputs
   (mitigated for many patterns by the memoization framework).
+- **JIT compilation** (optional, behind the `jit` feature flag) is planned to
+  replace the interpreter loop with native machine code for eligible patterns;
+  see [`doc/JIT.md`](JIT.md) for the full design and implementation plan.
