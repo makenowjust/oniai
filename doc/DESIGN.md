@@ -151,11 +151,16 @@ not yet known are patched in a second pass via `patch_jump` / `patch_no_jump`.
 | Instruction | Semantics |
 |-------------|-----------|
 | `Match` | Report success at current position |
-| `Char(c, ic)` | Match literal `c`; `ic` = ignore-case |
-| `AnyChar(dotall)` | Match any char; if `!dotall` reject `\n` |
-| `Class(idx, ic)` | Match char against `charsets[idx]` |
-| `Shorthand(sh, ar)` | Match `\w`/`\d`/`\s`/`\h`… |
-| `Prop(name, neg)` | Match Unicode property |
+| `Char(c, ic)` | Match literal `c` at `pos`; advance `pos` |
+| `AnyChar(dotall)` | Match any char at `pos`; if `!dotall` reject `\n` |
+| `Class(idx, ic)` | Match char against `charsets[idx]` at `pos` |
+| `Shorthand(sh, ar)` | Match `\w`/`\d`/`\s`/`\h`… at `pos` |
+| `Prop(name, neg)` | Match Unicode property at `pos` |
+| `CharBack(c, ic)` | Match `c` ending at `pos`; decrement `pos` (lookbehind) |
+| `AnyCharBack(dotall)` | Match any char ending at `pos`; decrement `pos` |
+| `ClassBack(idx, ic)` | Charset match ending at `pos`; decrement `pos` |
+| `ShorthandBack(sh, ar)` | Shorthand match ending at `pos`; decrement `pos` |
+| `PropBack(name, neg)` | Unicode property match ending at `pos`; decrement `pos` |
 | `Anchor(kind, flags)` | Zero-width assertion (`^`, `$`, `\b`, `\A`, `\z`, …) |
 | `Jump(pc)` | Unconditional jump |
 | `Fork(alt)` | **Greedy** branch: try `pc+1` first, retry at `alt` on failure |
@@ -196,9 +201,21 @@ call stack is empty and execution falls through; when the group was entered via
 
 ### Lookaround
 
-At compile time the compiler pre-computes the set of possible widths of a
-lookbehind body (`compute_widths`) and stores them in `LookStart.behind_lens`.
-At run time the VM tries each stored length.
+Lookahead bodies are compiled in **forward** mode (normal instructions).
+Lookbehind bodies are compiled in **backward** mode using the `*Back`
+instruction variants.  In backward mode:
+
+- `Concat` children are emitted in **reverse** order.
+- Character-matching instructions use `CharBack` / `AnyCharBack` / etc., which
+  read the char *ending* at `pos` and then **decrement** `pos`.
+- `Capture` / `NamedCapture` swap the `Save` slot order: `Save(close)` is
+  emitted before the body and `Save(open)` after, so that slots are populated
+  with the correct (start < end) positions even though execution moves backward.
+
+At run time `exec_lookaround` simply runs the body from the outer `pos`.
+For lookahead the body advances `pos`; for lookbehind the body decrements it.
+Success is `exec(...).is_some()`.  No position scanning is needed; there is no
+fixed-width restriction on lookbehind.
 
 ### Absence operator `(?~X)`
 
@@ -414,13 +431,6 @@ UTF-8 code point forward to avoid infinite loops.
 - **No JIT / NFA compilation**: the engine is a pure backtracking interpreter;
   exponential worst-case exists for ambiguous patterns on adversarial inputs
   (mitigated for many patterns by the memoization framework).
-- **Lookbehind width**: variable-length lookbehind is fully supported via
-  *backward-matching VM instructions* (`CharBack`, `AnyCharBack`, `ClassBack`,
-  `ShorthandBack`, `PropBack`).  The compiler emits these instructions for
-  lookbehind bodies (with `Concat` children reversed and capture-slot order
-  swapped), so the VM executes the body from the current position moving
-  *backward* — the same way lookahead moves forward.  No position scanning is
-  needed; there is no fixed-width restriction.
 - **Relative/forward subexpression calls** (`\g<+n>`, `\g<-n>`) are parsed but
   the VM returns `None` for them (not yet implemented).
 - **Unicode case folding**: only single-codepoint lowercasing is used; full
