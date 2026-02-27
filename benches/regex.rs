@@ -168,6 +168,47 @@ fn bench_pathological(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// Real-world text: "A Study in Scarlet"
+// ---------------------------------------------------------------------------
+
+fn bench_real_world(c: &mut Criterion) {
+    let text = include_str!("fixtures/stud.txt");
+    let mut group = c.benchmark_group("real_world");
+
+    // Simple literal: count occurrences of "Holmes"
+    let re_holmes = Regex::new("Holmes").unwrap();
+    group.bench_function("literal_count", |b| {
+        b.iter(|| re_holmes.find_iter(black_box(text)).count())
+    });
+
+    // Capitalized words: [A-Z][a-z]+ (exercises inline charclass)
+    let re_cap = Regex::new(r"[A-Z][a-z]+").unwrap();
+    group.bench_function("capitalized_words", |b| {
+        b.iter(|| re_cap.find_iter(black_box(text)).count())
+    });
+
+    // POSIX digit sequences: [[:digit:]]+ (exercises POSIX inline charclass)
+    let re_digits = Regex::new(r"[[:digit:]]+").unwrap();
+    group.bench_function("posix_digits", |b| {
+        b.iter(|| re_digits.find_iter(black_box(text)).count())
+    });
+
+    // Quoted strings: "[^"]*" (negated charclass, helper path)
+    let re_quotes = Regex::new("\"[^\"]*\"").unwrap();
+    group.bench_function("quoted_strings", |b| {
+        b.iter(|| re_quotes.find_iter(black_box(text)).count())
+    });
+
+    // Name pattern: Mr. / Mrs. followed by a capitalized word
+    let re_title = Regex::new(r"Mrs?\. [A-Z][a-z]+").unwrap();
+    group.bench_function("title_name", |b| {
+        b.iter(|| re_title.find_iter(black_box(text)).count())
+    });
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 
 criterion_group!(
     benches,
@@ -181,5 +222,6 @@ criterion_group!(
     bench_case_insensitive,
     bench_find_iter_scale,
     bench_pathological,
+    bench_real_world,
 );
 criterion_main!(benches);

@@ -172,6 +172,27 @@ reducing the complexity from **O(2^n)** to **O(n²)** for this pattern class.
 
 ---
 
+## Real-world benchmarks (`benches/fixtures/stud.txt`)
+
+Haystack: *A Study in Scarlet* by Arthur Conan Doyle (~260 KB plain text).
+Measures full `find_iter().count()` over the entire text.
+
+| Benchmark | Pattern | Interpreter | JIT | Speedup |
+|-----------|---------|-------------|-----|---------|
+| `real_world/literal_count` | `Holmes` | 132.6 µs | 132.3 µs | 1.00× |
+| `real_world/capitalized_words` | `[A-Z][a-z]+` | 4.33 ms | **2.75 ms** | **1.57×** ✅ |
+| `real_world/posix_digits` | `[[:digit:]]+` | 3.21 ms | **2.25 ms** | **1.43×** ✅ |
+| `real_world/quoted_strings` | `"[^"]*"` | 7.38 ms | **6.78 ms** | **1.09×** |
+| `real_world/title_name` | `Mrs?\. [A-Z][a-z]+` | 148.2 µs | 143.3 µs | 1.03× |
+
+**Notes:**
+- `literal_count` uses the `LiteralPrefix` start strategy (SIMD `str::find`), so both paths are dominated by the same scan; JIT overhead is negligible.
+- `capitalized_words` and `posix_digits` show the biggest gains because the JIT Phase 3/4 charclass inline (`[A-Z]`, `[a-z]`, `[[:digit:]]`) replaces helper calls with inlined range comparisons across a 260 KB scan.
+- `quoted_strings` uses a negated charclass (`[^"]`) which falls back to the `jit_match_class` helper; the modest speedup comes from improved basic-block structure.
+- `title_name` is dominated by the literal-prefix scan for `Mr`; the charclass portion is a small fraction of total work.
+
+---
+
 ## Summary of optimisations
 
 ### 1. `StartStrategy` (compile-time analysis)
@@ -270,34 +291,35 @@ Added in Phase 1; inlined in Phase 2.  Compiles eligible `Vec<Inst>` programs to
 code via Cranelift, creating one basic block per instruction and routing
 backtracking through a `br_table` dispatch block.
 
-### Phase 1 vs Phase 2 vs Phase 3 vs Interpreter — median times
+### Phase 1 vs Phase 2 vs Phase 3 vs Phase 4 vs Interpreter — median times
 
 Phase 1: all instructions as `extern "C"` helper calls.  
 Phase 2: `Char`, `AnyChar`, `Shorthand` (ASCII fast-path), `Save`, `Anchor` inlined as Cranelift IR.  
-Phase 3: additionally inline `CharClass`/`ClassBack` for simple ASCII charsets (all items ASCII `Char` or `Range`, no negation).
+Phase 3: additionally inline `CharClass`/`ClassBack` for simple ASCII charsets (all items ASCII `Char` or `Range`, no negation).  
+Phase 4: extend `CharClass`/`ClassBack` inline to POSIX always-ASCII classes and ASCII-safe `Shorthand` items; inline `ShorthandBack`.
 
-| Benchmark | Interpreter | JIT Phase 1 | JIT Phase 2 | JIT Phase 3 |
-|-----------|-------------|-------------|-------------|-------------|
-| literal/no\_match\_1k | 49.8 ns | 49.7 ns (1.00×) | 49.5 ns (1.01×) | 49.8 ns (1.00×) |
-| literal/match\_mid\_1k | 145 ns | 180 ns (0.81×) | 139 ns (**1.04×**) | 138 ns (**1.05×**) |
-| anchored/no\_match\_1k | 16.1 ns | 47.2 ns (0.34×) | 14.0 ns (**1.15×**) | 13.6 ns (**1.18× faster** ✅) |
-| alternation/4\_alts\_match | 18.9 µs | 18.9 µs (1.00×) | 18.9 µs (1.00×) | 18.8 µs (1.00×) |
-| alternation/4\_alts\_no\_match | 46.8 µs | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.7 µs (1.00×) |
-| quantifier/greedy\_no\_match\_500 | 25.8 ns | 25.8 ns (1.00×) | 27.3 ns (0.95×) | 25.8 ns (1.00×) |
-| quantifier/greedy\_match\_500 | 9.17 µs | 6.11 µs (**1.50×**) | 5.61 µs (**1.63×**) | 5.43 µs (**1.69× faster** ✅) |
-| captures/two\_groups | 612 ns | 603 ns (1.01×) | 627 ns (0.98×) | 620 ns (0.99×) |
-| captures/iter\_all | 2.57 µs | 2.54 µs (1.01×) | 2.62 µs (0.98×) | 2.58 µs (1.00×) |
-| email/find\_all | 3.25 µs | 4.19 µs (0.78×) | 3.53 µs (0.92×) | 3.46 µs (0.94×) |
-| charclass/alpha\_iter | 31.2 µs | 38.4 µs (0.80×) | 39.7 µs (0.78×) | **24.9 µs (1.25× faster** ✅) |
-| charclass/posix\_digit\_iter | 24.4 µs | 37.3 µs (0.65×) | 37.9 µs (0.64×) | 37.7 µs (0.65×) |
-| case\_insensitive/match | 14.0 µs | 14.2 µs (0.98×) | 14.0 µs (1.00×) | 13.9 µs (1.01×) |
-| find\_iter\_scale/100 | 2.72 µs | 5.22 µs (0.52×) | 3.37 µs (0.81×) | 3.31 µs (0.82×) |
-| find\_iter\_scale/500 | 13.3 µs | 25.5 µs (0.52×) | 16.5 µs (0.81×) | 16.2 µs (0.82×) |
-| find\_iter\_scale/1000 | 26.7 µs | 51.3 µs (0.52×) | 33.1 µs (0.81×) | 32.6 µs (0.82×) |
-| find\_iter\_scale/5000 | 133 µs | 255 µs (0.52×) | 165 µs (0.81×) | 161 µs (0.83×) |
-| pathological/10 | 4.39 µs | 6.38 µs (0.69×) | 5.30 µs (0.83×) | 5.30 µs (0.83×) |
-| pathological/15 | 9.94 µs | 14.2 µs (0.70×) | 11.9 µs (0.84×) | 11.9 µs (0.84×) |
-| pathological/20 | 17.7 µs | 25.0 µs (0.71×) | 21.1 µs (0.84×) | 21.0 µs (0.84×) |
+| Benchmark | Interpreter | JIT Phase 1 | JIT Phase 2 | JIT Phase 3 | JIT Phase 4 |
+|-----------|-------------|-------------|-------------|-------------|-------------|
+| literal/no\_match\_1k | 49.8 ns | 49.7 ns (1.00×) | 49.5 ns (1.01×) | 49.8 ns (1.00×) | 50.3 ns (0.99×) |
+| literal/match\_mid\_1k | 145 ns | 180 ns (0.81×) | 139 ns (**1.04×**) | 138 ns (**1.05×**) | 140 ns (**1.04×**) |
+| anchored/no\_match\_1k | 16.1 ns | 47.2 ns (0.34×) | 14.0 ns (**1.15×**) | 13.6 ns (**1.18×** ✅) | 13.7 ns (**1.17×** ✅) |
+| alternation/4\_alts\_match | 18.9 µs | 18.9 µs (1.00×) | 18.9 µs (1.00×) | 18.8 µs (1.00×) | 18.9 µs (1.00×) |
+| alternation/4\_alts\_no\_match | 46.8 µs | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.7 µs (1.00×) |
+| quantifier/greedy\_no\_match\_500 | 25.8 ns | 25.8 ns (1.00×) | 27.3 ns (0.95×) | 25.8 ns (1.00×) | 25.7 ns (1.00×) |
+| quantifier/greedy\_match\_500 | 9.17 µs | 6.11 µs (**1.50×**) | 5.61 µs (**1.63×**) | 5.43 µs (**1.69×** ✅) | 5.45 µs (**1.68×** ✅) |
+| captures/two\_groups | 612 ns | 603 ns (1.01×) | 627 ns (0.98×) | 620 ns (0.99×) | 616 ns (0.99×) |
+| captures/iter\_all | 2.57 µs | 2.54 µs (1.01×) | 2.62 µs (0.98×) | 2.58 µs (1.00×) | 2.59 µs (0.99×) |
+| email/find\_all | 3.25 µs | 4.19 µs (0.78×) | 3.53 µs (0.92×) | 3.46 µs (0.94×) | 3.50 µs (0.93×) |
+| charclass/alpha\_iter | 31.2 µs | 38.4 µs (0.80×) | 39.7 µs (0.78×) | **24.9 µs (1.25×** ✅) | **25.0 µs (1.25×** ✅) |
+| charclass/posix\_digit\_iter | 24.4 µs | 37.3 µs (0.65×) | 37.9 µs (0.64×) | 37.7 µs (0.65×) | **21.4 µs (1.14×** ✅) |
+| case\_insensitive/match | 14.0 µs | 14.2 µs (0.98×) | 14.0 µs (1.00×) | 13.9 µs (1.01×) | 14.1 µs (0.99×) |
+| find\_iter\_scale/100 | 2.72 µs | 5.22 µs (0.52×) | 3.37 µs (0.81×) | 3.31 µs (0.82×) | 3.29 µs (0.83×) |
+| find\_iter\_scale/500 | 13.3 µs | 25.5 µs (0.52×) | 16.5 µs (0.81×) | 16.2 µs (0.82×) | 16.2 µs (0.82×) |
+| find\_iter\_scale/1000 | 26.7 µs | 51.3 µs (0.52×) | 33.1 µs (0.81×) | 32.6 µs (0.82×) | 32.3 µs (0.83×) |
+| find\_iter\_scale/5000 | 133 µs | 255 µs (0.52×) | 165 µs (0.81×) | 161 µs (0.83×) | 162 µs (0.82×) |
+| pathological/10 | 4.39 µs | 6.38 µs (0.69×) | 5.30 µs (0.83×) | 5.30 µs (0.83×) | 5.29 µs (0.83×) |
+| pathological/15 | 9.94 µs | 14.2 µs (0.70×) | 11.9 µs (0.84×) | 11.9 µs (0.84×) | 11.95 µs (0.83×) |
+| pathological/20 | 17.7 µs | 25.0 µs (0.71×) | 21.1 µs (0.84×) | 21.0 µs (0.84×) | 21.2 µs (0.84×) |
 
 ### Analysis
 
@@ -362,17 +384,37 @@ both `Class` (forward) and `ClassBack` (backward) for such charsets.
   a POSIX character class (`\p{Digit}`), which requires a helper call and is
   not inlinable.
 
-**Remaining regressions** — POSIX/Unicode charsets and case-insensitive
-`CharClass` still fall back to the helper.  `find_iter_scale` (`\d+` with
-shorthand) remains 1.18× slower because shorthand non-ASCII paths still call
-the helper.
+#### Phase 4 (POSIX and Shorthand charclass items; ShorthandBack inline)
+
+Phase 4 extends the charclass inline to handle POSIX classes that are always
+ASCII (Digit, Space, Blank, XDigit, Ascii, Cntrl, Punct) and ASCII-safe
+Shorthand items (Digit, Space, HexDigit; Word when `ascii_range=true`).  Only
+non-negated POSIX items are eligible: a negated item like `[[:^digit:]]` can
+match non-ASCII bytes so the "fail on non-ASCII" fast path would be incorrect.
+`ShorthandBack` is now also inlined (previously called a helper unconditionally).
+
+- **`charclass/posix_digit_iter`: 0.65× → 1.14× faster** — `[[:digit:]]` is
+  now inlined as a single `Range('0','9')` check; the 73% regression is fully
+  reversed into a 14% speedup. ✅
+- All other benchmarks are stable (within noise); the charclass and shorthand
+  gains from Phase 3 are preserved.
+
+**Remaining regressions** — `find_iter_scale` and `pathological` still run at
+~0.82–0.84× of interpreter speed.  Profiling points to `BtJit::Retry` storing
+`slots: Vec<u64>` (a heap allocation per Fork attempt) as the primary cause.
+For `\d+` on an all-`'a'` haystack the JIT creates one `Vec` allocation for
+each start position tried, whereas the interpreter uses an inline stack entry.
+This is a structural limitation of the current backtrack-save design and would
+require either a slab allocator for slot snapshots or an analysis pass to elide
+unnecessary slot saves.
 
 ### Known bottlenecks and future work
 
 | Root cause | Current | Future plan |
 |------------|---------|-------------|
-| POSIX / Unicode `CharClass` | helper call ~15 cy | Could inline POSIX digit/alpha/space as range chains |
-| Non-ASCII shorthand fallback | helper call for non-ASCII chars | Inline two/three-byte UTF-8 decode for common cases |
-| `find_iter_scale` residual overhead | 1.18× slower | Eliminate remaining indirect branches in shorthand loop |
+| `BtJit::Retry` slot Vec allocation | 0.82× for `\d+` scan | Inline slot snapshots with SmallVec or arena |
+| Non-ASCII shorthand fallback | helper call per non-ASCII char | Inline two/three-byte UTF-8 decode for common cases |
+| Unicode / negated `CharClass` | helper call ~15 cy | Inline POSIX Alpha/Word for `ascii_range=true` patterns |
+| `find_iter_scale` residual overhead | 0.82× | Eliminate indirect branches + reduce Fork snapshot cost |
 
 See `doc/JIT.md` for the full design.
