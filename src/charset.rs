@@ -1,5 +1,6 @@
 /// Character set matching utilities.
 use crate::ast::{PosixClass, Shorthand};
+use unicode_general_category::{GeneralCategory, get_general_category};
 
 /// Test whether a character matches a POSIX class.
 /// `ascii_range`: if true, only ASCII characters can match non-ASCII classes.
@@ -56,44 +57,240 @@ fn matches_digit(ch: char, ascii_range: bool) -> bool {
 }
 
 fn matches_space(ch: char, _ascii_range: bool) -> bool {
-    // Always use the full set; ascii_range controls non-ASCII Unicode spaces
-    // For simplicity match the standard set
     matches!(ch, '\t' | '\n' | '\x0B' | '\x0C' | '\r' | ' ')
 }
 
-/// Test a Unicode property name (basic POSIX-level properties).
+/// Normalize a Unicode property name: lowercase, strip `_`/`-`/` `.
+fn normalize_prop_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| !matches!(c, '_' | '-' | ' '))
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// Test a Unicode property name.
 pub fn matches_unicode_prop(name: &str, ch: char, negate: bool) -> bool {
-    let result = match_prop(name, ch);
+    let result = match_prop(&normalize_prop_name(name), ch);
     if negate { !result } else { result }
 }
 
-fn match_prop(name: &str, ch: char) -> bool {
-    match name {
-        "Alnum" => ch.is_alphanumeric(),
-        "Alpha" => ch.is_alphabetic(),
-        "Blank" => ch == ' ' || ch == '\t',
-        "Cntrl" => ch.is_control(),
-        "Digit" => ch.is_numeric(),
-        "Graph" => !ch.is_whitespace() && !ch.is_control(),
-        "Lower" => ch.is_lowercase(),
-        "Print" => !ch.is_control(),
-        "Punct" => ch.is_ascii_punctuation(),
-        "Space" => ch.is_whitespace(),
-        "Upper" => ch.is_uppercase(),
-        "XDigit" => ch.is_ascii_hexdigit(),
-        "Word" => ch.is_alphanumeric() || ch == '_',
-        "ASCII" => (ch as u32) <= 127,
-        // Unicode General Category approximations
-        "L" | "Letter" => ch.is_alphabetic(),
-        "Lu" | "Uppercase_Letter" => ch.is_uppercase(),
-        "Ll" | "Lowercase_Letter" => ch.is_lowercase(),
-        "N" | "Number" => ch.is_numeric(),
-        "Nd" | "Decimal_Number" => ch.is_ascii_digit(),
-        "Z" | "Separator" => ch.is_whitespace(),
-        "Zs" | "Space_Separator" => ch == ' ',
-        "C" | "Other" => ch.is_control(),
-        "Cc" | "Control" => ch.is_control(),
-        "P" | "Punctuation" => ch.is_ascii_punctuation(),
+/// Return `true` if the given Unicode property name is recognized.
+pub fn is_known_unicode_prop(name: &str) -> bool {
+    match_prop_known(&normalize_prop_name(name))
+}
+
+fn match_prop(norm: &str, ch: char) -> bool {
+    use GeneralCategory::*;
+    let gc = get_general_category(ch);
+    match norm {
+        // ---- POSIX-like ----
+        "alnum" => ch.is_alphanumeric(),
+        "alpha" => ch.is_alphabetic(),
+        "blank" => ch == ' ' || ch == '\t',
+        "cntrl" => (ch as u32) < 32 || ch as u32 == 127,
+        "digit" => ch.is_ascii_digit(),
+        "graph" => ch > ' ' && ch as u32 != 127 && !ch.is_control(),
+        "lower" => ch.is_lowercase(),
+        "print" => (ch >= ' ' && ch as u32 != 127) || !ch.is_control(),
+        "punct" => ch.is_ascii_punctuation(),
+        "space" => matches!(ch, '\t' | '\n' | '\x0B' | '\x0C' | '\r' | ' '),
+        "upper" => ch.is_uppercase(),
+        "xdigit" => ch.is_ascii_hexdigit(),
+        "word" => ch.is_alphanumeric() || ch == '_',
+        "ascii" => (ch as u32) <= 127,
+
+        // ---- Letter (L) ----
+        "l" | "letter" => {
+            matches!(
+                gc,
+                UppercaseLetter | LowercaseLetter | TitlecaseLetter | ModifierLetter | OtherLetter
+            )
+        }
+        "lu" | "uppercaseletter" => gc == UppercaseLetter,
+        "ll" | "lowercaseletter" => gc == LowercaseLetter,
+        "lt" | "titlecaseletter" => gc == TitlecaseLetter,
+        "lm" | "modifierletter" => gc == ModifierLetter,
+        "lo" | "otherletter" => gc == OtherLetter,
+
+        // ---- Mark (M) ----
+        "m" | "mark" | "combiningmark" => {
+            matches!(gc, NonspacingMark | SpacingMark | EnclosingMark)
+        }
+        "mn" | "nonspacingmark" => gc == NonspacingMark,
+        "mc" | "spacingmark" | "spacingcombiningmark" => gc == SpacingMark,
+        "me" | "enclosingmark" => gc == EnclosingMark,
+
+        // ---- Number (N) ----
+        "n" | "number" => matches!(gc, DecimalNumber | LetterNumber | OtherNumber),
+        "nd" | "decimalnumber" | "decimaldigitnumber" => gc == DecimalNumber,
+        "nl" | "letternumber" => gc == LetterNumber,
+        "no" | "othernumber" => gc == OtherNumber,
+
+        // ---- Punctuation (P) ----
+        "p" | "punctuation" => {
+            matches!(
+                gc,
+                ConnectorPunctuation
+                    | DashPunctuation
+                    | OpenPunctuation
+                    | ClosePunctuation
+                    | InitialPunctuation
+                    | FinalPunctuation
+                    | OtherPunctuation
+            )
+        }
+        "pc" | "connectorpunctuation" => gc == ConnectorPunctuation,
+        "pd" | "dashpunctuation" => gc == DashPunctuation,
+        "ps" | "openpunctuation" => gc == OpenPunctuation,
+        "pe" | "closepunctuation" => gc == ClosePunctuation,
+        "pi" | "initialpunctuation" => gc == InitialPunctuation,
+        "pf" | "finalpunctuation" => gc == FinalPunctuation,
+        "po" | "otherpunctuation" => gc == OtherPunctuation,
+
+        // ---- Symbol (S) ----
+        "s" | "symbol" => matches!(
+            gc,
+            MathSymbol | CurrencySymbol | ModifierSymbol | OtherSymbol
+        ),
+        "sm" | "mathsymbol" => gc == MathSymbol,
+        "sc" | "currencysymbol" => gc == CurrencySymbol,
+        "sk" | "modifiersymbol" => gc == ModifierSymbol,
+        "so" | "othersymbol" => gc == OtherSymbol,
+
+        // ---- Separator (Z) ----
+        "z" | "separator" => matches!(gc, SpaceSeparator | LineSeparator | ParagraphSeparator),
+        "zs" | "spaceseparator" => gc == SpaceSeparator,
+        "zl" | "lineseparator" => gc == LineSeparator,
+        "zp" | "paragraphseparator" => gc == ParagraphSeparator,
+
+        // ---- Other (C) ----
+        "c" | "other" => matches!(gc, Control | Format | Surrogate | PrivateUse | Unassigned),
+        "cc" | "control" => gc == Control,
+        "cf" | "format" => gc == Format,
+        "cs" | "surrogate" => gc == Surrogate,
+        "co" | "privateuse" => gc == PrivateUse,
+        "cn" | "unassigned" | "notassigned" => gc == Unassigned,
+
+        // ---- Special ----
+        "any" => true,
+        "assigned" => gc != Unassigned,
+
+        // ---- Binary properties ----
+        "alphabetic" => ch.is_alphabetic(),
+        "uppercase" => ch.is_uppercase(),
+        "lowercase" => ch.is_lowercase(),
+        "whitespace" => ch.is_whitespace(),
+        "hexdigit" => ch.is_ascii_hexdigit(),
+        "numeric" => ch.is_numeric(),
+        "math" => gc == MathSymbol,
+
         _ => false,
     }
+}
+
+fn match_prop_known(norm: &str) -> bool {
+    matches!(
+        norm,
+        "alnum"
+            | "alpha"
+            | "blank"
+            | "cntrl"
+            | "digit"
+            | "graph"
+            | "lower"
+            | "print"
+            | "punct"
+            | "space"
+            | "upper"
+            | "xdigit"
+            | "word"
+            | "ascii"
+            | "l"
+            | "letter"
+            | "lu"
+            | "uppercaseletter"
+            | "ll"
+            | "lowercaseletter"
+            | "lt"
+            | "titlecaseletter"
+            | "lm"
+            | "modifierletter"
+            | "lo"
+            | "otherletter"
+            | "m"
+            | "mark"
+            | "combiningmark"
+            | "mn"
+            | "nonspacingmark"
+            | "mc"
+            | "spacingmark"
+            | "spacingcombiningmark"
+            | "me"
+            | "enclosingmark"
+            | "n"
+            | "number"
+            | "nd"
+            | "decimalnumber"
+            | "decimaldigitnumber"
+            | "nl"
+            | "letternumber"
+            | "no"
+            | "othernumber"
+            | "p"
+            | "punctuation"
+            | "pc"
+            | "connectorpunctuation"
+            | "pd"
+            | "dashpunctuation"
+            | "ps"
+            | "openpunctuation"
+            | "pe"
+            | "closepunctuation"
+            | "pi"
+            | "initialpunctuation"
+            | "pf"
+            | "finalpunctuation"
+            | "po"
+            | "otherpunctuation"
+            | "s"
+            | "symbol"
+            | "sm"
+            | "mathsymbol"
+            | "sc"
+            | "currencysymbol"
+            | "sk"
+            | "modifiersymbol"
+            | "so"
+            | "othersymbol"
+            | "z"
+            | "separator"
+            | "zs"
+            | "spaceseparator"
+            | "zl"
+            | "lineseparator"
+            | "zp"
+            | "paragraphseparator"
+            | "c"
+            | "other"
+            | "cc"
+            | "control"
+            | "cf"
+            | "format"
+            | "cs"
+            | "surrogate"
+            | "co"
+            | "privateuse"
+            | "cn"
+            | "unassigned"
+            | "notassigned"
+            | "any"
+            | "assigned"
+            | "alphabetic"
+            | "uppercase"
+            | "lowercase"
+            | "whitespace"
+            | "hexdigit"
+            | "numeric"
+            | "math"
+    )
 }

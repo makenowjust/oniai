@@ -20,6 +20,7 @@ cranelift-frontend = { version = "0.119", optional = true }
 cranelift-jit      = { version = "0.119", optional = true }
 cranelift-module   = { version = "0.119", optional = true }
 cranelift-native   = { version = "0.119", optional = true }
+unicode-general-category = "1.1.0"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

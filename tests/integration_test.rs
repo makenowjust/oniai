@@ -132,6 +132,205 @@ fn unicode_prop_alpha() {
 }
 
 // ---------------------------------------------------------------------------
+// §3.X Unicode Property Tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unicode_prop_general_categories() {
+    // Letter supergroup
+    assert_match!(r"\p{L}", "A"); // uppercase letter
+    assert_match!(r"\p{L}", "α"); // Greek lowercase
+    assert_no_match!(r"\p{L}", "1");
+
+    // Lu / Uppercase_Letter
+    assert_match!(r"\p{Lu}", "A");
+    assert_match!(r"\p{Uppercase_Letter}", "Z");
+    assert_no_match!(r"\p{Lu}", "a");
+
+    // Ll / Lowercase_Letter
+    assert_match!(r"\p{Ll}", "a");
+    assert_match!(r"\p{Lowercase_Letter}", "z");
+    assert_no_match!(r"\p{Ll}", "A");
+
+    // Lt / Titlecase_Letter
+    assert_match!(r"\p{Lt}", "ǅ"); // U+01C5 Dz (titlecase)
+    assert_no_match!(r"\p{Lt}", "a");
+
+    // Lo / Other_Letter
+    assert_match!(r"\p{Lo}", "日"); // CJK ideograph
+    assert_no_match!(r"\p{Lo}", "A");
+}
+
+#[test]
+fn unicode_prop_numbers() {
+    // N supergroup
+    assert_match!(r"\p{N}", "1");
+    assert_match!(r"\p{N}", "²"); // superscript 2 (No)
+    assert_no_match!(r"\p{N}", "a");
+
+    // Nd / Decimal_Number
+    assert_match!(r"\p{Nd}", "5");
+    assert_no_match!(r"\p{Nd}", "²");
+
+    // Nl / Letter_Number
+    assert_match!(r"\p{Nl}", "Ⅻ"); // Roman numeral XII
+    assert_no_match!(r"\p{Nl}", "5");
+
+    // No / Other_Number
+    assert_match!(r"\p{No}", "²");
+    assert_no_match!(r"\p{No}", "5");
+}
+
+#[test]
+fn unicode_prop_punctuation() {
+    // P supergroup
+    assert_match!(r"\p{P}", "!");
+    assert_no_match!(r"\p{P}", "A");
+
+    // Po / Other_Punctuation
+    assert_match!(r"\p{Po}", "!");
+    assert_match!(r"\p{Po}", "?");
+
+    // Pd / Dash_Punctuation
+    assert_match!(r"\p{Pd}", "-");
+
+    // Ps / Open_Punctuation
+    assert_match!(r"\p{Ps}", "(");
+    assert_match!(r"\p{Ps}", "[");
+
+    // Pe / Close_Punctuation
+    assert_match!(r"\p{Pe}", ")");
+}
+
+#[test]
+fn unicode_prop_symbols() {
+    // S supergroup
+    assert_match!(r"\p{S}", "+"); // Sm
+    assert_match!(r"\p{S}", "$"); // Sc
+    assert_no_match!(r"\p{S}", "A");
+
+    // Sm / Math_Symbol
+    assert_match!(r"\p{Sm}", "+");
+    assert_match!(r"\p{Sm}", "=");
+
+    // Sc / Currency_Symbol
+    assert_match!(r"\p{Sc}", "$");
+    assert_match!(r"\p{Sc}", "€");
+}
+
+#[test]
+fn unicode_prop_separators() {
+    // Zs / Space_Separator
+    assert_match!(r"\p{Zs}", " ");
+    assert_no_match!(r"\p{Zs}", "\t");
+}
+
+#[test]
+fn unicode_prop_other() {
+    // Cc / Control
+    assert_match!(r"\p{Cc}", "\n");
+    assert_match!(r"\p{Cc}", "\t");
+    assert_no_match!(r"\p{Cc}", "A");
+
+    // Cn / Unassigned
+    assert_no_match!(r"\p{Cn}", "A");
+
+    // Assigned
+    assert_match!(r"\p{Assigned}", "A");
+    assert_match!(r"\p{Assigned}", "日");
+}
+
+#[test]
+fn unicode_prop_any() {
+    assert_match!(r"\p{Any}", "a");
+    assert_match!(r"\p{Any}", "日");
+    assert_match!(r"\p{Any}", "1");
+}
+
+#[test]
+fn unicode_prop_posix_like() {
+    // POSIX-like properties accessible via \p{}
+    assert_match!(r"\p{Alnum}", "a");
+    assert_match!(r"\p{Alnum}", "1");
+    assert_no_match!(r"\p{Alnum}", "!");
+
+    assert_match!(r"\p{Digit}", "5");
+    assert_no_match!(r"\p{Digit}", "a");
+
+    assert_match!(r"\p{Space}", " ");
+    assert_match!(r"\p{Space}", "\n");
+    assert_no_match!(r"\p{Space}", "a");
+
+    assert_match!(r"\p{XDigit}", "f");
+    assert_match!(r"\p{XDigit}", "F");
+    assert_match!(r"\p{XDigit}", "9");
+    assert_no_match!(r"\p{XDigit}", "g");
+
+    assert_match!(r"\p{Word}", "_");
+    assert_match!(r"\p{Word}", "a");
+    assert_no_match!(r"\p{Word}", " ");
+
+    assert_match!(r"\p{ASCII}", "a");
+    assert_no_match!(r"\p{ASCII}", "日");
+}
+
+#[test]
+fn unicode_prop_binary() {
+    assert_match!(r"\p{Alphabetic}", "a");
+    assert_match!(r"\p{Alphabetic}", "α");
+    assert_no_match!(r"\p{Alphabetic}", "1");
+
+    assert_match!(r"\p{Uppercase}", "A");
+    assert_no_match!(r"\p{Uppercase}", "a");
+
+    assert_match!(r"\p{Lowercase}", "a");
+    assert_no_match!(r"\p{Lowercase}", "A");
+
+    assert_match!(r"\p{Whitespace}", " ");
+    assert_match!(r"\p{Whitespace}", "\n");
+    assert_no_match!(r"\p{Whitespace}", "a");
+}
+
+#[test]
+fn unicode_prop_negation() {
+    // \P{} negates
+    assert_no_match!(r"\P{Lu}", "A");
+    assert_match!(r"\P{Lu}", "a");
+    assert_match!(r"\P{Lu}", "1");
+
+    // \p{^name} also negates (if parser supports it)
+    assert_no_match!(r"\P{Alpha}", "a");
+    assert_match!(r"\P{Alpha}", "1");
+}
+
+#[test]
+fn unicode_prop_case_insensitive_name() {
+    // Property names should be matched case-insensitively
+    assert_match!(r"\p{lu}", "A");
+    assert_match!(r"\p{LU}", "A");
+    assert_match!(r"\p{uppercase_letter}", "A");
+    assert_match!(r"\p{UppercaseLetter}", "A");
+    assert_no_match!(r"\p{lu}", "a");
+}
+
+#[test]
+fn unicode_prop_in_class() {
+    // \p{} inside a character class
+    assert_match!(r"[\p{Lu}]", "A");
+    assert_no_match!(r"[\p{Lu}]", "a");
+    assert_match!(r"[\p{Lu}\p{Ll}]", "a");
+    assert_match!(r"[\p{Lu}\p{Ll}]", "A");
+    assert_no_match!(r"[\p{Lu}\p{Ll}]", "1");
+}
+
+#[test]
+fn unicode_prop_unknown_error() {
+    // Unknown property names should produce a compile error
+    assert!(Regex::new(r"\p{NonExistentProp}").is_err());
+    assert!(Regex::new(r"[\p{NoSuchCategory}]").is_err());
+}
+
+// ---------------------------------------------------------------------------
 // §4 Quantifiers
 // ---------------------------------------------------------------------------
 #[test]

@@ -1,4 +1,5 @@
 use crate::ast::*;
+use crate::charset;
 use crate::error::Error;
 use crate::vm::{CharSet, CharSetItem, Inst};
 /// Compiler: transforms a parsed AST into a VM instruction sequence.
@@ -140,6 +141,11 @@ impl Compiler {
             }
 
             Node::UnicodeProp { name, negate } => {
+                if !charset::is_known_unicode_prop(name) {
+                    return Err(Error::Compile(format!(
+                        "unknown Unicode property: {name:?}"
+                    )));
+                }
                 if backward {
                     self.emit(Inst::PropBack(name.clone(), *negate));
                 } else {
@@ -152,7 +158,7 @@ impl Compiler {
             }
 
             Node::CharClass(cc) => {
-                let cs = compile_charset(cc, ic, flags.ascii_range);
+                let cs = compile_charset(cc, ic, flags.ascii_range)?;
                 let idx = self.add_charset(cs);
                 if backward {
                     self.emit(Inst::ClassBack(idx, ic));
@@ -742,17 +748,21 @@ impl Compiler {
 // CharSet construction from AST CharClass
 // ---------------------------------------------------------------------------
 
-pub fn compile_charset(cc: &CharClass, ignore_case: bool, ascii_range: bool) -> CharSet {
+pub fn compile_charset(
+    cc: &CharClass,
+    ignore_case: bool,
+    ascii_range: bool,
+) -> Result<CharSet, Error> {
     let items = cc
         .items
         .iter()
         .map(|item| compile_class_item(item, ascii_range, ignore_case))
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
     let intersections = cc
         .intersections
         .iter()
         .map(|ic| compile_charset(ic, ignore_case, ascii_range))
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
     let mut cs = CharSet {
         negate: cc.negate,
         items,
@@ -764,20 +774,31 @@ pub fn compile_charset(cc: &CharClass, ignore_case: bool, ascii_range: bool) -> 
     // above finished first), so the slow-path sampling here uses those fast paths
     // for inner charsets automatically.
     cs.compute_ascii_ranges();
-    cs
+    Ok(cs)
 }
 
-fn compile_class_item(item: &ClassItem, ascii_range: bool, ignore_case: bool) -> CharSetItem {
-    match item {
+fn compile_class_item(
+    item: &ClassItem,
+    ascii_range: bool,
+    ignore_case: bool,
+) -> Result<CharSetItem, Error> {
+    Ok(match item {
         ClassItem::Char(c) => CharSetItem::Char(*c),
         ClassItem::Range(lo, hi) => CharSetItem::Range(*lo, *hi),
         ClassItem::Shorthand(sh) => CharSetItem::Shorthand(*sh, ascii_range),
         ClassItem::Posix(cls, neg) => CharSetItem::Posix(*cls, *neg),
-        ClassItem::Unicode(name, neg) => CharSetItem::Unicode(name.clone(), *neg),
-        ClassItem::Nested(inner) => {
-            CharSetItem::Nested(compile_charset(inner, ignore_case, ascii_range))
+        ClassItem::Unicode(name, neg) => {
+            if !charset::is_known_unicode_prop(name) {
+                return Err(Error::Compile(format!(
+                    "unknown Unicode property: {name:?}"
+                )));
+            }
+            CharSetItem::Unicode(name.clone(), *neg)
         }
-    }
+        ClassItem::Nested(inner) => {
+            CharSetItem::Nested(compile_charset(inner, ignore_case, ascii_range)?)
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
