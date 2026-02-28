@@ -10,7 +10,10 @@
 
 use crate::ast::{AnchorKind, Flags, Shorthand};
 use crate::charset;
-use crate::vm::{BtJit, CharSet, JitExecCtx, bt_pop, bt_push, exec_lookaround_for_jit, fold_advance, fold_retreat};
+use crate::vm::{
+    BtJit, CharSet, JitExecCtx, bt_pop, bt_push, exec_lookaround_for_jit, fold_advance,
+    fold_retreat,
+};
 use unicode_casefold::UnicodeCaseFold;
 
 // ---------------------------------------------------------------------------
@@ -734,11 +737,7 @@ pub unsafe extern "C" fn jit_null_check_start(ctx: *mut JitExecCtx, slot: u32, p
 /// If not (null match): truncate the JIT backtrack stack to the saved depth
 /// (committing captures from this iteration) and return 1 so the caller
 /// jumps to `exit_pc`.  Returns 0 if position advanced (loop continues).
-pub unsafe extern "C" fn jit_null_check_end(
-    ctx: *mut JitExecCtx,
-    slot: u32,
-    pos: u64,
-) -> u32 {
+pub unsafe extern "C" fn jit_null_check_end(ctx: *mut JitExecCtx, slot: u32, pos: u64) -> u32 {
     unsafe {
         let ctx = &mut *ctx;
         let base = slot as usize * 2;

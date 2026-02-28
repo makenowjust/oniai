@@ -199,10 +199,10 @@ impl<'r, 't> Iterator for FindIter<'r, 't> {
         if self.pos > self.text.len() {
             return None;
         }
-        let (start, end, _) = self
-            .re
-            .inner
-            .find_with_scratch(self.text, self.pos, &mut self.scratch)?;
+        let (start, end, _) =
+            self.re
+                .inner
+                .find_with_scratch(self.text, self.pos, &mut self.scratch)?;
         // advance past zero-length matches
         self.pos = if end > start {
             end
@@ -230,10 +230,10 @@ impl<'r, 't> Iterator for CapturesIter<'r, 't> {
         if self.pos > self.text.len() {
             return None;
         }
-        let (start, end, caps) = self
-            .re
-            .inner
-            .find_with_scratch(self.text, self.pos, &mut self.scratch)?;
+        let (start, end, caps) =
+            self.re
+                .inner
+                .find_with_scratch(self.text, self.pos, &mut self.scratch)?;
         self.pos = if end > start {
             end
         } else {

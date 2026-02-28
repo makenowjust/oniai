@@ -861,3 +861,14 @@ fn null_loop_check_empty_body() {
     let caps = re.captures("aa").unwrap();
     assert_eq!(caps.get(1).map(|m| m.as_str()), Some(""));
 }
+
+#[test]
+fn null_loop_check_absence_body() {
+    // Regression: ((?~#)*) caused OOM because can_match_empty incorrectly
+    // returned false for the absence operator (?~X) when X cannot match empty.
+    // The empty string never contains a non-empty-matching X, so (?~X) CAN
+    // match empty, and the loop body must be guarded with NullCheck instructions.
+    assert_match!(r"((?~#)*)", "$");
+    assert_match!(r"(?~#)*", "");
+    assert_match!(r"(?~a)*", "b");
+}

@@ -592,20 +592,28 @@ fn emit_function(
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
                 let slot_v = builder.ins().iconst(types::I32, *slot as i64);
-                builder.ins().call(h_null_check_start, &[ctx_v, slot_v, pos_v]);
+                builder
+                    .ins()
+                    .call(h_null_check_start, &[ctx_v, slot_v, pos_v]);
                 builder.ins().jump(inst_blocks[pc + 1], &[]);
             }
             Inst::NullCheckEnd { slot, exit_pc } => {
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
                 let slot_v = builder.ins().iconst(types::I32, *slot as i64);
-                let call = builder.ins().call(h_null_check_end, &[ctx_v, slot_v, pos_v]);
+                let call = builder
+                    .ins()
+                    .call(h_null_check_end, &[ctx_v, slot_v, pos_v]);
                 let null_flag = builder.inst_results(call)[0];
                 // null_flag == 1: null iteration detected, bt truncated, jump to exit_pc
                 // null_flag == 0: pos advanced, continue to pc+1 (loop body → Jump)
-                builder
-                    .ins()
-                    .brif(null_flag, inst_blocks[*exit_pc], &[], inst_blocks[pc + 1], &[]);
+                builder.ins().brif(
+                    null_flag,
+                    inst_blocks[*exit_pc],
+                    &[],
+                    inst_blocks[pc + 1],
+                    &[],
+                );
             }
 
             // ----------------------------------------------------------------
@@ -663,7 +671,9 @@ fn emit_function(
                 let pos_v = builder.use_var(var_pos);
                 let ptr_v = builder.ins().iconst(types::I64, folded.as_ptr() as i64);
                 let len_v = builder.ins().iconst(types::I64, folded.len() as i64);
-                let call = builder.ins().call(h_fold_seq, &[ctx_v, pos_v, ptr_v, len_v]);
+                let call = builder
+                    .ins()
+                    .call(h_fold_seq, &[ctx_v, pos_v, ptr_v, len_v]);
                 emit_match_call!(call, pc + 1);
             }
             Inst::FoldSeqBack(folded) => {
@@ -844,12 +854,10 @@ fn emit_function(
                 let idx = builder.ins().iadd(idx, fork_pos);
 
                 // Bounds check: if idx < fork_memo_len → inline record, else → slow helper
-                let fork_memo_len = builder.ins().load(
-                    types::I64,
-                    MemFlags::trusted(),
-                    ctx_v,
-                    CTX_FORK_MEMO_LEN,
-                );
+                let fork_memo_len =
+                    builder
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_FORK_MEMO_LEN);
                 let in_bounds = builder
                     .ins()
                     .icmp(IntCC::UnsignedLessThan, idx, fork_memo_len);
@@ -891,10 +899,9 @@ fn emit_function(
                     CTX_FORK_MEMO_DATA_PTR,
                 );
                 let byte_ptr = builder.ins().iadd(data_ptr, idx);
-                let old_byte =
-                    builder
-                        .ins()
-                        .load(types::I8, MemFlags::trusted(), byte_ptr, 0);
+                let old_byte = builder
+                    .ins()
+                    .load(types::I8, MemFlags::trusted(), byte_ptr, 0);
                 let new_byte = builder.ins().bor(old_byte, depth_bit);
                 builder
                     .ins()
@@ -1737,9 +1744,12 @@ fn inline_fork(
     // This keeps fast_block as a single-predecessor linear block — critical for
     // Cranelift's register allocator to keep bt_len/bt_data/etc. in registers.
     let can_fast = if use_memo {
-        let memo_hf = builder
-            .ins()
-            .load(types::I64, MemFlags::trusted(), ctx_v, CTX_MEMO_HAS_FAILURES);
+        let memo_hf = builder.ins().load(
+            types::I64,
+            MemFlags::trusted(),
+            ctx_v,
+            CTX_MEMO_HAS_FAILURES,
+        );
         let no_fail = builder.ins().icmp_imm(IntCC::Equal, memo_hf, 0);
         builder.ins().band(has_room, no_fail)
     } else {

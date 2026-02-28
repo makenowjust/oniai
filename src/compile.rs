@@ -26,8 +26,11 @@ fn can_match_empty(node: &Node) -> bool {
         | Node::NamedCapture { node, .. }
         | Node::Group { node, .. }
         | Node::Atomic(node)
-        | Node::InlineFlags { node, .. }
-        | Node::Absence(node) => can_match_empty(node),
+        | Node::InlineFlags { node, .. } => can_match_empty(node),
+        // (?~X) matches any string that does NOT contain X.
+        // The empty string never contains X unless X itself can match empty,
+        // so the absent operator can produce an empty match iff X cannot.
+        Node::Absence(node) => !can_match_empty(node),
         // Conservative: backrefs and calls may match empty.
         Node::BackRef { .. } | Node::SubexpCall(_) => true,
         Node::Conditional { yes, no, .. } => can_match_empty(yes) || can_match_empty(no),
@@ -571,7 +574,10 @@ impl Compiler {
                     self.compile_node_inner(node, flags, backward)?;
                     // loop_end is the pc of AtomicEnd (after NullCheckEnd + Jump)
                     let loop_end = self.pc() + 2;
-                    self.emit(Inst::NullCheckEnd { slot, exit_pc: loop_end });
+                    self.emit(Inst::NullCheckEnd {
+                        slot,
+                        exit_pc: loop_end,
+                    });
                     self.emit(Inst::Jump(null_check_start_pc));
                     // self.pc() == loop_end
                     self.emit(Inst::AtomicEnd);

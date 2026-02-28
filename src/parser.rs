@@ -870,9 +870,7 @@ impl Parser {
                     .parse()
                     .map_err(|_| Error::Parse("invalid condition number".into()))?;
                 if n == 0 {
-                    return Err(Error::Parse(
-                        "condition group number must be >= 1".into(),
-                    ));
+                    return Err(Error::Parse("condition group number must be >= 1".into()));
                 }
                 Ok(Condition::GroupNum(n))
             }

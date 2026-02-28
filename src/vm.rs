@@ -1596,8 +1596,8 @@ impl CompiledRegex {
                 let chars = chars.clone();
                 let mut pos = start_pos;
                 loop {
-                    let offset = text[pos..]
-                        .find(|c| chars.iter().any(|&fc| chars_eq_ci(c, fc)))?;
+                    let offset =
+                        text[pos..].find(|c| chars.iter().any(|&fc| chars_eq_ci(c, fc)))?;
                     let candidate = pos + offset;
                     if let Some(r) = self.exec_interp(text, candidate, &mut memo) {
                         return Some(r);
