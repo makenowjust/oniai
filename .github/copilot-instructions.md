@@ -18,6 +18,29 @@ cargo clippy --tests  # lint
 - Run `cargo clippy --fix --allow-dirty --tests` to apply auto-fixable
   suggestions automatically.
 
+## Benchmarks
+
+Run the Criterion benchmark suite with:
+
+```sh
+cargo bench
+```
+
+To run a specific benchmark (e.g. only `literal`), use the filter argument:
+
+```sh
+cargo bench -- literal
+```
+
+HTML reports are written to `target/criterion/`. To compare against a saved
+baseline, save one first then run with `--baseline`:
+
+```sh
+cargo bench -- --save-baseline main
+# (make your changes)
+cargo bench -- --baseline main
+```
+
 ## Version Control
 
 This repository uses **Jujutsu (`jj`)** for version control. Use `jj` commands for day-to-day workflow (e.g., `jj new`, `jj describe`, `jj squash`) rather than raw `git` commands.
