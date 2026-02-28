@@ -132,6 +132,7 @@ pub(crate) fn exec_jit(
     text: &str,
     start_pos: usize,
     num_groups: usize,
+    num_null_checks: usize,
     use_memo: bool,
     memo: &mut MemoState,
     scratch: &mut ExecScratch,
@@ -148,6 +149,8 @@ pub(crate) fn exec_jit(
     let slot_count = num_groups * 2;
     scratch.slots.clear();
     scratch.slots.resize(slot_count, u64::MAX);
+    scratch.null_check.clear();
+    scratch.null_check.resize(num_null_checks, u64::MAX);
 
     // "Lend" the bt allocation to ctx so JIT helpers can work with raw pointers.
     // Take ownership of the internal allocation via mem::forget to prevent double-free
@@ -163,6 +166,9 @@ pub(crate) fn exec_jit(
     // pass them to ctx, and update scratch after the call if they changed.
     let fork_memo_raw_ptr = scratch.fork_memo_ptr;
     let fork_memo_raw_cap = scratch.fork_memo_cap;
+
+    // Safety: null_check Vec is sized to num_null_checks and lives for the duration of this call.
+    let null_check_ptr = scratch.null_check.as_mut_ptr();
 
     let mut ctx = JitExecCtx {
         text_ptr: text.as_ptr(),
@@ -187,6 +193,8 @@ pub(crate) fn exec_jit(
         fork_memo_data_ptr: fork_memo_raw_ptr,
         fork_memo_len: scratch.fork_memo_len as u64,
         fork_memo_cap: fork_memo_raw_cap as u64,
+        null_check_ptr,
+        null_check_len: num_null_checks as u64,
     };
 
     let result = unsafe { (jit.func_ptr)(&mut ctx as *mut JitExecCtx as i64, start_pos as i64) };

@@ -717,6 +717,28 @@ pub unsafe extern "C" fn jit_fold_seq_back(
     }
 }
 
+/// Save the current position into the null-check slot for this loop iteration.
+pub unsafe extern "C" fn jit_null_check_start(ctx: *mut JitExecCtx, slot: u32, pos: u64) {
+    unsafe {
+        let ctx = &mut *ctx;
+        *ctx.null_check_ptr.add(slot as usize) = pos;
+    }
+}
+
+/// Return 1 (fail/backtrack) if position hasn't advanced since NullCheckStart,
+/// meaning the loop body matched empty — preventing an infinite loop.
+pub unsafe extern "C" fn jit_null_check_end(
+    ctx: *const JitExecCtx,
+    slot: u32,
+    pos: u64,
+) -> u32 {
+    unsafe {
+        let ctx = &*ctx;
+        let saved = *ctx.null_check_ptr.add(slot as usize);
+        u32::from(saved == pos)
+    }
+}
+
 /// Symbol table: maps helper name → raw function pointer.
 /// Used by `JITBuilder::symbol()` to resolve external calls in JIT code.
 pub(super) fn register_symbols(jit_builder: &mut cranelift_jit::JITBuilder) {
@@ -749,4 +771,6 @@ pub(super) fn register_symbols(jit_builder: &mut cranelift_jit::JITBuilder) {
     sym!(jit_fork_memo_record);
     sym!(jit_fold_seq);
     sym!(jit_fold_seq_back);
+    sym!(jit_null_check_start);
+    sym!(jit_null_check_end);
 }

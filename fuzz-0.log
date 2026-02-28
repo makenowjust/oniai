@@ -1,0 +1,88 @@
+INFO: Running with entropic power schedule (0xFF, 100).
+INFO: Seed: 2839763605
+INFO: Loaded 1 modules   (189587 inline 8-bit counters): 189587 [0x1012d7f10, 0x1013063a3), 
+INFO: Loaded 1 PC tables (189587 PCs): 189587 [0x1013063a8,0x1015eacd8), 
+INFO:       20 files found in fuzz/corpus/fuzz_pattern
+INFO: -max_len is not provided; libFuzzer will not generate inputs larger than 4096 bytes
+INFO: seed corpus: files: 20 min: 2b max: 44b total: 313b rss: 51Mb
+#24	INITED cov: 14113 ft: 20128 corp: 20/313b exec/s: 0 rss: 60Mb
+#25	NEW    cov: 14128 ft: 20157 corp: 21/319b lim: 44 exec/s: 0 rss: 60Mb L: 6/44 MS: 1 ChangeBit-
+#26	NEW    cov: 14133 ft: 20169 corp: 22/335b lim: 44 exec/s: 0 rss: 60Mb L: 16/44 MS: 1 InsertRepeatedBytes-
+	NEW_FUNC[1/5]: 0x0001008d90a4 in _RINvNtNtNtCsiNaX9ehqxE0_4core5slice4sort6stable14driftsort_mainTNtNtNtCs6txuWBhYBCd_9regalloc23ion15data_structures11PosWithPrioNtB16_4EditENCINvMNtCsbOBxOy69f6J_5alloc5sliceSBZ_11sort_by_keyyNCNvMsp_B12_NtB12_5Edits4sort0E0INtNtB2m_3vec3VecBZ_EECstH1YYbM8Fy_17cranelift_codegen+0x0 (fuzz_pattern:arm64+0x10034d0a4)
+	NEW_FUNC[2/5]: 0x0001008dc524 in _RINvNtNtNtCsiNaX9ehqxE0_4core5slice4sort8unstable7ipnsortNtNtNtCs6txuWBhYBCd_9regalloc23ion15data_structures12InsertedMoveNCINvMB6_SBT_20sort_unstable_by_keyyNCNvMNtBX_5movesINtBV_3EnvINtNtNtCstH1YYbM8Fy_17cranelift_codegen8machinst5vcode5VCodeNtNtNtNtNtNtB33_3isa7aarch645lower4isle14generated_code5MInstEE22resolve_inserted_moves0E0EB33_+0x0 (fuzz_pattern:arm64+0x100350524)
+#28	NEW    cov: 14341 ft: 22486 corp: 23/343b lim: 44 exec/s: 0 rss: 65Mb L: 8/44 MS: 1 ChangeBinInt-
+#29	NEW    cov: 14341 ft: 22489 corp: 24/351b lim: 44 exec/s: 0 rss: 65Mb L: 8/44 MS: 1 CrossOver-
+#30	NEW    cov: 14345 ft: 22502 corp: 25/377b lim: 44 exec/s: 0 rss: 65Mb L: 26/44 MS: 1 ShuffleBytes-
+#31	NEW    cov: 14346 ft: 22513 corp: 26/386b lim: 44 exec/s: 0 rss: 65Mb L: 9/44 MS: 1 InsertByte-
+#33	NEW    cov: 14346 ft: 22522 corp: 27/394b lim: 44 exec/s: 0 rss: 67Mb L: 8/44 MS: 1 ShuffleBytes-
+#34	NEW    cov: 14346 ft: 22549 corp: 28/428b lim: 44 exec/s: 0 rss: 67Mb L: 34/44 MS: 1 InsertRepeatedBytes-
+#35	NEW    cov: 14347 ft: 22557 corp: 29/440b lim: 44 exec/s: 0 rss: 67Mb L: 12/44 MS: 1 ChangeByte-
+#36	NEW    cov: 14350 ft: 22561 corp: 30/447b lim: 44 exec/s: 0 rss: 67Mb L: 7/44 MS: 1 InsertByte-
+#38	NEW    cov: 14372 ft: 24666 corp: 31/448b lim: 44 exec/s: 0 rss: 68Mb L: 1/44 MS: 1 CrossOver-
+#39	NEW    cov: 14372 ft: 24668 corp: 32/461b lim: 44 exec/s: 0 rss: 68Mb L: 13/44 MS: 1 CrossOver-
+#40	NEW    cov: 14372 ft: 24671 corp: 33/491b lim: 44 exec/s: 0 rss: 68Mb L: 30/44 MS: 1 ChangeByte-
+#41	NEW    cov: 14374 ft: 24677 corp: 34/517b lim: 44 exec/s: 0 rss: 68Mb L: 26/44 MS: 1 ChangeBinInt-
+	NEW_FUNC[1/2]: 0x00010067d49c in _RNvXs1g_NtCsiNaX9ehqxE0_4core3fmtRcNtB6_5Debug3fmtCsi16g1cX0cbm_6aigumo+0x0 (fuzz_pattern:arm64+0x1000f149c)
+	NEW_FUNC[2/2]: 0x000100682b90 in _RNvXsR_NtCsiNaX9ehqxE0_4core6optionINtB5_6OptioncENtNtB7_3fmt5Debug3fmtCsi16g1cX0cbm_6aigumo+0x0 (fuzz_pattern:arm64+0x1000f6b90)
+#42	NEW    cov: 14385 ft: 24688 corp: 35/533b lim: 44 exec/s: 0 rss: 68Mb L: 16/44 MS: 1 ChangeBit-
+#43	NEW    cov: 14386 ft: 24691 corp: 36/546b lim: 44 exec/s: 0 rss: 68Mb L: 13/44 MS: 1 ShuffleBytes-
+#45	NEW    cov: 14386 ft: 24693 corp: 37/567b lim: 44 exec/s: 0 rss: 68Mb L: 21/44 MS: 2 ShuffleBytes-CrossOver-
+#48	NEW    cov: 14386 ft: 24702 corp: 38/609b lim: 44 exec/s: 0 rss: 68Mb L: 42/44 MS: 3 CopyPart-CrossOver-InsertRepeatedBytes-
+#54	NEW    cov: 14387 ft: 24704 corp: 39/624b lim: 44 exec/s: 0 rss: 68Mb L: 15/44 MS: 1 CopyPart-
+#56	NEW    cov: 14391 ft: 24715 corp: 40/665b lim: 44 exec/s: 0 rss: 68Mb L: 41/44 MS: 2 CMP-ChangeBit- DE: "\011\000\000\000\000\000\000\000"-
+#57	NEW    cov: 14392 ft: 24716 corp: 41/677b lim: 44 exec/s: 0 rss: 68Mb L: 12/44 MS: 1 PersAutoDict- DE: "\011\000\000\000\000\000\000\000"-
+#59	NEW    cov: 14393 ft: 24719 corp: 42/708b lim: 44 exec/s: 0 rss: 68Mb L: 31/44 MS: 2 InsertByte-CMP- DE: "\001\000\000'"-
+#62	NEW    cov: 14394 ft: 24720 corp: 43/734b lim: 44 exec/s: 0 rss: 68Mb L: 26/44 MS: 3 InsertRepeatedBytes-CopyPart-EraseBytes-
+	NEW_FUNC[1/2]: 0x0001005a2688 in _RINvNtCsiNaX9ehqxE0_4core3ptr13drop_in_placeINtNtB4_6result6ResultmNtNtCsi16g1cX0cbm_6aigumo5error5ErrorEEB17_+0x0 (fuzz_pattern:arm64+0x100016688)
+	NEW_FUNC[2/2]: 0x00010067d52c in _RNvXs1g_NtCsiNaX9ehqxE0_4core3fmtReNtB6_5Debug3fmtCsi16g1cX0cbm_6aigumo+0x0 (fuzz_pattern:arm64+0x1000f152c)
+#63	NEW    cov: 14404 ft: 24730 corp: 44/747b lim: 44 exec/s: 0 rss: 68Mb L: 13/44 MS: 1 ChangeByte-
+	NEW_FUNC[1/2]: 0x000100c46b10 in _RNvMsc_CscVlqbuUDCny_8smallvecINtB5_8SmallVecANtNtNtCstH1YYbM8Fy_17cranelift_codegen8machinst10blockorder12LoweredBlockj40_E8try_growBO_+0x0 (fuzz_pattern:arm64+0x1006bab10)
+	NEW_FUNC[2/2]: 0x000100faee38 in _RNvMsc_CscVlqbuUDCny_8smallvecINtB5_8SmallVecAmj40_E21reserve_one_uncheckedCstH1YYbM8Fy_17cranelift_codegen+0x0 (fuzz_pattern:arm64+0x100a22e38)
+#65	NEW    cov: 14449 ft: 25913 corp: 45/755b lim: 44 exec/s: 0 rss: 70Mb L: 8/44 MS: 1 ChangeBinInt-
+#72	NEW    cov: 14449 ft: 25928 corp: 46/789b lim: 44 exec/s: 0 rss: 70Mb L: 34/44 MS: 2 InsertRepeatedBytes-CMP- DE: "\377\020\000\000"-
+#75	NEW    cov: 14450 ft: 25931 corp: 47/814b lim: 44 exec/s: 0 rss: 71Mb L: 25/44 MS: 3 PersAutoDict-ChangeBinInt-EraseBytes- DE: "\011\000\000\000\000\000\000\000"-
+
+thread '<unnamed>' (2096474) panicked at /Users/hiroya.fujinami/Projects/github.com/makenowjust/aigumo/src/compile.rs:664:40:
+attempt to subtract with overflow
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+==68736== ERROR: libFuzzer: deadly signal
+    #0 0x0001022bf2f4 in __sanitizer_print_stack_trace+0x28 (librustc-nightly_rt.asan.dylib:arm64+0x872f4)
+    #1 0x000100ec6bac in fuzzer::PrintStackTrace()+0x30 (fuzz_pattern:arm64+0x10093abac)
+    #2 0x000100ebada4 in fuzzer::Fuzzer::CrashCallback()+0x54 (fuzz_pattern:arm64+0x10092eda4)
+    #3 0x000199739760 in _sigtramp+0x34 (libsystem_platform.dylib:arm64e+0x3760)
+    #4 0x00019972f884 in pthread_kill+0x124 (libsystem_pthread.dylib:arm64e+0x6884)
+    #5 0x00019963484c in abort+0x78 (libsystem_c.dylib:arm64e+0x7984c)
+    #6 0x000100fd45cc in _RNvNtNtNtCsgu5TNpVXLek_3std3sys3pal4unix14abort_internal+0x8 (fuzz_pattern:arm64+0x100a485cc)
+    #7 0x000100fd4408 in _RNvNtCsgu5TNpVXLek_3std7process5abort+0x8 (fuzz_pattern:arm64+0x100a48408)
+    #8 0x000100fcf460 in _RNCNvCshCRNKAPx9Sv_13libfuzzer_sys10initialize0B3_+0xb8 (fuzz_pattern:arm64+0x100a43460)
+    #9 0x000100f167e0 in _RNvNtCsgu5TNpVXLek_3std9panicking15panic_with_hook+0x264 (fuzz_pattern:arm64+0x10098a7e0)
+    #10 0x000100f0a300 in _RNCNvNtCsgu5TNpVXLek_3std9panicking13panic_handler0B5_+0x6c (fuzz_pattern:arm64+0x10097e300)
+    #11 0x000100f01b1c in _RINvNtNtCsgu5TNpVXLek_3std3sys9backtrace26___rust_end_short_backtraceNCNvNtB6_9panicking13panic_handler0zEB6_+0x8 (fuzz_pattern:arm64+0x100975b1c)
+    #12 0x000100f0a9cc in _RNvCsbVGczkyors9_7___rustc17rust_begin_unwind+0x1c (fuzz_pattern:arm64+0x10097e9cc)
+    #13 0x000100fd4d10 in _RNvNtCsiNaX9ehqxE0_4core9panicking9panic_fmt+0x24 (fuzz_pattern:arm64+0x100a48d10)
+    #14 0x000100fd4ea4 in _RNvNtNtCsiNaX9ehqxE0_4core9panicking11panic_const24panic_const_sub_overflow+0x18 (fuzz_pattern:arm64+0x100a48ea4)
+    #15 0x00010060eb9c in _RNvMNtCsi16g1cX0cbm_6aigumo7compileNtB2_8Compiler18compile_node_inner+0x8324 (fuzz_pattern:arm64+0x100082b9c)
+    #16 0x000100609bac in _RNvMNtCsi16g1cX0cbm_6aigumo7compileNtB2_8Compiler18compile_node_inner+0x3334 (fuzz_pattern:arm64+0x10007dbac)
+    #17 0x00010061ad6c in _RNvMs4_NtCsi16g1cX0cbm_6aigumo2vmNtB5_13CompiledRegex3new+0x16f0 (fuzz_pattern:arm64+0x10008ed6c)
+    #18 0x0001005e07b0 in _RNvMCsi16g1cX0cbm_6aigumoNtB2_5Regex3new+0x48 (fuzz_pattern:arm64+0x1000547b0)
+    #19 0x0001005975b0 in _RNvNvCsfqaGbHcptKT_12fuzz_pattern1__19___libfuzzer_sys_run fuzz_pattern.rs:10
+    #20 0x000100599dd4 in rust_fuzzer_test_input lib.rs:276
+    #21 0x000100eb93e8 in _RINvNvNtCsgu5TNpVXLek_3std9panicking12catch_unwind7do_callNCNvCshCRNKAPx9Sv_13libfuzzer_sys15test_input_wrap0lEBY_+0xc4 (fuzz_pattern:arm64+0x10092d3e8)
+    #22 0x000100eba020 in __rust_try+0x18 (fuzz_pattern:arm64+0x10092e020)
+    #23 0x000100eb8ca8 in LLVMFuzzerTestOneInput+0x16c (fuzz_pattern:arm64+0x10092cca8)
+    #24 0x000100ebc654 in fuzzer::Fuzzer::ExecuteCallback(unsigned char const*, unsigned long)+0x158 (fuzz_pattern:arm64+0x100930654)
+    #25 0x000100ebbcf8 in fuzzer::Fuzzer::RunOne(unsigned char const*, unsigned long, bool, fuzzer::InputInfo*, bool, bool*)+0x48 (fuzz_pattern:arm64+0x10092fcf8)
+    #26 0x000100ebd5a4 in fuzzer::Fuzzer::MutateAndTestOne()+0x22c (fuzz_pattern:arm64+0x1009315a4)
+    #27 0x000100ebe308 in fuzzer::Fuzzer::Loop(std::__1::vector<fuzzer::SizedFile, std::__1::allocator<fuzzer::SizedFile>>&)+0x354 (fuzz_pattern:arm64+0x100932308)
+    #28 0x000100edcc20 in fuzzer::FuzzerDriver(int*, char***, int (*)(unsigned char const*, unsigned long))+0x1abc (fuzz_pattern:arm64+0x100950c20)
+    #29 0x000100ee9684 in main+0x24 (fuzz_pattern:arm64+0x10095d684)
+    #30 0x000199365d50 in start+0x1c0c (dyld:arm64e+0x8d50)
+
+NOTE: libFuzzer has rudimentary signal handlers.
+      Combine libFuzzer with AddressSanitizer or similar for better crash reports.
+SUMMARY: libFuzzer: deadly signal
+MS: 1 ChangeASCIIInt-; base unit: 680be6253e159c045d27b0b882f3bf6911a58c3a
+0x28,0x61,0x29,0x3f,0x28,0x3f,0x28,0x30,0x29,0x62,0x7c,0x63,0x29,
+(a)?(?(0)b|c)
+artifact_prefix='/Users/hiroya.fujinami/Projects/github.com/makenowjust/aigumo/fuzz/artifacts/fuzz_pattern/'; Test unit written to /Users/hiroya.fujinami/Projects/github.com/makenowjust/aigumo/fuzz/artifacts/fuzz_pattern/crash-b5b4f1bee1be83c01cc5c69caec989baffb1c49b
+Base64: KGEpPyg/KDApYnxjKQ==

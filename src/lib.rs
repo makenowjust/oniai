@@ -51,6 +51,15 @@ impl Regex {
             .map(|(start, end, _)| Match { text, start, end })
     }
 
+    /// Like [`find`], but forces the interpreter path even when JIT is compiled in.
+    /// Available in test and fuzzing builds only; used for differential testing.
+    #[cfg(any(test, fuzzing))]
+    pub fn find_interp<'t>(&self, text: &'t str) -> Option<Match<'t>> {
+        self.inner
+            .find_interp(text, 0)
+            .map(|(start, end, _)| Match { text, start, end })
+    }
+
     /// Returns an iterator over all non-overlapping matches.
     pub fn find_iter<'r, 't>(&'r self, text: &'t str) -> FindIter<'r, 't> {
         FindIter {

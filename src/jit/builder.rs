@@ -253,6 +253,10 @@ fn emit_function(
         [types::I64, types::I64, types::I64, types::I64] => [types::I64]);
     let h_fold_seq_back = decl_helper!(module, builder, "jit_fold_seq_back",
         [types::I64, types::I64, types::I64, types::I64] => [types::I64]);
+    let h_null_check_start = decl_helper!(module, builder, "jit_null_check_start",
+        [types::I64, types::I32, types::I64] => []);
+    let h_null_check_end = decl_helper!(module, builder, "jit_null_check_end",
+        [types::I64, types::I32, types::I64] => [types::I32]);
 
     // ---- per-instruction IR emission ----
     for (pc, inst) in prog.iter().enumerate() {
@@ -579,6 +583,28 @@ fn emit_function(
                 let ctx_v = builder.use_var(var_ctx);
                 builder.ins().call(h_atomic_end, &[ctx_v]);
                 builder.ins().jump(inst_blocks[pc + 1], &[]);
+            }
+
+            // ----------------------------------------------------------------
+            // Null-loop guard (prevent infinite loops on empty-matching bodies)
+            // ----------------------------------------------------------------
+            Inst::NullCheckStart(slot) => {
+                let ctx_v = builder.use_var(var_ctx);
+                let pos_v = builder.use_var(var_pos);
+                let slot_v = builder.ins().iconst(types::I32, *slot as i64);
+                builder.ins().call(h_null_check_start, &[ctx_v, slot_v, pos_v]);
+                builder.ins().jump(inst_blocks[pc + 1], &[]);
+            }
+            Inst::NullCheckEnd(slot) => {
+                let ctx_v = builder.use_var(var_ctx);
+                let pos_v = builder.use_var(var_pos);
+                let slot_v = builder.ins().iconst(types::I32, *slot as i64);
+                let call = builder.ins().call(h_null_check_end, &[ctx_v, slot_v, pos_v]);
+                let fail_flag = builder.inst_results(call)[0];
+                // fail_flag == 1 means pos didn't advance → treat as failure (backtrack)
+                builder
+                    .ins()
+                    .brif(fail_flag, bt_resume_block, &[], inst_blocks[pc + 1], &[]);
             }
 
             // ----------------------------------------------------------------

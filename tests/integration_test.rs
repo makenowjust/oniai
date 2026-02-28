@@ -588,6 +588,12 @@ fn group_conditional_num() {
     assert_eq!(re.find("c").unwrap().as_str(), "c");
 }
 #[test]
+fn group_conditional_num_zero_is_error() {
+    // Group 0 is not a valid capture group number; must return a parse error
+    // rather than panicking with an arithmetic underflow (regression for fuzz crash).
+    assert!(Regex::new(r"(?(0))").is_err());
+}
+#[test]
 fn group_conditional_name() {
     let _re = Regex::new(r"(?<x>a)?(<x>b|c)").unwrap();
     // When group x matched: match b; else: match c
@@ -831,4 +837,22 @@ fn subexp_call_relative_forward() {
     // (\g<+1>)(abc) — group 1 calls group 2 ahead of it (fixed-width body, no backtracking)
     assert_match!(r"(\g<+1>)(abc)", "abcabc");
     assert_no_match!(r"(\g<+1>)(abc)", "abc");
+}
+
+#[test]
+fn null_loop_check_empty_body() {
+    // Patterns whose loop body can match the empty string must terminate
+    // (no infinite loop). The engine should find a zero-length match at pos 0.
+    assert_match!(r"()+", "");
+    assert_match!(r"()+", "a");
+    assert_match!(r"(a*)+", "");
+    assert_match!(r"(a*)+", "aaa");
+    assert_match!(r"(a|)+", "");
+    assert_match!(r"(a|)+", "a");
+    assert_match!(r"(b?)+", "bbb");
+    assert_match!(r"(b?)+", "");
+    // Regression: fuzz crash with ()+
+    let re = Regex::new(r"()+").unwrap();
+    let m = re.find("ar)bar").unwrap();
+    assert_eq!(m.start(), 0);
 }

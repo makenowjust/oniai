@@ -39,6 +39,8 @@ struct Compiler {
     /// Used to resolve relative backreferences (`\k<-n>`) and subexpression calls
     /// (`\g<-n>`, `\g<+n>`) at compile time.
     current_group: u32,
+    /// Number of null-check guard slots allocated so far (one per unbounded loop).
+    num_null_checks: u32,
 }
 
 impl Compiler {
@@ -52,6 +54,7 @@ impl Compiler {
             base_flags,
             num_groups: 0,
             current_group: 0,
+            num_null_checks: 0,
         }
     }
 
@@ -65,6 +68,12 @@ impl Compiler {
         self.prog.len()
     }
 
+    /// Allocate a fresh null-check guard slot and return its index.
+    fn alloc_null_check(&mut self) -> usize {
+        let slot = self.num_null_checks as usize;
+        self.num_null_checks += 1;
+        slot
+    }
     fn patch_jump(&mut self, pc: usize, target: usize) {
         match &mut self.prog[pc] {
             Inst::Jump(t) => *t = target,
@@ -475,17 +484,23 @@ impl Compiler {
 
             // Greedy / reluctant {n,}
             (None, QuantKind::Greedy) => {
-                // loop: Fork(exit), body, Jump(Fork)
+                // loop: Fork(exit), NullCheckStart, body, NullCheckEnd, Jump(Fork)
+                let slot = self.alloc_null_check();
                 let fork_pc = self.emit(Inst::Fork(0));
+                self.emit(Inst::NullCheckStart(slot));
                 self.compile_node_inner(node, flags, backward)?;
+                self.emit(Inst::NullCheckEnd(slot));
                 let jump_pc = self.emit(Inst::Jump(fork_pc));
                 let _ = jump_pc;
                 self.patch_jump(fork_pc, self.pc());
             }
             (None, QuantKind::Reluctant) => {
+                let slot = self.alloc_null_check();
                 let fork_pc = self.emit(Inst::ForkNext(0)); // try exit first (lazy)
                 let body_start = self.pc();
+                self.emit(Inst::NullCheckStart(slot));
                 self.compile_node_inner(node, flags, backward)?;
+                self.emit(Inst::NullCheckEnd(slot));
                 self.emit(Inst::Jump(fork_pc));
                 let end_pc = self.pc();
                 self.patch_jump(fork_pc, body_start); // on failure: try body
@@ -511,10 +526,13 @@ impl Compiler {
                 self.patch_jump(fork_pc, end_pc);
             }
             (None, QuantKind::Possessive) => {
-                // Atomic loop
+                // Atomic loop with null-check guard
+                let slot = self.alloc_null_check();
                 let atomic_start = self.emit(Inst::AtomicStart(0));
                 let fork_pc = self.emit(Inst::Fork(0));
+                self.emit(Inst::NullCheckStart(slot));
                 self.compile_node_inner(node, flags, backward)?;
+                self.emit(Inst::NullCheckEnd(slot));
                 self.emit(Inst::Jump(fork_pc));
                 let loop_end = self.pc();
                 self.emit(Inst::AtomicEnd);
@@ -810,6 +828,7 @@ pub struct CompiledProgram {
     pub charsets: Vec<CharSet>,
     pub named_groups: Vec<(String, u32)>,
     pub num_groups: usize,
+    pub num_null_checks: usize,
     #[allow(dead_code)]
     pub subexp_starts: HashMap<u32, usize>,
 }
@@ -831,11 +850,13 @@ pub fn compile(
     compiler.backfill_calls()?;
 
     let num_groups = compiler.num_groups as usize;
+    let num_null_checks = compiler.num_null_checks as usize;
     Ok(CompiledProgram {
         prog: compiler.prog,
         charsets: compiler.charsets,
         named_groups,
         num_groups,
+        num_null_checks,
         subexp_starts: compiler.subexp_starts,
     })
 }

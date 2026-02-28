@@ -1,0 +1,37 @@
+[package]
+name = "aigumo-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# Enable jit so fuzz_match_diff can compare JIT vs interpreter outputs.
+[dependencies.aigumo]
+path = ".."
+features = ["jit"]
+
+[[bin]]
+name = "fuzz_pattern"
+path = "fuzz_targets/fuzz_pattern.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_match"
+path = "fuzz_targets/fuzz_match.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_match_diff"
+path = "fuzz_targets/fuzz_match_diff.rs"
+test = false
+doc = false
+bench = false

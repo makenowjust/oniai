@@ -200,6 +200,13 @@ pub enum Inst {
     /// Lazy fork: try `usize` first; on failure try pc+1
     ForkNext(usize),
 
+    /// Record `pos` in null-check slot `n` at the start of an optional loop iteration.
+    NullCheckStart(usize),
+
+    /// Fail (exit the loop) if `pos` is still the value stored in slot `n`.
+    /// Prevents a loop whose body matched the empty string from iterating forever.
+    NullCheckEnd(usize),
+
     /// Save current position to slot
     Save(usize),
 
@@ -261,14 +268,19 @@ pub(crate) struct State {
     pub(crate) keep_pos: Option<usize>,
     /// Return address stack for subexpression calls
     pub(crate) call_stack: Vec<usize>,
+    /// Per-loop-guard saved positions for null-loop checks.
+    /// Indexed by the slot number in `NullCheckStart`/`NullCheckEnd`.
+    /// Initialised to `usize::MAX` (no saved position).
+    pub(crate) null_check_slots: Vec<usize>,
 }
 
 impl State {
-    fn new(num_groups: usize) -> Self {
+    fn new(num_groups: usize, num_null_checks: usize) -> Self {
         State {
             slots: vec![None; num_groups * 2],
             keep_pos: None,
             call_stack: Vec::new(),
+            null_check_slots: vec![usize::MAX; num_null_checks],
         }
     }
 }
@@ -283,6 +295,8 @@ pub(crate) struct Ctx<'t> {
     pub(crate) text: &'t str,
     pub(crate) search_start: usize,
     pub(crate) use_memo: bool,
+    /// Number of null-check guard slots in the program; used to size `State::null_check_slots`.
+    pub(crate) num_null_checks: usize,
 }
 
 impl<'t> Ctx<'t> {
@@ -702,6 +716,18 @@ pub(crate) fn exec(
                 pc = *alt;
             }
 
+            Inst::NullCheckStart(slot) => {
+                state.null_check_slots[*slot] = pos;
+                pc += 1;
+            }
+
+            Inst::NullCheckEnd(slot) => {
+                if state.null_check_slots[*slot] == pos {
+                    fail!();
+                }
+                pc += 1;
+            }
+
             Inst::Save(slot) => {
                 let slot = *slot;
                 if slot >= state.slots.len() {
@@ -915,6 +941,7 @@ pub(crate) fn exec_lookaround(
         slots: state.slots.clone(),
         keep_pos: state.keep_pos,
         call_stack: Vec::new(),
+        null_check_slots: vec![usize::MAX; ctx.num_null_checks],
     };
     if exec(ctx, body_pc, pos, &mut sub, depth + 1, memo).is_some() {
         state.slots = sub.slots;
@@ -1281,6 +1308,8 @@ pub struct CompiledRegex {
     charsets: Vec<CharSet>,
     pub named_groups: Vec<(String, usize)>, // (name, 1-based index)
     num_groups: usize,
+    /// Number of null-check guard slots emitted by the compiler.
+    num_null_checks: usize,
     start_strategy: StartStrategy,
     /// A character that must appear in the text for any match to be possible.
     required_char: Option<char>,
@@ -1344,6 +1373,7 @@ impl CompiledRegex {
             charsets: prog_data.charsets,
             named_groups,
             num_groups: prog_data.num_groups,
+            num_null_checks: prog_data.num_null_checks,
             start_strategy,
             required_char,
             use_memo,
@@ -1373,6 +1403,7 @@ impl CompiledRegex {
                 text,
                 pos,
                 self.num_groups,
+                self.num_null_checks,
                 self.use_memo,
                 memo,
                 scratch,
@@ -1388,8 +1419,9 @@ impl CompiledRegex {
             text,
             search_start: pos,
             use_memo: self.use_memo,
+            num_null_checks: self.num_null_checks,
         };
-        let mut state = State::new(self.num_groups);
+        let mut state = State::new(self.num_groups, self.num_null_checks);
         let end = exec(&ctx, 0, pos, &mut state, 0, memo)?;
         let match_start = state.keep_pos.unwrap_or(pos);
         state.slots.resize(self.num_groups * 2, None);
@@ -1509,6 +1541,106 @@ impl CompiledRegex {
         let mut scratch = ExecScratch;
         self.find_with_scratch(text, start_pos, &mut scratch)
     }
+
+    /// Force the interpreter path, bypassing JIT even when it is compiled in.
+    /// Available in test and fuzzing builds only.
+    #[cfg(any(test, fuzzing))]
+    pub fn find_interp(
+        &self,
+        text: &str,
+        start_pos: usize,
+    ) -> Option<(usize, usize, Vec<Option<usize>>)> {
+        if !matches!(self.start_strategy, StartStrategy::Anchored)
+            && let Some(rc) = self.required_char
+            && !text[start_pos..].contains(rc)
+        {
+            return None;
+        }
+        let mut memo = MemoState::new();
+        match &self.start_strategy {
+            StartStrategy::Anchored => self.exec_interp(text, start_pos, &mut memo),
+            StartStrategy::LiteralPrefix(prefix) => {
+                let prefix = prefix.clone();
+                let mut pos = start_pos;
+                loop {
+                    let offset = text[pos..].find(prefix.as_str())?;
+                    let candidate = pos + offset;
+                    if let Some(r) = self.exec_interp(text, candidate, &mut memo) {
+                        return Some(r);
+                    }
+                    pos = candidate
+                        + text[candidate..]
+                            .chars()
+                            .next()
+                            .map(|c| c.len_utf8())
+                            .unwrap_or(1);
+                    if pos > text.len() {
+                        return None;
+                    }
+                }
+            }
+            StartStrategy::FirstChars(chars) => {
+                let chars = chars.clone();
+                let mut pos = start_pos;
+                loop {
+                    let offset = text[pos..]
+                        .find(|c| chars.iter().any(|&fc| chars_eq_ci(c, fc)))?;
+                    let candidate = pos + offset;
+                    if let Some(r) = self.exec_interp(text, candidate, &mut memo) {
+                        return Some(r);
+                    }
+                    pos = candidate
+                        + text[candidate..]
+                            .chars()
+                            .next()
+                            .map(|c| c.len_utf8())
+                            .unwrap_or(1);
+                    if pos > text.len() {
+                        return None;
+                    }
+                }
+            }
+            StartStrategy::Anywhere => {
+                let mut pos = start_pos;
+                loop {
+                    if let Some(r) = self.exec_interp(text, pos, &mut memo) {
+                        return Some(r);
+                    }
+                    if pos >= text.len() {
+                        return None;
+                    }
+                    pos += text[pos..]
+                        .chars()
+                        .next()
+                        .map(|c| c.len_utf8())
+                        .unwrap_or(1);
+                }
+            }
+        }
+    }
+
+    /// Run the interpreter at exactly `pos`, bypassing JIT.
+    #[cfg(any(test, fuzzing))]
+    fn exec_interp(
+        &self,
+        text: &str,
+        pos: usize,
+        memo: &mut MemoState,
+    ) -> Option<(usize, usize, Vec<Option<usize>>)> {
+        let ctx = Ctx {
+            prog: &self.prog,
+            charsets: &self.charsets,
+            text,
+            search_start: pos,
+            use_memo: self.use_memo,
+            num_null_checks: self.num_null_checks,
+        };
+        let mut state = State::new(self.num_groups, self.num_null_checks);
+        let end = exec(&ctx, 0, pos, &mut state, 0, memo)?;
+        let match_start = state.keep_pos.unwrap_or(pos);
+        state.slots.resize(self.num_groups * 2, None);
+        Some((match_start, end, state.slots))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1520,6 +1652,8 @@ impl CompiledRegex {
 pub(crate) struct ExecScratch {
     pub bt: Vec<BtJit>,
     pub slots: Vec<u64>,
+    /// Null-check guard slots: one `u64` per loop guard; `u64::MAX` = unset.
+    pub null_check: Vec<u64>,
     /// Dense fork-failure memo array, stored as raw parts to avoid the
     /// `mem::take` + `mem::forget` + reconstruct overhead on every exec_jit call.
     ///
@@ -1536,6 +1670,7 @@ impl ExecScratch {
         ExecScratch {
             bt: Vec::new(),
             slots: Vec::new(),
+            null_check: Vec::new(),
             fork_memo_ptr: std::ptr::NonNull::<u8>::dangling().as_ptr(),
             fork_memo_len: 0,
             fork_memo_cap: 0,
@@ -1680,6 +1815,11 @@ pub(crate) struct JitExecCtx {
     pub fork_memo_len: u64,
     /// Current capacity of the dense memo array (for safe reconstruction after growth).
     pub fork_memo_cap: u64,
+    /// Pointer to the null-check slot array (one `u64` per slot; `u64::MAX` = unset).
+    /// Lent from `ExecScratch::null_check`.
+    pub null_check_ptr: *mut u64,
+    /// Length of the null-check slot array (== `num_null_checks` for the pattern).
+    pub null_check_len: u64,
 }
 
 /// Push one entry onto the raw JIT backtrack stack.  May reallocate.
@@ -1754,6 +1894,7 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
         text,
         search_start: jctx.search_start as usize,
         use_memo: jctx.use_memo != 0,
+        num_null_checks: jctx.null_check_len as usize,
     };
 
     // Reconstruct State from JitExecCtx slots.
@@ -1776,6 +1917,7 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
             Some(jctx.keep_pos as usize)
         },
         call_stack: Vec::new(),
+        null_check_slots: vec![usize::MAX; jctx.null_check_len as usize],
     };
 
     let memo = unsafe { &mut *(jctx.memo_ptr as *mut MemoState) };
