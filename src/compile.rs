@@ -7,6 +7,34 @@ use std::collections::HashMap;
 use unicode_casefold::UnicodeCaseFold;
 
 // ---------------------------------------------------------------------------
+// Nullable analysis
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if `node` can match the empty string.
+/// Used to decide whether unbounded loops need a null-check guard.
+fn can_match_empty(node: &Node) -> bool {
+    match node {
+        Node::Empty => true,
+        Node::Literal(_) | Node::AnyChar | Node::CharClass(_) | Node::Shorthand(_) => false,
+        Node::UnicodeProp { .. } => false,
+        Node::Anchor(_) | Node::Keep => true,
+        Node::LookAround { .. } => true, // zero-width
+        Node::Concat(nodes) => nodes.iter().all(can_match_empty),
+        Node::Alternation(nodes) => nodes.iter().any(can_match_empty),
+        Node::Quantifier { node, range, .. } => range.min == 0 || can_match_empty(node),
+        Node::Capture { node, .. }
+        | Node::NamedCapture { node, .. }
+        | Node::Group { node, .. }
+        | Node::Atomic(node)
+        | Node::InlineFlags { node, .. }
+        | Node::Absence(node) => can_match_empty(node),
+        // Conservative: backrefs and calls may match empty.
+        Node::BackRef { .. } | Node::SubexpCall(_) => true,
+        Node::Conditional { yes, no, .. } => can_match_empty(yes) || can_match_empty(no),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Options passed to the compiler
 // ---------------------------------------------------------------------------
 
@@ -484,52 +512,82 @@ impl Compiler {
 
             // Greedy / reluctant {n,}
             (None, QuantKind::Greedy) => {
-                // Layout: NullCheckStart, Fork(exit), body, NullCheckEnd{exit}, Jump(NullCheckStart)
-                let slot = self.alloc_null_check();
-                let null_check_start_pc = self.pc();
-                self.emit(Inst::NullCheckStart(slot));
-                let fork_pc = self.pc();
-                self.emit(Inst::Fork(0)); // patched to exit_pc below
-                self.compile_node_inner(node, flags, backward)?;
-                // exit_pc is the instruction after NullCheckEnd + Jump
-                let exit_pc = self.pc() + 2;
-                self.emit(Inst::NullCheckEnd { slot, exit_pc });
-                self.emit(Inst::Jump(null_check_start_pc));
-                // self.pc() == exit_pc now
-                self.patch_jump(fork_pc, exit_pc);
+                // Only emit null-check guards when the body can produce a zero-length match.
+                // Bodies like `[a-z]` always advance; adding guards would be pure overhead.
+                if can_match_empty(node) {
+                    // Layout: NullCheckStart, Fork(exit), body, NullCheckEnd{exit}, Jump(NullCheckStart)
+                    let slot = self.alloc_null_check();
+                    let null_check_start_pc = self.pc();
+                    self.emit(Inst::NullCheckStart(slot));
+                    let fork_pc = self.pc();
+                    self.emit(Inst::Fork(0)); // patched to exit_pc below
+                    self.compile_node_inner(node, flags, backward)?;
+                    // exit_pc is the instruction after NullCheckEnd + Jump
+                    let exit_pc = self.pc() + 2;
+                    self.emit(Inst::NullCheckEnd { slot, exit_pc });
+                    self.emit(Inst::Jump(null_check_start_pc));
+                    // self.pc() == exit_pc now
+                    self.patch_jump(fork_pc, exit_pc);
+                } else {
+                    // Simple loop: Fork(exit), body, Jump(Fork)
+                    let fork_pc = self.emit(Inst::Fork(0));
+                    self.compile_node_inner(node, flags, backward)?;
+                    self.emit(Inst::Jump(fork_pc));
+                    self.patch_jump(fork_pc, self.pc());
+                }
             }
             (None, QuantKind::Reluctant) => {
-                // Layout: NullCheckStart, ForkNext(exit), body, NullCheckEnd{exit}, Jump(NullCheckStart)
-                // ForkNext(exit): try exit first (lazy), retry = body (pc+1)
-                let slot = self.alloc_null_check();
-                let null_check_start_pc = self.pc();
-                self.emit(Inst::NullCheckStart(slot));
-                let fork_pc = self.pc();
-                self.emit(Inst::ForkNext(0)); // patched to exit_pc below
-                self.compile_node_inner(node, flags, backward)?;
-                let exit_pc = self.pc() + 2;
-                self.emit(Inst::NullCheckEnd { slot, exit_pc });
-                self.emit(Inst::Jump(null_check_start_pc));
-                self.patch_jump(fork_pc, exit_pc);
+                if can_match_empty(node) {
+                    // Layout: NullCheckStart, ForkNext(exit), body, NullCheckEnd{exit}, Jump(NullCheckStart)
+                    // ForkNext(exit): try exit first (lazy), retry = body (pc+1)
+                    let slot = self.alloc_null_check();
+                    let null_check_start_pc = self.pc();
+                    self.emit(Inst::NullCheckStart(slot));
+                    let fork_pc = self.pc();
+                    self.emit(Inst::ForkNext(0)); // patched to exit_pc below
+                    self.compile_node_inner(node, flags, backward)?;
+                    let exit_pc = self.pc() + 2;
+                    self.emit(Inst::NullCheckEnd { slot, exit_pc });
+                    self.emit(Inst::Jump(null_check_start_pc));
+                    self.patch_jump(fork_pc, exit_pc);
+                } else {
+                    // Simple lazy loop: ForkNext(exit), body, Jump(ForkNext)
+                    let fork_pc = self.emit(Inst::ForkNext(0));
+                    self.compile_node_inner(node, flags, backward)?;
+                    self.emit(Inst::Jump(fork_pc));
+                    self.patch_jump(fork_pc, self.pc());
+                }
             }
             (None, QuantKind::Possessive) => {
-                // Layout: AtomicStart, NullCheckStart, Fork(loop_end), body,
-                //         NullCheckEnd{loop_end}, Jump(NullCheckStart), AtomicEnd
-                let slot = self.alloc_null_check();
-                let atomic_start = self.emit(Inst::AtomicStart(0)); // patched below
-                let null_check_start_pc = self.pc();
-                self.emit(Inst::NullCheckStart(slot));
-                let fork_pc = self.pc();
-                self.emit(Inst::Fork(0)); // patched to loop_end below
-                self.compile_node_inner(node, flags, backward)?;
-                // loop_end is the pc of AtomicEnd (after NullCheckEnd + Jump)
-                let loop_end = self.pc() + 2;
-                self.emit(Inst::NullCheckEnd { slot, exit_pc: loop_end });
-                self.emit(Inst::Jump(null_check_start_pc));
-                // self.pc() == loop_end
-                self.emit(Inst::AtomicEnd);
-                self.patch_jump(fork_pc, loop_end);
-                self.patch_jump(atomic_start, loop_end);
+                if can_match_empty(node) {
+                    // Layout: AtomicStart, NullCheckStart, Fork(loop_end), body,
+                    //         NullCheckEnd{loop_end}, Jump(NullCheckStart), AtomicEnd
+                    let slot = self.alloc_null_check();
+                    let atomic_start = self.emit(Inst::AtomicStart(0)); // patched below
+                    let null_check_start_pc = self.pc();
+                    self.emit(Inst::NullCheckStart(slot));
+                    let fork_pc = self.pc();
+                    self.emit(Inst::Fork(0)); // patched to loop_end below
+                    self.compile_node_inner(node, flags, backward)?;
+                    // loop_end is the pc of AtomicEnd (after NullCheckEnd + Jump)
+                    let loop_end = self.pc() + 2;
+                    self.emit(Inst::NullCheckEnd { slot, exit_pc: loop_end });
+                    self.emit(Inst::Jump(null_check_start_pc));
+                    // self.pc() == loop_end
+                    self.emit(Inst::AtomicEnd);
+                    self.patch_jump(fork_pc, loop_end);
+                    self.patch_jump(atomic_start, loop_end);
+                } else {
+                    // Simple atomic loop: AtomicStart, Fork(loop_end), body, Jump(Fork), AtomicEnd
+                    let atomic_start = self.emit(Inst::AtomicStart(0));
+                    let fork_pc = self.emit(Inst::Fork(0));
+                    self.compile_node_inner(node, flags, backward)?;
+                    self.emit(Inst::Jump(fork_pc));
+                    let loop_end = self.pc();
+                    self.emit(Inst::AtomicEnd);
+                    self.patch_jump(fork_pc, loop_end);
+                    self.patch_jump(atomic_start, loop_end);
+                }
             }
 
             // Greedy {n,m}
