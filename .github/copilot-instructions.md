@@ -41,6 +41,25 @@ cargo bench -- --save-baseline main
 cargo bench -- --baseline main
 ```
 
+### Saving benchmark logs
+
+**Always save the full `cargo bench` output to a log file** in the `log/`
+directory at the repository root (create it if it does not exist yet).
+Never pipe `cargo bench` output through `grep`, `head`, `tail`, or any other
+filter — doing so truncates the output and forces an expensive re-run.
+
+Naming convention: `log/bench-<short-description>-<YYYY-MM-DD>.txt`
+
+Example workflow:
+
+```sh
+mkdir -p log
+cargo bench 2>&1 | tee log/bench-fork-guard-2026-02-28.txt
+```
+
+After the run completes, analyse the saved log file instead of re-running
+the benchmarks.  The `log/` directory is git-ignored (add it if needed).
+
 ## Version Control
 
 This repository uses **Jujutsu (`jj`)** for version control. Use `jj` commands for day-to-day workflow (e.g., `jj new`, `jj describe`, `jj squash`) rather than raw `git` commands.

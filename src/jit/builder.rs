@@ -504,45 +504,125 @@ fn emit_function(
             // ----------------------------------------------------------------
             // Fork (greedy) / ForkNext (lazy)
             // ----------------------------------------------------------------
-            Inst::Fork(alt) => {
+            Inst::Fork(alt, guard) => {
                 let fork_idx = fork_pc_indices[pc].unwrap();
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
-                inline_fork(
-                    builder,
-                    &inst_blocks,
-                    bt_resume_block,
-                    var_ctx,
-                    var_pos,
-                    ctx_v,
-                    pos_v,
-                    pc,
-                    *alt,
-                    false,
-                    use_memo,
-                    h_fork,
-                    fork_idx,
-                );
+                // Guard: if text[pos] != gc, jump directly to alt (skip push).
+                if let Some(gc) = guard
+                    && gc.is_ascii()
+                {
+                    let guard_pass_block = builder.create_block();
+                    emit_fork_guard(
+                        builder,
+                        var_ctx,
+                        var_pos,
+                        ctx_v,
+                        pos_v,
+                        *gc as u8,
+                        inst_blocks[*alt],
+                        guard_pass_block,
+                    );
+                    builder.switch_to_block(guard_pass_block);
+                    let ctx_v = builder.use_var(var_ctx);
+                    let pos_v = builder.use_var(var_pos);
+                    inline_fork(
+                        builder,
+                        &inst_blocks,
+                        bt_resume_block,
+                        var_ctx,
+                        var_pos,
+                        ctx_v,
+                        pos_v,
+                        pc,
+                        *alt,
+                        false,
+                        use_memo,
+                        h_fork,
+                        fork_idx,
+                    );
+                } else {
+                    inline_fork(
+                        builder,
+                        &inst_blocks,
+                        bt_resume_block,
+                        var_ctx,
+                        var_pos,
+                        ctx_v,
+                        pos_v,
+                        pc,
+                        *alt,
+                        false,
+                        use_memo,
+                        h_fork,
+                        fork_idx,
+                    );
+                }
             }
-            Inst::ForkNext(alt) => {
+            Inst::ForkNext(alt, guard) => {
                 let fork_idx = fork_pc_indices[pc].unwrap();
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
-                inline_fork(
-                    builder,
-                    &inst_blocks,
-                    bt_resume_block,
-                    var_ctx,
-                    var_pos,
-                    ctx_v,
-                    pos_v,
-                    pc,
-                    *alt,
-                    true,
-                    use_memo,
-                    h_fork_next,
-                    fork_idx,
-                );
+                // Guard: if text[pos] != gc, jump directly to pc+1 (skip push).
+                if let Some(gc) = guard
+                    && gc.is_ascii()
+                {
+                    let guard_pass_block = builder.create_block();
+                    emit_fork_guard(
+                        builder,
+                        var_ctx,
+                        var_pos,
+                        ctx_v,
+                        pos_v,
+                        *gc as u8,
+                        inst_blocks[pc + 1],
+                        guard_pass_block,
+                    );
+                    builder.switch_to_block(guard_pass_block);
+                    let ctx_v = builder.use_var(var_ctx);
+                    let pos_v = builder.use_var(var_pos);
+                    inline_fork(
+                        builder,
+                        &inst_blocks,
+                        bt_resume_block,
+                        var_ctx,
+                        var_pos,
+                        ctx_v,
+                        pos_v,
+                        pc,
+                        *alt,
+                        true,
+                        use_memo,
+                        h_fork_next,
+                        fork_idx,
+                    );
+                } else {
+                    inline_fork(
+                        builder,
+                        &inst_blocks,
+                        bt_resume_block,
+                        var_ctx,
+                        var_pos,
+                        ctx_v,
+                        pos_v,
+                        pc,
+                        *alt,
+                        true,
+                        use_memo,
+                        h_fork_next,
+                        fork_idx,
+                    );
+                }
+            }
+
+            // ----------------------------------------------------------------
+            // CharFast — guard-verified advance (no bounds/match check needed)
+            // ----------------------------------------------------------------
+            Inst::CharFast(c) => {
+                let pos_v = builder.use_var(var_pos);
+                let new_pos = builder.ins().iadd_imm(pos_v, c.len_utf8() as i64);
+                builder.def_var(var_pos, new_pos);
+                builder.ins().jump(inst_blocks[pc + 1], &[]);
             }
 
             // ----------------------------------------------------------------
@@ -1025,6 +1105,52 @@ fn inline_char_fwd(
     builder
         .ins()
         .brif(ok, inst_blocks[pc + 1], &[], bt_resume, &[]);
+}
+
+/// Emit a fork guard check for an ASCII guard character.
+///
+/// On entry the current block must be the `inst_blocks[pc]` for the Fork/ForkNext
+/// instruction.  Terminates the current block with:
+///   `pos < text_len && text[pos] == gc`  → falls through to `pass_block`
+///   otherwise                             → jumps to `fail_block`
+///
+/// Called only when `gc.is_ascii()`.  The caller switches to `pass_block` after
+/// this function returns and emits the normal `inline_fork` IR there.
+#[allow(clippy::too_many_arguments)]
+fn emit_fork_guard(
+    builder: &mut FunctionBuilder<'_>,
+    var_ctx: Variable,
+    var_pos: Variable,
+    ctx_v: Value,
+    pos_v: Value,
+    gc: u8,
+    fail_block: Block,
+    pass_block: Block,
+) {
+    // Bounds check: pos < text_len.
+    let text_len = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_LEN);
+    let in_bounds = builder.ins().icmp(IntCC::UnsignedLessThan, pos_v, text_len);
+    let read_block = builder.create_block();
+    builder
+        .ins()
+        .brif(in_bounds, read_block, &[], fail_block, &[]);
+
+    // read_block: load byte and compare.
+    builder.switch_to_block(read_block);
+    let ctx_v = builder.use_var(var_ctx);
+    let pos_v = builder.use_var(var_pos);
+    let text_ptr = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_PTR);
+    let byte_ptr = builder.ins().iadd(text_ptr, pos_v);
+    let byte = builder
+        .ins()
+        .uload8(types::I32, MemFlags::trusted(), byte_ptr, 0);
+    let gc_v = builder.ins().iconst(types::I32, gc as i64);
+    let ok = builder.ins().icmp(IntCC::Equal, byte, gc_v);
+    builder.ins().brif(ok, pass_block, &[], fail_block, &[]);
 }
 
 /// Inline forward AnyChar match — correct for full UTF-8.

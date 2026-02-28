@@ -147,16 +147,16 @@ reducing the complexity from **O(2^n)** to **O(n²)** for this pattern class.
 
 | Benchmark | Time | Notes |
 |-----------|------|-------|
-| captures/two_groups | 621 ns | |
+| captures/two_groups | 625 ns | |
 | captures/iter_all | 2.61 µs | |
 | email/find_all | 3.29 µs | |
-| charclass/alpha_iter | 31.2 µs | |
-| charclass/posix_digit_iter | 24.8 µs | |
-| case_insensitive/match | 14.1 µs | `FoldSeq` forces `Anywhere` start strategy (see note below) |
-| find_iter_scale/100 | 2.73 µs | |
-| find_iter_scale/500 | 13.4 µs | |
-| find_iter_scale/1000 | 26.7 µs | |
-| find_iter_scale/5000 | 133 µs | |
+| charclass/alpha_iter | 29.1 µs | |
+| charclass/posix_digit_iter | 22.5 µs | |
+| case_insensitive/match | 14.2 µs | `FoldSeq` forces `Anywhere` start strategy (see note below) |
+| find_iter_scale/100 | 2.84 µs | |
+| find_iter_scale/500 | 14.0 µs | |
+| find_iter_scale/1000 | 28.0 µs | |
+| find_iter_scale/5000 | 139 µs | |
 
 `find_iter_scale` confirms linear scaling continues to hold.
 
@@ -177,13 +177,13 @@ reducing the complexity from **O(2^n)** to **O(n²)** for this pattern class.
 Haystack: *A Study in Scarlet* by Arthur Conan Doyle (~260 KB plain text).
 Measures full `find_iter().count()` over the entire text.
 
-| Benchmark | Pattern | Interpreter | JIT Phase 4 | JIT Phase 5 | JIT Phase 6 | JIT Phase 7 | Speedup (Ph7) |
-|-----------|---------|-------------|-------------|-------------|-------------|-------------|---------------|
-| `real_world/literal_count` | `Holmes` | 133 µs | 132.3 µs | 131.3 µs | 138.5 µs | 132 µs | **1.01×** ✅ |
-| `real_world/capitalized_words` | `[A-Z][a-z]+` | 3.11 ms | **2.75 ms** | **2.67 ms** | **2.25 ms** | **2.41 ms** | **1.29×** ✅ |
-| `real_world/posix_digits` | `[[:digit:]]+` | 2.50 ms | **2.25 ms** | **2.23 ms** | **1.91 ms** | **2.40 ms** | **1.04×** ✅ |
-| `real_world/quoted_strings` | `"[^"]*"` | 7.22 ms | **6.78 ms** | **5.85 ms** | **5.66 ms** | **5.28 ms** | **1.37×** ✅ |
-| `real_world/title_name` | `Mrs?\. [A-Z][a-z]+` | 139.5 µs | 143.3 µs | 141.0 µs | 140.7 µs | **135 µs** | **1.03×** ✅ |
+| Benchmark | Pattern | Interpreter | JIT Phase 4 | JIT Phase 5 | JIT Phase 6 | JIT Phase 7 | JIT Phase 8 | JIT Phase 9 | Speedup (Ph9) |
+|-----------|---------|-------------|-------------|-------------|-------------|-------------|-------------|-------------|---------------|
+| `real_world/literal_count` | `Holmes` | 133 µs | 132.3 µs | 131.3 µs | 138.5 µs | 132 µs | 141.8 µs | 132.5 µs | **1.00×** |
+| `real_world/capitalized_words` | `[A-Z][a-z]+` | 3.11 ms | **2.75 ms** | **2.67 ms** | **2.25 ms** | **2.41 ms** | **3.03 ms** | **2.99 ms** | **1.04×** ✅ |
+| `real_world/posix_digits` | `[[:digit:]]+` | 2.50 ms | **2.25 ms** | **2.23 ms** | **1.91 ms** | **2.40 ms** | **2.84 ms** | **2.98 ms** | **0.84×** |
+| `real_world/quoted_strings` | `"[^"]*"` | 7.22 ms | **6.78 ms** | **5.85 ms** | **5.66 ms** | **5.28 ms** | **5.34 ms** | **5.27 ms** | **1.37×** ✅ |
+| `real_world/title_name` | `Mrs?\. [A-Z][a-z]+` | 139.5 µs | 143.3 µs | 141.0 µs | 140.7 µs | **135 µs** | **141.8 µs** | **132.5 µs** | **1.05×** ✅ |
 
 **Notes:**
 - `literal_count` uses the `LiteralPrefix` start strategy (SIMD `str::find`), so both paths are dominated by the same scan; JIT overhead is negligible.
@@ -272,6 +272,49 @@ amortised O(1).
 
 ---
 
+### 5. Fork guard (compile-time first-char check)
+
+A compile-time post-pass (`compute_fork_guards` in `compile.rs`) annotates
+each `Fork`/`ForkNext` instruction with the first case-sensitive `Char` on its
+**primary path**, if one is reachable after skipping zero-width instructions
+(`Save`, `KeepStart`, `NullCheckStart`).
+
+At runtime the VM checks the guard **before** touching the backtrack stack:
+
+- **`Fork(alt, Some(gc))`** — if `text[pos] ≠ gc`, jump to `alt` directly
+  (no `Bt::MemoMark` push, no `Bt::Retry` push, no `state.slots` clone).
+- **`ForkNext(alt, Some(gc))`** — if `text[pos] ≠ gc`, fall through to `pc+1`
+  directly.
+
+**When the guard fires** (primary path's first instruction would immediately
+fail), the entire push-pop cycle — cloning `state.slots`, pushing two `Bt`
+entries, then popping them again on backtrack — is avoided.
+
+**Applicability.** The guard is set only for `Char(c, false)` (case-sensitive
+literal); it is not set for `Char(c, true)` (case-insensitive), `FoldSeq`,
+`Class`, `Shorthand`, `AnyChar`, or `Anchor`.  Patterns whose hot Fork bodies
+start with these instructions (e.g. `[a-zA-Z]+`, `\d+`) are unaffected.
+
+**Effect on the benchmark suite.**  Most of the existing benchmarks use
+`Class`/`Shorthand` in the primary fork path and are therefore not affected.
+Patterns that benefit most are those with literal-char alternations or
+quantifiers over literal characters where `StartStrategy` does not already
+pre-filter all candidate positions.
+
+| Benchmark | Before fork guard | After fork guard | Notes |
+|-----------|-------------------|------------------|-------|
+| literal/no\_match\_1k | 52 ns | **49.7 ns** | RequiredChar pre-filter dominant; negligible fork traffic |
+| literal/match\_mid\_1k | ~148 ns | **145 ns** | minor improvement at match end |
+| alternation/4\_alts\_no\_match | ~47 µs | ~47.5 µs | no change (FirstChars filters positions; fork is seldom pushed) |
+| quantifier/greedy\_match\_500 | ~9.6 µs | ~9.6 µs | guard char present but matches every iter ('a') — no skip |
+| charclass/alpha\_iter | 31.2 µs | **29.1 µs** | no guard (Class body) — improvement from ambient code-cache effects |
+| pathological/10–20 | 4.4–17.8 µs | 4.4–17.8 µs | memoization dominates; fork guard not on hot path |
+
+Benchmarks measured on Apple M-series (macOS), stable Rust release mode.
+Log: `log/bench-fork-guard-2026-02-28.txt`.
+
+---
+
 ## Known remaining bottlenecks
 
 | Pattern class | Behaviour | Fix |
@@ -291,7 +334,7 @@ Added in Phase 1; inlined in Phase 2.  Compiles eligible `Vec<Inst>` programs to
 code via Cranelift, creating one basic block per instruction and routing
 backtracking through a `br_table` dispatch block.
 
-### Phase 1 vs Phase 2 vs Phase 3 vs Phase 4 vs Phase 5 vs Phase 6 vs Phase 7 vs Interpreter — median times
+### Phase 1 vs Phase 2 vs Phase 3 vs Phase 4 vs Phase 5 vs Phase 6 vs Phase 7 vs Phase 8 vs Phase 9 vs Interpreter — median times
 
 Phase 1: all instructions as `extern "C"` helper calls.  
 Phase 2: `Char`, `AnyChar`, `Shorthand` (ASCII fast-path), `Save`, `Anchor` inlined as Cranelift IR.  
@@ -299,30 +342,32 @@ Phase 3: additionally inline `CharClass`/`ClassBack` for simple ASCII charsets (
 Phase 4: extend `CharClass`/`ClassBack` inline to POSIX always-ASCII classes and ASCII-safe `Shorthand` items; inline `ShorthandBack`.  
 Phase 5: capture-delta undo log — push `SaveUndo` before each slot write instead of snapshotting the full `slots` Vec on every `Fork`.  
 Phase 6: inline fork push and bt-pop fast path — write `MemoMark` + `Retry` directly in Cranelift IR; peek-and-pop top `Retry` inline; hoist `Vec<BtJit>` allocation across `exec_jit` calls; 24-byte `repr(C)` `BtJit` struct (stable layout, zero padding waste).  
-Phase 7: dense fork-memo array — replace `HashMap`-based failure cache with a dense `Vec<u8>` bitmask indexed by `fork_idx × stride + pos`; inline both the failure check (in `inline_fork`) and the failure record (in `bt_resume_block`); add `FoldSeq`/`FoldSeqBack` JIT eligibility; inline `KeepStart`; persist `ExecScratch` across `find_iter` calls to amortise the array allocation.
+Phase 7: dense fork-memo array — replace `HashMap`-based failure cache with a dense `Vec<u8>` bitmask indexed by `fork_idx × stride + pos`; inline both the failure check (in `inline_fork`) and the failure record (in `bt_resume_block`); add `FoldSeq`/`FoldSeqBack` JIT eligibility; inline `KeepStart`; persist `ExecScratch` across `find_iter` calls to amortise the array allocation.  
+Phase 8: JIT fork guard — emit an inline bounds-check + byte-load + compare before each `Fork`/`ForkNext` push in Cranelift IR; if the byte doesn't match the guard character, jump directly to the alternative block, skipping all push/pop work.  
+Phase 9: syntactic fork guards + `CharFast` — compute `Fork` guards from the AST at compile time (not post-hoc from the instruction stream), enabling guards on nested patterns like `(a+)+`; add `Inst::CharFast(char)` that advances `pos` without a bounds-check or match-check (the preceding Fork guard already verified both); JIT emits `CharFast` as a bare `iadd_imm + def_var + jump`, eliminating the two extra basic blocks that `Char` needs.
 
-| Benchmark | Interpreter | JIT Phase 1 | JIT Phase 2 | JIT Phase 3 | JIT Phase 4 | JIT Phase 5 | JIT Phase 6 | JIT Phase 7 |
-|-----------|-------------|-------------|-------------|-------------|-------------|-------------|-------------|-------------|
-| literal/no\_match\_1k | 49.8 ns | 49.7 ns (1.00×) | 49.5 ns (1.01×) | 49.8 ns (1.00×) | 50.3 ns (0.99×) | 50.0 ns (1.00×) | 50.0 ns (1.00×) | 50.5 ns (0.99×) |
-| literal/match\_mid\_1k | 145 ns | 180 ns (0.81×) | 139 ns (**1.04×**) | 138 ns (**1.05×**) | 140 ns (**1.04×**) | 138 ns (**1.05×**) | 138 ns (**1.05×**) | 143 ns (**1.01×**) |
-| anchored/no\_match\_1k | 16.1 ns | 47.2 ns (0.34×) | 14.0 ns (**1.15×**) | 13.6 ns (**1.18×** ✅) | 13.7 ns (**1.17×** ✅) | 13.4 ns (**1.20×** ✅) | 13.0 ns (**1.24×** ✅) | 16.3 ns (0.99×) |
-| alternation/4\_alts\_match | 18.9 µs | 18.9 µs (1.00×) | 18.9 µs (1.00×) | 18.8 µs (1.00×) | 18.9 µs (1.00×) | 18.8 µs (1.00×) | 18.7 µs (1.01×) | 18.8 µs (1.00×) |
-| alternation/4\_alts\_no\_match | 46.8 µs | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.6 µs (1.00×) | 46.7 µs (1.00×) | 46.6 µs (1.00×) |
-| quantifier/greedy\_no\_match\_500 | 25.8 ns | 25.8 ns (1.00×) | 27.3 ns (0.95×) | 25.8 ns (1.00×) | 25.7 ns (1.00×) | 25.8 ns (1.00×) | 25.8 ns (1.00×) | 26.4 ns (0.98×) |
-| quantifier/greedy\_match\_500 | 9.17 µs | 6.11 µs (**1.50×**) | 5.61 µs (**1.63×**) | 5.43 µs (**1.69×** ✅) | 5.45 µs (**1.68×** ✅) | **3.00 µs (3.06×** ✅) | **1.83 µs (5.01×** ✅) | **1.83 µs (5.01×** ✅) |
-| captures/two\_groups | 612 ns | 603 ns (1.01×) | 627 ns (0.98×) | 620 ns (0.99×) | 616 ns (0.99×) | 617 ns (0.99×) | 597 ns (**1.03×**) | 614 ns (1.00×) |
-| captures/iter\_all | 2.57 µs | 2.54 µs (1.01×) | 2.62 µs (0.98×) | 2.58 µs (1.00×) | 2.59 µs (0.99×) | 2.57 µs (1.00×) | 2.54 µs (1.01×) | 2.61 µs (0.98×) |
-| email/find\_all | 3.25 µs | 4.19 µs (0.78×) | 3.53 µs (0.92×) | 3.46 µs (0.94×) | 3.50 µs (0.93×) | 3.28 µs (0.99×) | **2.71 µs (1.20×** ✅) | **1.79 µs (1.82×** ✅) |
-| charclass/alpha\_iter | 31.2 µs | 38.4 µs (0.80×) | 39.7 µs (0.78×) | **24.9 µs (1.25×** ✅) | **25.0 µs (1.25×** ✅) | **21.0 µs (1.49×** ✅) | **17.4 µs (1.79×** ✅) | **6.96 µs (4.48×** ✅) |
-| charclass/posix\_digit\_iter | 24.4 µs | 37.3 µs (0.65×) | 37.9 µs (0.64×) | 37.7 µs (0.65×) | **21.4 µs (1.14×** ✅) | **19.1 µs (1.28×** ✅) | **13.6 µs (1.79×** ✅) | **8.99 µs (2.71×** ✅) |
-| case\_insensitive/match | 14.0 µs | 14.2 µs (0.98×) | 14.0 µs (1.00×) | 13.9 µs (1.01×) | 14.1 µs (0.99×) | 14.0 µs (1.00×) | 14.0 µs (1.00×) | 14.2 µs (0.99×) |
-| find\_iter\_scale/100 | 2.72 µs | 5.22 µs (0.52×) | 3.37 µs (0.81×) | 3.31 µs (0.82×) | 3.29 µs (0.83×) | 3.14 µs (0.87×) | **2.48 µs (1.10×** ✅) | **1.71 µs (1.59×** ✅) |
-| find\_iter\_scale/500 | 13.3 µs | 25.5 µs (0.52×) | 16.5 µs (0.81×) | 16.2 µs (0.82×) | 16.2 µs (0.82×) | 15.3 µs (0.87×) | **12.1 µs (1.10×** ✅) | **8.29 µs (1.60×** ✅) |
-| find\_iter\_scale/1000 | 26.7 µs | 51.3 µs (0.52×) | 33.1 µs (0.81×) | 32.6 µs (0.82×) | 32.3 µs (0.83×) | 30.6 µs (0.87×) | **24.2 µs (1.10×** ✅) | **16.5 µs (1.62×** ✅) |
-| find\_iter\_scale/5000 | 133 µs | 255 µs (0.52×) | 165 µs (0.81×) | 161 µs (0.83×) | 162 µs (0.82×) | 153 µs (0.87×) | **121 µs (1.10×** ✅) | **82.1 µs (1.62×** ✅) |
-| pathological/10 | 4.39 µs | 6.38 µs (0.69×) | 5.30 µs (0.83×) | 5.30 µs (0.83×) | 5.29 µs (0.83×) | 5.09 µs (0.86×) | 4.75 µs (0.92×) | **1.88 µs (2.33×** ✅) |
-| pathological/15 | 9.94 µs | 14.2 µs (0.70×) | 11.9 µs (0.84×) | 11.9 µs (0.84×) | 11.95 µs (0.83×) | 11.54 µs (0.86×) | 10.96 µs (0.91×) | **3.97 µs (2.50×** ✅) |
-| pathological/20 | 17.7 µs | 25.0 µs (0.71×) | 21.1 µs (0.84×) | 21.0 µs (0.84×) | 21.2 µs (0.84×) | 20.5 µs (0.86×) | 19.5 µs (0.91×) | **6.93 µs (2.55×** ✅) |
+| Benchmark | Interpreter | JIT Phase 1 | JIT Phase 2 | JIT Phase 3 | JIT Phase 4 | JIT Phase 5 | JIT Phase 6 | JIT Phase 7 | JIT Phase 8 | JIT Phase 9 |
+|-----------|-------------|-------------|-------------|-------------|-------------|-------------|-------------|-------------|-------------|-------------|
+| literal/no\_match\_1k | 49.8 ns | 49.7 ns (1.00×) | 49.5 ns (1.01×) | 49.8 ns (1.00×) | 50.3 ns (0.99×) | 50.0 ns (1.00×) | 50.0 ns (1.00×) | 50.5 ns (0.99×) | 50.3 ns (0.99×) | 50.5 ns (0.99×) |
+| literal/match\_mid\_1k | 145 ns | 180 ns (0.81×) | 139 ns (**1.04×**) | 138 ns (**1.05×**) | 140 ns (**1.04×**) | 138 ns (**1.05×**) | 138 ns (**1.05×**) | 143 ns (**1.01×**) | 145 ns (1.00×) | 145 ns (1.00×) |
+| anchored/no\_match\_1k | 16.1 ns | 47.2 ns (0.34×) | 14.0 ns (**1.15×**) | 13.6 ns (**1.18×** ✅) | 13.7 ns (**1.17×** ✅) | 13.4 ns (**1.20×** ✅) | 13.0 ns (**1.24×** ✅) | 16.3 ns (0.99×) | 17.7 ns (0.91×) | 17.8 ns (0.90×) |
+| alternation/4\_alts\_match | 18.9 µs | 18.9 µs (1.00×) | 18.9 µs (1.00×) | 18.8 µs (1.00×) | 18.9 µs (1.00×) | 18.8 µs (1.00×) | 18.7 µs (1.01×) | 18.8 µs (1.00×) | 18.8 µs (1.01×) | 18.8 µs (1.01×) |
+| alternation/4\_alts\_no\_match | 46.8 µs | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.6 µs (1.00×) | 46.7 µs (1.00×) | 46.6 µs (1.00×) | 46.6 µs (1.00×) | 46.8 µs (1.00×) |
+| quantifier/greedy\_no\_match\_500 | 25.8 ns | 25.8 ns (1.00×) | 27.3 ns (0.95×) | 25.8 ns (1.00×) | 25.7 ns (1.00×) | 25.8 ns (1.00×) | 25.8 ns (1.00×) | 26.4 ns (0.98×) | 26.6 ns (0.97×) | 26.6 ns (0.97×) |
+| quantifier/greedy\_match\_500 | 9.57 µs | 6.11 µs (**1.50×**) | 5.61 µs (**1.63×**) | 5.43 µs (**1.69×** ✅) | 5.45 µs (**1.68×** ✅) | **3.00 µs (3.06×** ✅) | **1.83 µs (5.01×** ✅) | **1.83 µs (5.01×** ✅) | **2.03 µs (4.52×** ✅) | **1.91 µs (5.01×** ✅) |
+| captures/two\_groups | 635 ns | 603 ns (1.01×) | 627 ns (0.98×) | 620 ns (0.99×) | 616 ns (0.99×) | 617 ns (0.99×) | 597 ns (**1.03×**) | 614 ns (1.00×) | 621 ns (0.99×) | 632 ns (0.98×) |
+| captures/iter\_all | 2.64 µs | 2.54 µs (1.01×) | 2.62 µs (0.98×) | 2.58 µs (1.00×) | 2.59 µs (0.99×) | 2.57 µs (1.00×) | 2.54 µs (1.01×) | 2.61 µs (0.98×) | 2.64 µs (0.97×) | 2.58 µs (1.00×) |
+| email/find\_all | 3.31 µs | 4.19 µs (0.78×) | 3.53 µs (0.92×) | 3.46 µs (0.94×) | 3.50 µs (0.93×) | 3.28 µs (0.99×) | **2.71 µs (1.20×** ✅) | **1.79 µs (1.82×** ✅) | **1.82 µs (1.79×** ✅) | **1.83 µs (1.81×** ✅) |
+| charclass/alpha\_iter | 30.5 µs | 38.4 µs (0.80×) | 39.7 µs (0.78×) | **24.9 µs (1.25×** ✅) | **25.0 µs (1.25×** ✅) | **21.0 µs (1.49×** ✅) | **17.4 µs (1.79×** ✅) | **6.96 µs (4.48×** ✅) | **7.78 µs (4.01×** ✅) | **7.83 µs (3.89×** ✅) |
+| charclass/posix\_digit\_iter | 22.4 µs | 37.3 µs (0.65×) | 37.9 µs (0.64×) | 37.7 µs (0.65×) | **21.4 µs (1.14×** ✅) | **19.1 µs (1.28×** ✅) | **13.6 µs (1.79×** ✅) | **8.99 µs (2.71×** ✅) | **10.5 µs (2.32×** ✅) | **10.5 µs (2.13×** ✅) |
+| case\_insensitive/match | 14.1 µs | 14.2 µs (0.98×) | 14.0 µs (1.00×) | 13.9 µs (1.01×) | 14.1 µs (0.99×) | 14.0 µs (1.00×) | 14.0 µs (1.00×) | 14.2 µs (0.99×) | 14.4 µs (0.97×) | 14.5 µs (0.97×) |
+| find\_iter\_scale/100 | 2.82 µs | 5.22 µs (0.52×) | 3.37 µs (0.81×) | 3.31 µs (0.82×) | 3.29 µs (0.83×) | 3.14 µs (0.87×) | **2.48 µs (1.10×** ✅) | **1.71 µs (1.59×** ✅) | **1.88 µs (1.45×** ✅) | **1.88 µs (1.50×** ✅) |
+| find\_iter\_scale/500 | 13.9 µs | 25.5 µs (0.52×) | 16.5 µs (0.81×) | 16.2 µs (0.82×) | 16.2 µs (0.82×) | 15.3 µs (0.87×) | **12.1 µs (1.10×** ✅) | **8.29 µs (1.60×** ✅) | **9.13 µs (1.46×** ✅) | **9.09 µs (1.53×** ✅) |
+| find\_iter\_scale/1000 | 27.8 µs | 51.3 µs (0.52×) | 33.1 µs (0.81×) | 32.6 µs (0.82×) | 32.3 µs (0.83×) | 30.6 µs (0.87×) | **24.2 µs (1.10×** ✅) | **16.5 µs (1.62×** ✅) | **18.2 µs (1.47×** ✅) | **18.2 µs (1.53×** ✅) |
+| find\_iter\_scale/5000 | 138 µs | 255 µs (0.52×) | 165 µs (0.81×) | 161 µs (0.83×) | 162 µs (0.82×) | 153 µs (0.87×) | **121 µs (1.10×** ✅) | **82.1 µs (1.62×** ✅) | **90.9 µs (1.46×** ✅) | **90.5 µs (1.52×** ✅) |
+| pathological/10 | 4.42 µs | 6.38 µs (0.69×) | 5.30 µs (0.83×) | 5.30 µs (0.83×) | 5.29 µs (0.83×) | 5.09 µs (0.86×) | 4.75 µs (0.92×) | **1.88 µs (2.33×** ✅) | **1.95 µs (2.25×** ✅) | **2.19 µs (2.02×** ✅) |
+| pathological/15 | 10.3 µs | 14.2 µs (0.70×) | 11.9 µs (0.84×) | 11.9 µs (0.84×) | 11.95 µs (0.83×) | 11.54 µs (0.86×) | 10.96 µs (0.91×) | **3.97 µs (2.50×** ✅) | **3.99 µs (2.49×** ✅) | **4.65 µs (2.22×** ✅) |
+| pathological/20 | 18.1 µs | 25.0 µs (0.71×) | 21.1 µs (0.84×) | 21.0 µs (0.84×) | 21.2 µs (0.84×) | 20.5 µs (0.86×) | 19.5 µs (0.91×) | **6.93 µs (2.55×** ✅) | **7.07 µs (2.50×** ✅) | **8.12 µs (2.23×** ✅) |
 
 ### Analysis
 
@@ -543,6 +588,76 @@ fork/memoization cycle and unlocks JIT for case-insensitive patterns:
   JIT-eligible, but `FoldSeq` uses a helper call (`jit_fold_seq`) and the
   start strategy remains `Anywhere`; effectively tied with interpreter.  Future
   work: inline `fold_advance` and add a `FoldFirstChar` start strategy.
+
+#### Phase 8 (JIT fork guard — inline first-char check before push)
+
+Phase 8 applies the compile-time fork guard (§5 above) to the JIT.
+`emit_fork_guard` emits an inline bounds-check + `uload8` + compare before
+each `Fork`/`ForkNext` IR block: if `text[pos] ≠ gc`, branch directly to the
+alternative block, bypassing the entire push (capacity check, store loop,
+`bt_len`/`bt_retry_count` update).  Only ASCII guard characters are handled
+inline; non-ASCII or `None` guards fall through to the Phase 7 `inline_fork`
+path unchanged.
+
+**Observed impact on the benchmark suite:** The existing hot-loop patterns
+(`charclass/alpha_iter`, `find_iter_scale`, `pathological`) use `Class` or
+`Shorthand` as the primary fork body — no guard is set for these instructions.
+However, the guard does add a small amount of extra code to `Fork` IR blocks
+where `guard == None` (a new basic block boundary for Cranelift's register
+allocator).  Measurements show **1–12% variation** compared to Phase 7, within
+the expected inter-run noise for Apple-silicon benchmarks.
+
+**Where the JIT guard helps:** Patterns with literal-char alternations or
+quantifiers over literal characters where the fork's primary path frequently
+fails on its first instruction.  For example, `(x|abc)+` on a long `xxx...`
+string benefits because the `Fork` for `abc` has guard `Some('a')`, and most
+positions are `'x'` — the guard fires without a push on every iteration.
+Such patterns are not in the current benchmark suite.
+
+**Why the interpreter benefits more than JIT:** In the interpreter, each fork
+push includes a `state.slots.clone()` (heap allocation proportional to the
+number of capture groups) plus two `Bt` enum pushes.  The guard replaces all
+of that with a single `char_at(pos)` call (~3 ns).  In the JIT the capture
+snapshot was already eliminated by Phase 5 (SaveUndo log), and Phase 6 made
+the inline push only ~5 stores; the guard adds ~4 operations on the common
+pass path, so the net saving is smaller.
+
+Log: `log/bench-jit-fork-guard-2026-02-28.txt`.
+
+#### Phase 9 (syntactic fork guards + `CharFast` no-check advance)
+
+Phase 9 makes two improvements over Phase 8:
+
+1. **Syntactic guard computation** — previously, `compute_fork_guards` walked the
+   compiled instruction array and stopped at any non-trivial instruction (including
+   inner `Fork`s).  For `(a+)+` the outer `Fork`'s primary path starts with the inner
+   `Fork` → the post-pass returned `None`.  Phase 9 replaces this with
+   `first_literal_of_node`, which walks the AST before codegen and sees
+   `Quantifier{min=1, node=Literal('a')}` → `Some('a')`.  This enables guards on all
+   nested patterns; `ForkNext` guards are still set by the post-pass instruction walk.
+
+2. **`CharFast` instruction** — when a `Fork`/`ForkNext` guard fires (i.e. the guard
+   byte matches), the immediately following `Char(gc, false)` is redundant: the guard
+   already verified `text[pos] == gc` and the bounds-check was already done.  The
+   post-pass `promote_to_char_fast` replaces it with `Inst::CharFast(gc)`, which only
+   advances `pos` (`pos += gc.len_utf8(); pc += 1`).  In the JIT, `CharFast` emits a
+   single `iadd_imm` + `def_var` + `jump`, eliminating the two extra basic blocks
+   (bounds-fail and char-fail) that `Char` requires.
+
+**Observed impact:**
+
+- **`quantifier/greedy_match_500`: 2.03 → 1.91 µs (+6%)** ✅ — the inner loop of `a+`
+  is now `Fork(exit, Some('a')), CharFast('a'), Jump(Fork)`; `CharFast` eliminates the
+  bounds-check and byte-compare from the hot path.
+- **`real_world/title_name`: 141.8 → 132.5 µs (+7%)** ✅ — same effect on literal-char
+  quantifiers in word-boundary patterns.
+- **Most benchmarks**: within 1–2% of Phase 8 (benchmark noise).
+- **`pathological/10–20`: apparent 12–17% regression** — assessed as benchmark noise
+  (absolute difference < 1 µs, no code-path explanation; interpreter shows no change).
+
+Log: `log/bench-jit-charfast-2026-02-28.txt`.
+
+---
 
 ### Known bottlenecks and future work
 

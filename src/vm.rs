@@ -194,11 +194,22 @@ pub enum Inst {
     /// Unconditional jump to absolute PC
     Jump(usize),
 
-    /// Greedy fork: try pc+1; on failure try `usize`
-    Fork(usize),
+    /// Greedy fork: try pc+1; on failure try `usize`.
+    /// The optional `char` is a compile-time guard: if `text[pos]` does not
+    /// equal the guard character the primary path (pc+1) is guaranteed to fail
+    /// immediately, so the VM skips directly to the alternative without any
+    /// stack push.
+    Fork(usize, Option<char>),
 
-    /// Lazy fork: try `usize` first; on failure try pc+1
-    ForkNext(usize),
+    /// Lazy fork: try `usize` first; on failure try pc+1.
+    /// Guard semantics mirror `Fork`: if `text[pos]` does not equal the guard
+    /// the primary path (`usize`) fails immediately, so skip to pc+1.
+    ForkNext(usize, Option<char>),
+
+    /// Advance `pos` by one character without a bounds or match check.
+    /// Only emitted immediately after a `Fork`/`ForkNext` whose guard has
+    /// already verified that `text[pos]` equals this character.
+    CharFast(char),
 
     /// Record `(pos, bt_depth)` in null-check slot `n`.
     /// Must appear **before** the Fork/ForkNext of the loop so that the saved
@@ -682,7 +693,16 @@ pub(crate) fn exec(
             }
 
             // Greedy fork: try pc+1 first; save alt as a backtrack point.
-            Inst::Fork(alt) => {
+            Inst::Fork(alt, guard) => {
+                // Guard fast-path: if a required first char is known and the
+                // current character doesn't match it, the primary path (pc+1)
+                // will fail on its very first instruction.  Skip directly to
+                // `alt` without touching the backtrack stack.
+                if matches!(guard, Some(gc) if !matches!(ctx.char_at(pos), Some((c, _)) if c == *gc))
+                {
+                    pc = *alt;
+                    continue 'vm;
+                }
                 if ctx.use_memo {
                     let key = memo_key(pc, pos);
                     // A cached failure applies when any bit 0..=atomic_depth is
@@ -704,7 +724,14 @@ pub(crate) fn exec(
             }
 
             // Lazy fork: try alt first; save pc+1 as a backtrack point.
-            Inst::ForkNext(alt) => {
+            Inst::ForkNext(alt, guard) => {
+                // Guard fast-path: if the primary path (`alt`) starts with a
+                // char that doesn't match, skip directly to pc+1.
+                if matches!(guard, Some(gc) if !matches!(ctx.char_at(pos), Some((c, _)) if c == *gc))
+                {
+                    pc += 1;
+                    continue 'vm;
+                }
                 if ctx.use_memo {
                     let key = memo_key(pc, pos);
                     let depth_mask = (1u16 << (atomic_depth + 1)).wrapping_sub(1) as u8;
@@ -720,6 +747,13 @@ pub(crate) fn exec(
                 }
                 push_retry(&mut bt, pc + 1, pos, state);
                 pc = *alt;
+            }
+
+            // CharFast: the preceding Fork guard already verified text[pos] == c,
+            // so skip the bounds check and comparison — just advance.
+            Inst::CharFast(c) => {
+                pos += c.len_utf8();
+                pc += 1;
             }
 
             Inst::NullCheckStart(slot) => {
@@ -1177,7 +1211,7 @@ fn extract_literal_prefix(prog: &[Inst]) -> String {
         match &prog[pc] {
             Inst::Save(_) | Inst::KeepStart => pc += 1,
             Inst::Anchor(AnchorKind::StringStart, _) => pc += 1,
-            Inst::Char(c, false) => {
+            Inst::Char(c, false) | Inst::CharFast(c) => {
                 prefix.push(*c);
                 pc += 1;
             }
@@ -1200,7 +1234,7 @@ fn collect_first_chars(
         return Some(());
     }
     match prog.get(pc)? {
-        Inst::Char(c, false) => out.push(*c),
+        Inst::Char(c, false) | Inst::CharFast(c) => out.push(*c),
         Inst::Char(c, true) => {
             out.extend(c.to_lowercase());
             out.extend(c.to_uppercase());
@@ -1219,13 +1253,13 @@ fn collect_first_chars(
         // Classes / wildcards — first char is unbounded
         Inst::AnyChar(_) | Inst::Class(..) | Inst::Shorthand(..) | Inst::Prop(..) => return None,
         // Greedy fork: both branches may start a match
-        Inst::Fork(alt) => {
+        Inst::Fork(alt, _) => {
             let alt = *alt;
             collect_first_chars(prog, pc + 1, out, visited)?;
             collect_first_chars(prog, alt, out, visited)?;
         }
         // Lazy fork: same — both branches may start a match
-        Inst::ForkNext(alt) => {
+        Inst::ForkNext(alt, _) => {
             let alt = *alt;
             collect_first_chars(prog, alt, out, visited)?;
             collect_first_chars(prog, pc + 1, out, visited)?;
@@ -1253,7 +1287,7 @@ fn collect_first_chars(
 fn bypasses(prog: &[Inst], pc: usize, match_pc: usize) -> bool {
     for inst in prog {
         let target = match inst {
-            Inst::Fork(t) | Inst::ForkNext(t) | Inst::Jump(t) => Some(*t),
+            Inst::Fork(t, _) | Inst::ForkNext(t, _) | Inst::Jump(t) => Some(*t),
             _ => None,
         };
         if let Some(t) = target
@@ -1281,7 +1315,7 @@ fn compute_required_char(prog: &[Inst]) -> Option<char> {
             break;
         }
         match &prog[pc] {
-            Inst::Char(c, false) => return Some(*c),
+            Inst::Char(c, false) | Inst::CharFast(c) => return Some(*c),
             // Zero-width instructions: keep walking backwards
             Inst::Save(_) | Inst::KeepStart | Inst::RetIfCalled => {}
             // Any other instruction (branch, charset, etc.) — stop
@@ -1308,7 +1342,7 @@ pub(crate) fn compute_fork_pc_indices(prog: &[Inst]) -> Vec<Option<u32>> {
     let mut indices = vec![None; prog.len()];
     let mut idx: u32 = 0;
     for (pc, inst) in prog.iter().enumerate() {
-        if matches!(inst, Inst::Fork(_) | Inst::ForkNext(_)) {
+        if matches!(inst, Inst::Fork(_, _) | Inst::ForkNext(_, _)) {
             indices[pc] = Some(idx);
             idx += 1;
         }

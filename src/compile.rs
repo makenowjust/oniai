@@ -108,8 +108,8 @@ impl Compiler {
     fn patch_jump(&mut self, pc: usize, target: usize) {
         match &mut self.prog[pc] {
             Inst::Jump(t) => *t = target,
-            Inst::Fork(t) => *t = target,
-            Inst::ForkNext(t) => *t = target,
+            Inst::Fork(t, _) => *t = target,
+            Inst::ForkNext(t, _) => *t = target,
             Inst::AtomicStart(t) => *t = target,
             Inst::LookStart { end_pc, .. } => *end_pc = target,
             Inst::AbsenceStart(t) => *t = target,
@@ -458,7 +458,12 @@ impl Compiler {
         for (i, alt) in alts.iter().enumerate() {
             if i < alts.len() - 1 {
                 // Fork: try next alternative if this one fails
-                let fork_pc = self.emit(Inst::Fork(0)); // patch to next alt
+                let guard = if backward {
+                    None
+                } else {
+                    first_literal_of_node(alt, flags.ignore_case)
+                };
+                let fork_pc = self.emit(Inst::Fork(0, guard)); // patch to next alt
                 fork_pcs.push(fork_pc);
             }
             self.compile_node_inner(alt, flags, backward)?;
@@ -523,7 +528,8 @@ impl Compiler {
                     let null_check_start_pc = self.pc();
                     self.emit(Inst::NullCheckStart(slot));
                     let fork_pc = self.pc();
-                    self.emit(Inst::Fork(0)); // patched to exit_pc below
+                    let guard = if backward { None } else { first_literal_of_node(node, flags.ignore_case) };
+                    self.emit(Inst::Fork(0, guard)); // patched to exit_pc below
                     self.compile_node_inner(node, flags, backward)?;
                     // exit_pc is the instruction after NullCheckEnd + Jump
                     let exit_pc = self.pc() + 2;
@@ -533,7 +539,8 @@ impl Compiler {
                     self.patch_jump(fork_pc, exit_pc);
                 } else {
                     // Simple loop: Fork(exit), body, Jump(Fork)
-                    let fork_pc = self.emit(Inst::Fork(0));
+                    let guard = if backward { None } else { first_literal_of_node(node, flags.ignore_case) };
+                    let fork_pc = self.emit(Inst::Fork(0, guard));
                     self.compile_node_inner(node, flags, backward)?;
                     self.emit(Inst::Jump(fork_pc));
                     self.patch_jump(fork_pc, self.pc());
@@ -547,7 +554,7 @@ impl Compiler {
                     let null_check_start_pc = self.pc();
                     self.emit(Inst::NullCheckStart(slot));
                     let fork_pc = self.pc();
-                    self.emit(Inst::ForkNext(0)); // patched to exit_pc below
+                    self.emit(Inst::ForkNext(0, None)); // patched to exit_pc below
                     self.compile_node_inner(node, flags, backward)?;
                     let exit_pc = self.pc() + 2;
                     self.emit(Inst::NullCheckEnd { slot, exit_pc });
@@ -555,7 +562,7 @@ impl Compiler {
                     self.patch_jump(fork_pc, exit_pc);
                 } else {
                     // Simple lazy loop: ForkNext(exit), body, Jump(ForkNext)
-                    let fork_pc = self.emit(Inst::ForkNext(0));
+                    let fork_pc = self.emit(Inst::ForkNext(0, None));
                     self.compile_node_inner(node, flags, backward)?;
                     self.emit(Inst::Jump(fork_pc));
                     self.patch_jump(fork_pc, self.pc());
@@ -570,7 +577,8 @@ impl Compiler {
                     let null_check_start_pc = self.pc();
                     self.emit(Inst::NullCheckStart(slot));
                     let fork_pc = self.pc();
-                    self.emit(Inst::Fork(0)); // patched to loop_end below
+                    let guard = if backward { None } else { first_literal_of_node(node, flags.ignore_case) };
+                    self.emit(Inst::Fork(0, guard)); // patched to loop_end below
                     self.compile_node_inner(node, flags, backward)?;
                     // loop_end is the pc of AtomicEnd (after NullCheckEnd + Jump)
                     let loop_end = self.pc() + 2;
@@ -586,7 +594,8 @@ impl Compiler {
                 } else {
                     // Simple atomic loop: AtomicStart, Fork(loop_end), body, Jump(Fork), AtomicEnd
                     let atomic_start = self.emit(Inst::AtomicStart(0));
-                    let fork_pc = self.emit(Inst::Fork(0));
+                    let guard = if backward { None } else { first_literal_of_node(node, flags.ignore_case) };
+                    let fork_pc = self.emit(Inst::Fork(0, guard));
                     self.compile_node_inner(node, flags, backward)?;
                     self.emit(Inst::Jump(fork_pc));
                     let loop_end = self.pc();
@@ -599,7 +608,8 @@ impl Compiler {
             // Greedy {n,m}
             (Some(m), QuantKind::Greedy) => {
                 let extra = m - min;
-                let fork_pcs: Vec<usize> = (0..extra).map(|_| self.emit(Inst::Fork(0))).collect();
+                let fork_pcs: Vec<usize> =
+                    (0..extra).map(|_| self.emit(Inst::Fork(0, None))).collect();
                 // We need to interleave: Fork, body, Fork, body, ...
                 // But we've emitted all forks first which is wrong.
                 // Redo: emit each fork then body
@@ -635,7 +645,7 @@ impl Compiler {
 
             (Some(m), QuantKind::Reluctant) => {
                 for _ in min..m {
-                    let fork_pc = self.emit(Inst::ForkNext(0));
+                    let fork_pc = self.emit(Inst::ForkNext(0, None));
                     self.compile_node_inner(node, flags, backward)?;
                     let after = self.pc();
                     self.patch_jump(fork_pc, after);
@@ -647,7 +657,8 @@ impl Compiler {
                 // Atomic wrapper around optional iterations
                 let atomic_start = self.emit(Inst::AtomicStart(0));
                 for _ in 0..extra {
-                    let fork_pc = self.emit(Inst::Fork(0));
+                    let guard = if backward { None } else { first_literal_of_node(node, flags.ignore_case) };
+                    let fork_pc = self.emit(Inst::Fork(0, guard));
                     self.compile_node_inner(node, flags, backward)?;
                     let after = self.pc();
                     self.patch_jump(fork_pc, after); // hmm, all fork to same exit
@@ -684,7 +695,8 @@ impl Compiler {
         // We'll collect their pcs and patch them all at the end.
         let mut fork_pcs = Vec::new();
         for _ in 0..extra {
-            let fp = self.emit(Inst::Fork(0));
+            let guard = if backward { None } else { first_literal_of_node(node, flags.ignore_case) };
+            let fp = self.emit(Inst::Fork(0, guard));
             fork_pcs.push(fp);
             self.compile_node_inner(node, flags, backward)?;
         }
@@ -872,6 +884,112 @@ fn compile_class_item(
 // Public compile function
 // ---------------------------------------------------------------------------
 
+/// Walk the instruction sequence starting at `start_pc`, skipping zero-width
+/// instructions (`Save`, `KeepStart`, `NullCheckStart`), and return the char
+/// from the first `Char(c, false)` (case-sensitive) instruction found, if any.
+///
+/// Return the first case-sensitive literal character that `node` is guaranteed
+/// to consume when compiled in a forward (non-backward) context.
+///
+/// Returns `None` when:
+/// - `ic` is true (case-insensitive: any char could match the literal), or
+/// - the node might match without consuming a specific literal first (empty,
+///   anchor, alternation, class, etc.).
+///
+/// This is used to set a syntactic guard on `Fork` instructions so the VM can
+/// skip the backtrack-stack push when `text[pos]` does not equal the guard.
+fn first_literal_of_node(node: &Node, ic: bool) -> Option<char> {
+    if ic {
+        return None;
+    }
+    match node {
+        Node::Literal(c) => Some(*c),
+        Node::Concat(nodes) => first_literal_of_node(nodes.first()?, ic),
+        Node::Capture { node, flags: gf, .. } | Node::NamedCapture { node, flags: gf, .. } => {
+            first_literal_of_node(node, ic || gf.ignore_case)
+        }
+        Node::Group { node, flags: gf } => first_literal_of_node(node, ic || gf.ignore_case),
+        Node::Atomic(node) => first_literal_of_node(node, ic),
+        Node::InlineFlags { flags: fmod, node } => {
+            let new_ic = (ic || fmod.on.ignore_case) && !fmod.off.ignore_case;
+            first_literal_of_node(node, new_ic)
+        }
+        Node::Quantifier { node, range, .. } if range.min >= 1 => {
+            first_literal_of_node(node, ic)
+        }
+        _ => None,
+    }
+}
+
+/// This is used to compute a compile-time guard for `Fork`/`ForkNext`:
+/// if `text[pos]` does not equal the returned char, the path starting at
+/// `start_pc` is guaranteed to fail on its very first character match.
+fn fork_guard_char(prog: &[Inst], mut pc: usize) -> Option<char> {
+    loop {
+        match prog.get(pc)? {
+            Inst::Char(c, false) => return Some(*c),
+            // Zero-width; keep looking
+            Inst::Save(_) | Inst::KeepStart | Inst::NullCheckStart(_) => pc += 1,
+            _ => return None,
+        }
+    }
+}
+
+/// Scan forward from `start_pc` (skipping zero-width instructions) and, if
+/// the first consumed-character instruction is `Char(gc, false)`, replace it
+/// with `CharFast(gc)`.  A no-op when no such `Char` is found (e.g. when the
+/// primary path starts with another Fork rather than a direct Char).
+fn promote_to_char_fast(prog: &mut [Inst], mut pc: usize, gc: char) {
+    loop {
+        match prog.get(pc) {
+            Some(Inst::Save(_) | Inst::KeepStart | Inst::NullCheckStart(_)) => pc += 1,
+            Some(Inst::Char(c, false)) if *c == gc => {
+                prog[pc] = Inst::CharFast(gc);
+                return;
+            }
+            _ => return,
+        }
+    }
+}
+
+/// Post-processing pass: fill in the guard character for every `ForkNext`
+/// instruction that has a guaranteed first-char on its primary path.
+/// `Fork` guards are already set syntactically during compilation.
+///
+/// After guards are set, a second sub-pass replaces each guarded `Char(c,
+/// false)` on the fork's primary path with `CharFast(c)`, which skips both
+/// the bounds check and the match check (the guard has already done both).
+fn compute_fork_guards(prog: &mut [Inst]) {
+    let len = prog.len();
+
+    // Phase 1: set ForkNext guards via instruction-level walk.
+    // (Fork guards were set syntactically at compilation time.)
+    let fork_next_guards: Vec<(usize, Option<char>)> = (0..len)
+        .filter_map(|pc| match prog[pc] {
+            Inst::ForkNext(alt, None) => Some((pc, fork_guard_char(prog, alt))),
+            _ => None,
+        })
+        .collect();
+    for (pc, guard) in fork_next_guards {
+        if let Inst::ForkNext(_, ref mut g) = prog[pc] {
+            *g = guard;
+        }
+    }
+
+    // Phase 2: promote guarded Char(gc, false) → CharFast(gc) on each fork's
+    // primary path (after any zero-width instructions).
+    let promotions: Vec<(usize, char)> = (0..len)
+        .filter_map(|pc| match prog[pc] {
+            Inst::Fork(_, Some(gc)) => Some((pc + 1, gc)),
+            Inst::ForkNext(alt, Some(gc)) => Some((alt, gc)),
+            _ => None,
+        })
+        .collect();
+    for (start, gc) in promotions {
+        promote_to_char_fast(prog, start, gc);
+    }
+}
+
 pub struct CompiledProgram {
     pub prog: Vec<Inst>,
     pub charsets: Vec<CharSet>,
@@ -897,6 +1015,7 @@ pub fn compile(
     compiler.compile_node(node, base_flags)?;
     compiler.emit(Inst::Match);
     compiler.backfill_calls()?;
+    compute_fork_guards(&mut compiler.prog);
 
     let num_groups = compiler.num_groups as usize;
     let num_null_checks = compiler.num_null_checks as usize;
