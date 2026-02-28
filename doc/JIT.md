@@ -1,10 +1,10 @@
 # Aigumo — JIT Compilation Design
 
-This document describes the design and phased implementation plan for adding
-JIT (Just-In-Time) compilation to Aigumo.  The JIT is an optional acceleration
-layer that compiles a `Vec<Inst>` VM program to native machine code at regex
-construction time, replacing the interpreter loop in `vm.rs` for eligible
-patterns.
+This document describes the design and implementation of the JIT (Just-In-Time)
+compilation layer in Aigumo.  The JIT is an optional acceleration layer
+(enabled with `--features jit`) that compiles a `Vec<Inst>` VM program to
+native machine code at regex construction time, replacing the interpreter loop
+in `vm.rs` for eligible patterns.
 
 ---
 
@@ -51,8 +51,8 @@ patterns that are JIT-eligible.
 |---|----------|
 | N1 | DFA or NFA simulation — the engine remains backtracking; the JIT accelerates the *same* algorithm. |
 | N2 | Profile-guided or adaptive re-compilation (no tiered JIT). |
-| N3 | JIT compilation of patterns with back-references or `\g<…>` calls in the first release (interpreter fallback is used). |
-| N4 | Windows support in the initial release. |
+| N3 | JIT compilation of patterns with back-references or subexpression calls (`\g<…>`) — interpreter fallback is used. |
+| N4 | Windows support. |
 
 ---
 
@@ -97,166 +97,225 @@ cranelift-frontend = { version = "0.113", optional = true }
 
 ### 4.1 Overview
 
-A JIT-compiled program is a single native function with the signature:
+A JIT-compiled program is a single native function with the Cranelift signature:
 
-```rust
-// Conceptual Rust equivalent of the compiled function's ABI:
-//
-//   fn jit_exec(
-//       ctx:        *const JitCtx,   // immutable per-search context
-//       bt_stack:   *mut BtStack,    // explicit backtrack stack (same semantics as Bt)
-//       memo:       *mut MemoState,  // shared memoisation state
-//       pos:        usize,           // current text position
-//       slots:      *mut SlotBuf,    // capture slot array
-//       keep_pos:   *mut Option<usize>,
-//       call_stack: *mut CallStack,  // for \g<…> return addresses
-//   ) -> isize;                      // -1 = no match; ≥ 0 = match end position
+```text
+fn jit_exec(ctx_ptr: i64, start_pos: i64) -> i64
 ```
 
-`JitCtx` is a thin struct holding the text pointer/length, `search_start`, and
-`use_memo`.  All other state is passed explicitly so backtrack resumptions can
-restore it precisely.
+`ctx_ptr` points to a `JitExecCtx` struct (see §4.6) which holds the text,
+all mutable execution state (capture slots, backtrack stack, memo array), and
+references to the immutable program data.  The return value is the match end
+position (≥ 0) on success, or −1 on no-match.
 
 ### 4.2 Instruction-to-block mapping
 
 The compiler assigns one **Cranelift basic block** (`Block`) per VM program
 counter.  Edges between blocks correspond exactly to the control-flow edges
-already implied by the `Inst` enum:
+implied by the `Inst` enum:
 
 | VM instruction | Cranelift CFG edge |
 |----------------|-------------------|
 | `Match` | Return success value |
-| `Char` / `AnyChar` / `Class` / `Shorthand` / `Prop` / `FoldSeq` | Fall-through on success; call `bt_pop` helper on fail |
+| `Char` / `AnyChar` / `Shorthand` / `Class` / `Prop` / `FoldSeq` | Fall-through on success; jump to `bt_resume_block` on fail |
 | `Anchor` | Same as character match |
 | `Jump(t)` | Unconditional `jump` to `block[t]` |
-| `Fork(alt)` | Push `(block[alt], snapshot)` onto `bt_stack`; `jump` to `block[pc+1]` |
-| `ForkNext(alt)` | Push `(block[pc+1], snapshot)` onto `bt_stack`; `jump` to `block[alt]` |
-| `Save(s)` | Store `pos` into `slots[s]`; fall through |
-| `KeepStart` | Store `pos` into `*keep_pos`; fall through |
-| `Call(t)` | Push `(block[pc+1])` onto `call_stack`; `jump` to `block[t]` |
-| `RetIfCalled` | Branch: if `call_stack` non-empty, pop and `jump`; else fall through |
-| `AtomicStart` / `AtomicEnd` | Call into Rust helper (see §4.5) |
-| `LookStart` / `LookEnd` | Call into Rust helper (see §4.5) |
-| `CheckGroup` | Branch on `slots[slot].is_some()` |
-| `AbsenceStart` / `AbsenceEnd` | Call into Rust helper (see §4.5) |
-| `BackRef` | Call into Rust helper |
+| `Fork(alt)` | Check dense memo; push `MemoMark + Retry` onto bt stack; `jump` to `block[pc+1]` |
+| `ForkNext(alt)` | Check dense memo; push `MemoMark + Retry` onto bt stack; `jump` to `block[alt]` |
+| `Save(s)` | Push `SaveUndo` entry; store `pos` into `slots[s]`; fall through |
+| `KeepStart` | Store `pos` into `ctx.keep_pos`; fall through |
+| `CheckGroup` | Branch on `slots[slot] != u64::MAX` |
+| `LookStart` / `LookEnd` | Call `jit_lookaround` helper (see §4.5) |
+| `AtomicStart` / `AtomicEnd` | Call `jit_atomic_start` / `jit_atomic_end` helper |
+| `AbsenceStart` / `AbsenceEnd` | Ineligible — interpreter fallback |
+| `BackRef` / `BackRefRelBack` | Ineligible — interpreter fallback |
+| `Call` / `Ret` / `RetIfCalled` | Ineligible — interpreter fallback |
 
-### 4.3 Backtracking in native code
+### 4.3 Inlining strategy
 
-The backtrack stack (`BtStack`) is **not** compiled away.  It retains the same
-`Bt` enum entries used by the interpreter, but instead of holding a `pc:
-usize` in `Bt::Retry`, the JIT variant stores a **raw block address** (a
-`*const u8` into the compiled function) together with a snapshot of `slots`,
-`keep_pos`, and `call_stack`.
+Common instructions are emitted as inline Cranelift IR to avoid `extern "C"`
+call overhead:
 
-When the JIT code needs to backtrack (`fail` path), it calls a small Rust
-helper `bt_pop(bt_stack, slots, keep_pos, call_stack) -> *const u8` which:
+| Instruction | Inline IR |
+|-------------|-----------|
+| `Char(ch)` (ASCII) | `uload8` + `icmp` + conditional branch |
+| `AnyChar(dotall)` | bounds check + UTF-8 leading-byte length + optional newline test |
+| `Shorthand(sh)` (ASCII) | bounds check + ASCII range checks; non-ASCII falls back to helper |
+| `Class` / `ClassBack` (ASCII charsets) | inline range/char checks; POSIX always-ASCII classes inlined |
+| `ShorthandBack` (ASCII) | same as Shorthand |
+| `Save(slot)` | `store pos → slots_ptr[slot]` (with prior `SaveUndo` push) |
+| `KeepStart` | `store pos → ctx.keep_pos` |
+| `Anchor(StringStart\|StringEnd)` | `icmp pos == 0` / `icmp pos == text_len` |
+| `Jump(t)` | direct block jump |
+| Fork memo-check | dense array bounds check + `uload8` + bitmask test (inline) |
+| Fork memo-record (MemoMark pop) | dense array bounds check + `uload8` + OR-store (inline) |
 
-1. Pops entries off the bt stack (processing `AtomicBarrier` and `MemoMark`
-   exactly as the interpreter's `do_backtrack` does).
-2. Restores `slots`, `keep_pos`, and `call_stack` from the `Bt::Retry` payload.
-3. Returns the saved block address, or `null` on empty stack.
+Everything else calls the corresponding `jit_*` `extern "C"` helper (§4.5).
 
-Back in native code the JIT checks for `null` (return -1) and otherwise uses
-an **indirect tail-jump** through the returned address to resume execution.
-Cranelift supports indirect branches via `br_table` / `call_indirect`; we use
-a `call_indirect` with `tail` convention so no extra stack frame is created.
+### 4.4 Backtracking in native code
+
+The backtrack stack (`Vec<BtJit>`) is **not** compiled away.  It is held in
+`ExecScratch` (see §4.6) and passed to the JIT function via raw pointer fields
+in `JitExecCtx`.  The JIT function and all helpers maintain the raw-parts
+triple `(bt_data_ptr, bt_len, bt_cap)` consistently.
+
+`BtJit` is a flat 24-byte `repr(C)` struct with a stable layout so that both
+Rust helpers and inline Cranelift IR can access fields at known byte offsets:
+
+```
+offset  0 : tag  (u32) — 0=Retry, 1=SaveUndo, 2=AtomicBarrier, 3=MemoMark
+offset  4 : a    (u32) — block_id (Retry) / slot (SaveUndo) / fork_idx (MemoMark)
+offset  8 : b    (u64) — pos (Retry) / old_value (SaveUndo) / fork_pos (MemoMark)
+offset 16 : c    (u64) — keep_pos (Retry only); zero otherwise
+```
+
+When the JIT code needs to backtrack (fail path), control jumps to
+`bt_resume_block`, which:
+
+1. Pops entries from the bt stack inline:
+   - `MemoMark` entries record failures into the dense memo array (inline
+     OR-store if in-bounds; `jit_fork_memo_record` helper if growth needed).
+   - `SaveUndo` entries restore the saved slot value.
+   - `AtomicBarrier` entries call `jit_atomic_end_fail` to drain the group.
+   - The first `Retry` entry restores `pos`/`keep_pos` and dispatches to the
+     saved `block_id` via `br_table`.
+2. If the stack is empty, returns −1.
+
+This loop runs entirely in Cranelift IR for the common case where no growth or
+atomic drain is needed.
 
 ```
          ┌──── native block for pc=7  (a Char instruction) ──────────────────┐
-         │  load byte at text[pos]                                            │
-         │  cmp with 'a'                                                      │
-         │  je  → block[8]           ← success path                          │
-         │                                                                    │
-         │  call bt_pop(...)         ← failure path                          │
-         │  test rax, rax                                                     │
-         │  je  → return −1                                                   │
-         │  jmp rax                  ← tail-jump to saved block address       │
+         │  uload8 text[pos]                                                  │
+         │  icmp == 'a'                                                       │
+         │  brnz → block[8]         ← success path                           │
+         │  jump → bt_resume_block  ← failure path                           │
          └────────────────────────────────────────────────────────────────────┘
 ```
 
-### 4.4 Capture-delta undo log
+### 4.5 Capture-delta undo log
 
-To keep bt stack pushes allocation-free, `Save` instructions use an
-**undo-log** approach (the same strategy used by Onigmo and Oniguruma):
+To keep bt-stack pushes allocation-free, `Save` instructions use an
+**undo-log** approach:
 
-- **Before each slot write** the inlined `Save` block calls
-  `jit_push_save_undo(ctx, slot, old_value)`, which pushes a tiny
-  `BtJit::SaveUndo { slot: u32, old_value: u64 }` entry onto the bt stack
-  (~16 bytes, no heap allocation).
-- **`BtJit::Retry` no longer contains a `slots` field.**  It stores only
-  `{ block_id: u32, pos: u64, keep_pos: u64 }` — 20 bytes, entirely on the
-  stack.
-- **On backtrack** (`jit_bt_pop`), entries are popped one-by-one: `SaveUndo`
-  entries restore their slot, `AtomicBarrier` entries adjust `atomic_depth`,
-  `MemoMark` entries record failures, and the first `Retry` entry restores
-  `pos`/`keep_pos` and returns control to the saved block.
-- **`jit_atomic_end`** (committing an atomic group) discards `SaveUndo`
-  entries in the drain loop — the slots already hold the committed values.
+- **Before each slot write**, the inlined `Save` block pushes
+  `BtJit::SaveUndo { slot, old_value }` onto the bt stack (~16 bytes used,
+  `c` field zero).
+- **`BtJit::Retry` no longer contains a `slots` snapshot.**  It stores only
+  `{ block_id, pos, keep_pos }` — 24 bytes, no heap allocation.
+- **On backtrack**, `SaveUndo` entries restore their slot, `AtomicBarrier`
+  entries call the drain helper, `MemoMark` entries record failures, and the
+  first `Retry` restores `pos`/`keep_pos` and jumps to the saved block.
+- **`jit_atomic_end`** (committing an atomic group) drains `SaveUndo` entries
+  up to the `AtomicBarrier` — the slots already hold the committed values.
 
-### 4.5 Rust helpers for complex instructions
+### 4.6 `JitExecCtx` — the per-call context block
 
-The following instructions are **not** compiled to inline Cranelift IR but
-instead call back into Rust:
+All mutable state for one `exec_jit` invocation is packed into a single
+`#[repr(C)]` struct so that both Rust helpers and inline Cranelift IR can
+access fields at stable, compile-time-known byte offsets.
+
+```rust
+#[repr(C)]
+pub(crate) struct JitExecCtx {
+    // immutable for this exec call
+    text_ptr:           *const u8,  // offset   0
+    text_len:           u64,        // offset   8
+    search_start:       u64,        // offset  16
+    use_memo:           u64,        // offset  24  (0 or 1)
+    charsets_ptr:       *const (),  // offset  32
+    charsets_len:       u64,        // offset  40
+    prog_ptr:           *const (),  // offset  48  (for lookaround sub-exec)
+    prog_len:           u64,        // offset  56
+    num_groups:         u64,        // offset  64
+    // mutable capture state
+    slots_ptr:          *mut u64,   // offset  72  (u64::MAX = None)
+    slots_len:          u64,        // offset  80
+    keep_pos:           u64,        // offset  88  (u64::MAX = None)
+    // backtrack stack (raw parts of Vec<BtJit>)
+    bt_data_ptr:        *mut BtJit, // offset  96
+    bt_len:             u64,        // offset 104
+    bt_cap:             u64,        // offset 112
+    // memoization
+    memo_ptr:           *mut (),    // offset 120  (*mut MemoState)
+    memo_has_failures:  u64,        // offset 128  (1 = dense array has data)
+    // atomic group depth
+    atomic_depth:       u64,        // offset 136
+    bt_retry_count:     u64,        // offset 144  (# Retry entries on bt stack)
+    // dense fork-failure memo array (raw parts owned by ExecScratch)
+    fork_memo_data_ptr: *mut u8,    // offset 152
+    fork_memo_len:      u64,        // offset 160
+    fork_memo_cap:      u64,        // offset 168
+}
+```
+
+### 4.7 Rust helpers for complex instructions
+
+The following instructions call back into Rust `extern "C"` helpers:
 
 | Instruction group | Rust helper | Notes |
-|-------------------|------------|-------|
-| `AtomicStart` / `AtomicEnd` | `jit_atomic_start`, `jit_atomic_end` | Same drain logic as interpreter |
-| `LookStart` / `LookEnd` | `jit_lookaround` | Calls `exec_lookaround`; sub-execution runs in interpreter (see §6) |
-| `AbsenceStart` / `AbsenceEnd` | `jit_absence` | Calls `check_inner_in_range`; candidates pushed as `Bt::Retry` |
-| `BackRef` | `jit_backref` | Case-fold comparison; returns new `pos` or -1 |
-| `Prop` / `PropBack` | `jit_prop` | Unicode property check via `charset` module |
-| `FoldSeq` / `FoldSeqBack` | `jit_fold_seq` | Multi-codepoint fold advance/retreat |
+|-------------------|-------------|-------|
+| `AtomicStart` | `jit_atomic_start` | Increments `atomic_depth`; pushes `AtomicBarrier` |
+| `AtomicEnd` | `jit_atomic_end` | Drains `SaveUndo` entries up to barrier; decrements depth |
+| `LookStart` / `LookEnd` | `jit_lookaround` | Runs sub-execution via interpreter; caches result in `look_results` |
+| `Prop` / `PropBack` | `jit_prop` / `jit_prop_back` | Unicode property check via `charset` module |
+| `FoldSeq` / `FoldSeqBack` | `jit_fold_seq` / `jit_fold_seq_back` | Multi-codepoint case-fold advance/retreat |
+| Fork slow path | `jit_fork` / `jit_fork_next` | Used when `memo_has_failures == 1` and dense array check misses |
+| Memo growth | `jit_fork_memo_record` | Grows the dense array and records a failure |
+| Char non-ASCII | `jit_match_char` | Full Unicode codepoint comparison |
 
-All helpers are `extern "C"` functions whose addresses are embedded into the
-Cranelift module as external function symbols.
+All helpers are `unsafe extern "C"` functions declared in `src/jit/helpers.rs`
+and registered as named symbols in the `JITBuilder`.
 
-### 4.6 Memoization in JIT code
+### 4.8 Memoization in JIT code
 
-Memoization (Algorithms 5–7) is preserved:
+All three algorithms from Fujinami & Hasuo 2024 (arXiv:2401.12639) are
+preserved in JIT-compiled code:
 
-- **Algorithm 5 (fork failures)**: At each `Fork`/`ForkNext` block, before
-  pushing the bt entry, the JIT emits a call to `memo_check_fork(memo, pc,
-  pos, atomic_depth) -> bool`; if `true`, jump to the fail path directly
-  without pushing.  When `MemoMark` is consumed during `bt_pop`, the helper
-  calls `memo_record_fork(memo, fork_pc, fork_pos, atomic_depth)`.
-- **Algorithm 7 (depth-tagged failures)**: `atomic_depth` is maintained as a
-  native integer register variable; incremented/decremented by the atomic
-  helpers.
-- **Algorithm 6 (lookaround cache)**: Handled entirely inside the
-  `jit_lookaround` Rust helper, which uses the same `look_results` HashMap.
+**Algorithm 5 (fork failures — dense array)**: Each `Fork`/`ForkNext`
+instruction has a compact `fork_idx` (0-based index among all forks in the
+program).  Failures are stored in a dense `Vec<u8>` indexed by
+`fork_idx × (text_len + 1) + pos`; each byte is a bitmask where bit `d` means
+"failed at atomic depth `d`".
 
-When `use_memo = false` (pattern contains backrefs / `CheckGroup`), all memo
-calls are skipped — `memo_check_fork` returns `false` unconditionally and
-`memo_record_fork` is a no-op.
+- **Failure check (inline)**: at each Fork, if `memo_has_failures == 1`, the
+  inline IR reads `data[fork_idx × stride + pos]`, applies the depth bitmask,
+  and jumps directly to `bt_resume_block` on a cache hit — no helper call.
+- **Failure record (inline)**: when `bt_resume_block` pops a `MemoMark` entry,
+  it OR-stores the depth bit into `data[fork_idx × stride + fork_pos]` inline,
+  calling `jit_fork_memo_record` only if the array needs to grow.
+- When `use_memo == false` (pattern contains back-references), all memo checks
+  are skipped.
+
+**Algorithm 7 (depth-tagged failures)**: `atomic_depth` is maintained as a
+field in `JitExecCtx`, incremented/decremented by the atomic helpers.  The
+depth bitmask in the dense array ensures failures inside atomic groups are not
+reused in less-constrained outer contexts.
+
+**Algorithm 6 (lookaround cache)**: Handled entirely inside the
+`jit_lookaround` Rust helper, which uses the same `look_results` HashMap as
+the interpreter.
 
 ---
 
 ## 5. Eligibility and Fallback
 
 Not all `Vec<Inst>` programs are JIT-compiled.  The eligibility check runs
-immediately after `compile()` returns a `CompiledProgram`:
+immediately after `compile()` returns:
 
 ```
-JIT-ineligible if any of:
-  • program contains BackRef, BackRefRelBack    → interpreter (memo disabled anyway)
-  • program contains AbsenceStart / AbsenceEnd  → Phase 1: interpreter; Phase 2: JIT
-  • program contains LookStart / LookEnd        → Phase 1: interpreter for sub-exec;
-                                                   Phase 2: JIT outer + interpreter sub-exec
-  • cranelift-jit is unavailable (feature gate) → interpreter
+JIT-ineligible if any instruction is:
+  • BackRef / BackRefRelBack     → memo disabled anyway; outcome depends on captured text
+  • Call / Ret / RetIfCalled     → subexpression calls (recursive patterns)
+  • AbsenceStart / AbsenceEnd    → absence operator
 ```
 
-In all ineligible cases `Regex::new` stores the `CompiledProgram` as-is and
-`find` uses the existing interpreter path.  No API change.
+All other instructions — including `LookStart`/`LookEnd`, `FoldSeq`/
+`FoldSeqBack`, `AtomicStart`/`AtomicEnd`, `CheckGroup`, `Prop`, etc. — are
+JIT-eligible.
 
-In Phase 1 (initial release) the eligibility criteria are conservative:
-
-- Eligible: patterns whose programs contain only `Match`, `Char`, `AnyChar`,
-  `Class`, `Shorthand`, `Anchor`, `Jump`, `Fork`, `ForkNext`, `Save`,
-  `KeepStart`, `RetIfCalled`, `Call`, `AtomicStart`, `AtomicEnd`,
-  `CheckGroup`, `LookStart`, `LookEnd`.
-- Ineligible (Phase 1): `BackRef`, `AbsenceStart`, `FoldSeq` (deferred to
-  Phase 2).
+In all ineligible cases `Regex::new` stores the `CompiledProgram` without a
+`JitModule` and `find` uses the existing interpreter path.  No API change.
 
 ---
 
@@ -269,13 +328,12 @@ recursion structure (depth tracking, isolated `State`).
 
 The `jit_lookaround` helper:
 
-1. Extracts the current `slots` / `keep_pos` / `call_stack` into a Rust-owned
-   `State`.
+1. Extracts the current `slots` / `keep_pos` into a Rust-owned `State`.
 2. Calls the existing `exec_lookaround(ctx, lk_pc, pos, &mut state, depth,
    memo)`.
 3. On success, writes the updated `State` back through the pointer arguments
    and returns the post-lookaround `pos`.
-4. On failure, returns -1 and the JIT failure path calls `bt_pop`.
+4. On failure, returns −1 and the JIT failure path jumps to `bt_resume_block`.
 
 This keeps the correctness proof of lookarounds entirely within the existing
 interpreter code, at the cost of a function call per lookaround evaluation (no
@@ -285,191 +343,198 @@ change from the interpreter baseline).
 
 ## 7. `JitModule` and Lifetime
 
-A `JitModule` wraps the Cranelift `JITModule` and holds:
+`JitModule` wraps the Cranelift `JITModule` and holds:
 
 ```rust
-struct JitModule {
-    module:    cranelift_jit::JITModule,
-    func_ptr:  unsafe extern "C" fn(/* … */) -> isize,
-    // The JITModule owns the memory; func_ptr is valid for module's lifetime.
+pub(crate) struct JitModule {
+    _module:  cranelift_jit::JITModule,   // owns the executable memory
+    func_ptr: unsafe extern "C" fn(i64, i64) -> i64,
 }
+
+// SAFETY: the compiled function is stateless (all mutable state is accessed
+// through the ctx_ptr argument) and the JITModule memory is immutable after
+// finalize_definitions().
+unsafe impl Send for JitModule {}
+unsafe impl Sync for JitModule {}
 ```
 
-`JitModule` is stored inside `CompiledProgram` behind an `Option<Arc<JitModule>>`
-(or `Option<Box<JitModule>>` for single-threaded use).  `Arc` allows `Regex`
-to be `Clone` without recompiling.
-
-`JITModule` is not `Send` by default; we wrap it in a `SendWrapper` guard
-(checked at compile time via a `Sync` bound on `JitModule`), or alternatively
-use `cranelift-object` to emit a `.o` file and mmap it — though this is more
-complex.  The simplest approach for Phase 1 is to make `Regex` `!Send` when
-the `jit` feature is enabled; this can be relaxed in Phase 2 using
-`cranelift-jit`'s `unsafe impl Send` (the memory is immutable after
-finalisation).
+`JitModule` is stored inside `CompiledProgram` as `Option<Arc<JitModule>>`.
+`Arc` allows `Regex` to be `Clone` without recompiling.  `Send + Sync` impls
+make `Regex: Send + Sync` even with the `jit` feature enabled.
 
 ---
 
 ## 8. Integration with the Public API
 
 No public API changes are required.  The selection between JIT and interpreter
-is internal to `CompiledRegex::find`:
+is internal to `CompiledRegex`.
+
+### `find_with_scratch`
+
+The core execution method is:
 
 ```rust
-fn find(&self, text: &str, start_pos: usize) -> Option<Match> {
-    // pre-filters (RequiredChar, StartStrategy) are unchanged
-    // …
-    #[cfg(feature = "jit")]
-    if let Some(jit) = &self.jit_module {
-        return find_jit(jit, text, start_pos, &self.program);
-    }
-    find_interp(/* … */)
+pub fn find_with_scratch(
+    &self,
+    text: &str,
+    start_pos: usize,
+    scratch: &mut ExecScratch,
+) -> Option<(usize, usize, Vec<Option<usize>>)>;
+```
+
+It accepts a caller-owned `ExecScratch` so that the backtrack stack and
+fork-memo array can be **reused across successive calls** without
+re-allocation.
+
+`find()` is a thin wrapper that allocates a temporary `ExecScratch`:
+
+```rust
+pub fn find(&self, text: &str, start_pos: usize) -> Option<(…)> {
+    let mut scratch = ExecScratch::new();
+    self.find_with_scratch(text, start_pos, &mut scratch)
 }
 ```
 
-`Regex::new` gains an extra step after `compile()`:
+### Persistent `ExecScratch` in iterators
+
+`FindIter` and `CapturesIter` hold a persistent `ExecScratch` field, allocated
+once when the iterator is created and reused for every `find_with_scratch`
+call.  This amortises the cost of the dense fork-memo array (which can be up
+to `fork_count × (text_len + 1)` bytes) across the entire scan, rather than
+allocating and zeroing it on every `find()` call.
 
 ```rust
-#[cfg(feature = "jit")]
-let jit_module = jit::try_compile(&compiled_program);
+// lib.rs
+pub struct FindIter<'r, 't> {
+    regex:   &'r Regex,
+    text:    &'t str,
+    pos:     usize,
+    scratch: vm::ExecScratch,  // persists across next() calls
+}
 ```
 
-If JIT compilation fails (unsupported instruction set, out of memory, or
-ineligible program) the `Option` is `None` and the interpreter runs.
+### `ExecScratch` layout
+
+```rust
+pub(crate) struct ExecScratch {
+    pub bt:             Vec<BtJit>, // JIT backtrack stack; reused across calls
+    pub slots:          Vec<u64>,   // capture slots buffer; resized once
+    // Dense fork-failure memo array stored as raw parts to avoid Vec
+    // take/forget/reconstruct overhead on every exec_jit call.
+    pub fork_memo_ptr:  *mut u8,
+    pub fork_memo_len:  usize,
+    pub fork_memo_cap:  usize,
+}
+```
+
+The `fork_memo` allocation is lazily initialised on the first backtracking
+failure that triggers `jit_fork_memo_record`.  All subsequent calls reuse the
+same allocation; entries already recorded remain valid because fork-failure
+facts are position-based and independent of the search start.
+
+When the `jit` feature is disabled, `ExecScratch` is a zero-sized stub.
 
 ---
 
-## 9. Implementation Plan
+## 9. Implementation History
 
-The work is divided into four phases.  Each phase delivers a working, tested,
-merged increment.
+The JIT was implemented incrementally in seven phases.
 
-### Phase 1 — Core JIT infrastructure (no lookarounds, no absence)
+### Phase 1 — Core JIT infrastructure
 
-**Scope**: JIT compilation of programs that contain only: `Match`, `Char`,
-`AnyChar`, `Class`, `Shorthand`, `Anchor`, `Jump`, `Fork`, `ForkNext`,
-`Save`, `KeepStart`, `Call`, `RetIfCalled`, `AtomicStart`, `AtomicEnd`,
-`CheckGroup`.
+Established the Cranelift backend, `JitModule`, eligibility check, and
+`extern "C"` helpers for all instructions.  `BtJit::Retry` stored a full
+`slots` snapshot; every `Fork` allocated on the heap.
 
-**Tasks**:
+### Phase 2 — Character instruction inlining
 
-1. Add `cranelift-jit`, `cranelift-codegen`, `cranelift-frontend` as optional
-   dependencies under the `jit` feature flag.
-2. Create `src/jit.rs` with:
-   - `JitModule` struct and `try_compile(prog: &CompiledProgram) -> Option<JitModule>`.
-   - `is_eligible(prog: &CompiledProgram) -> bool`.
-   - Cranelift IR builder: one `Block` per PC; translate eligible instructions.
-   - `BtStack` JIT variant: `Vec<BtJit>` where `BtJit::Retry` stores a
-     `*const u8` block address instead of `usize` pc.
-3. Implement `extern "C"` helpers: `bt_pop`, `memo_check_fork`,
-   `memo_record_fork`, `jit_backref` (stub — returns -1; Phase 1 patterns
-   don't use it).
-4. Integrate into `CompiledRegex::find` behind `#[cfg(feature = "jit")]`.
-5. Add a test gate: run the full existing test suite twice — once without the
-   feature flag, once with — and assert identical results.
-6. Add a `bench_jit` benchmark group mirroring existing benchmarks to measure
-   JIT vs. interpreter.
+Inlined `Char` (ASCII), `AnyChar`, `Shorthand` (ASCII fast-path), `Save`,
+and `Anchor(StringStart|StringEnd)` as Cranelift IR, eliminating the
+corresponding `extern "C"` calls.
 
-**Acceptance criteria**: all existing tests pass with `--features jit`; no
-regression without the flag; JIT is measurably faster (≥ 1.5×) on the
-`quantifier/greedy_match_500` and `literal/match_mid_1k` benchmarks.
+### Phase 3 — `CharClass` inlining
 
----
+Inlined `CharClass`/`ClassBack` for charsets whose items are all ASCII `Char`
+or `Range` values (no negation, no Unicode escapes).
 
-### Phase 2 — Lookarounds and `FoldSeq`
+### Phase 4 — POSIX and `ShorthandBack` inlining
 
-**Scope**: Extend JIT eligibility to include `LookStart`/`LookEnd` and
-`FoldSeq`/`FoldSeqBack`.
+Extended `CharClass`/`ClassBack` inline to POSIX always-ASCII classes and
+ASCII-safe `Shorthand` items; inlined `ShorthandBack`.
 
-**Tasks**:
+### Phase 5 — Capture-delta undo log
 
-1. Implement `jit_lookaround` and `jit_look_cache_check` Rust helpers
-   (described in §6).
-2. Implement `jit_fold_seq` and `jit_fold_seq_back` helpers delegating to the
-   existing `fold_advance` / `fold_retreat` functions.
-3. Extend `is_eligible` to permit these instructions.
-4. Extend the block-builder to emit `call_indirect` into the helpers for
-   `LookStart` and `FoldSeq` blocks.
-5. Re-run benchmarks and update `doc/BENCHMARKS.md`.
+Replaced per-`Fork` `slots` snapshots with an **undo-log**: `Save` pushes a
+`BtJit::SaveUndo` entry before each slot write, and `BtJit::Retry` shrinks
+from holding a heap-allocated `Vec<Option<usize>>` to three scalar fields
+(24 bytes total).  This eliminated the largest remaining per-fork allocation.
 
-**Acceptance criteria**: `case_insensitive/match` benchmark improves; existing
-lookaround integration tests pass under `--features jit`.
+### Phase 6 — Inline fork push and bt-pop fast path
 
----
+Inlined the `Fork`/`ForkNext` fast path (push `MemoMark + Retry` directly in
+Cranelift IR; no helper call for the common case).  Inlined the bt-pop loop
+for `Retry` peek-and-pop.  Hoisted the `Vec<BtJit>` allocation into
+`ExecScratch` so it is reused across `exec_jit` calls.  Introduced the 24-byte
+`repr(C)` `BtJit` layout with zero padding waste.
 
-### Phase 3 — Absence operator
+### Phase 7 — Dense fork-memo array; `FoldSeq` eligibility; persistent scratch
 
-**Scope**: JIT-compile programs containing `AbsenceStart`/`AbsenceEnd`.
+**Dense array**: replaced the `HashMap<u64, u8>` fork-failure cache with a
+`Vec<u8>` bitmask indexed by `fork_idx × (text_len + 1) + pos`.  Both the
+failure check (at every Fork) and the failure record (when a `MemoMark` is
+popped) are now fully inlined in Cranelift IR — zero `extern "C"` calls for
+the steady-state pathological-pattern case.
 
-**Tasks**:
+**`FoldSeq`/`FoldSeqBack` eligibility**: added `jit_fold_seq` and
+`jit_fold_seq_back` helpers and removed these instructions from the ineligible
+list.  Case-insensitive patterns are now JIT-compiled.
 
-1. Implement `jit_absence` helper that:
-   a. Calls `check_inner_in_range` (interpreter) to collect valid end
-      positions.
-   b. Pushes `BtJit::Retry` entries (with block addresses derived from the
-      outer continuation's first block) onto the `BtStack`.
-   c. Returns the address of the first (longest) candidate block.
-2. Extend `is_eligible` to permit `AbsenceStart`/`AbsenceEnd`.
-3. Add dedicated absence benchmarks.
+**`KeepStart` inline**: emitted as a single store in Cranelift IR.
 
-**Acceptance criteria**: all absence-related integration tests pass under
-`--features jit`.
+**Persistent `ExecScratch`**: `FindIter` and `CapturesIter` hold a persistent
+`ExecScratch` that survives across successive `find()` calls, amortising the
+fork-memo array allocation across the entire scan.
 
 ---
 
-### Phase 4 — Thread safety and release
+## 10. Measured Performance
 
-**Scope**: Make `Regex` implement `Send + Sync` with the `jit` feature, and
-finalise documentation.
+The table below gives measured median times (x86-64, Apple Silicon M-series via
+Rosetta, Criterion 0.5).  See `doc/BENCHMARKS.md` for the full table and
+per-phase breakdown.
 
-**Tasks**:
+| Benchmark | Interpreter | JIT Phase 7 | Speedup |
+|-----------|-------------|-------------|---------|
+| `quantifier/greedy_match_500` | 9.17 µs | 1.83 µs | **5.01×** |
+| `pathological/10` | 4.39 µs | 1.88 µs | **2.33×** |
+| `pathological/15` | 9.94 µs | 3.97 µs | **2.50×** |
+| `pathological/20` | 17.7 µs | 6.93 µs | **2.55×** |
+| `charclass/alpha_iter` | 31.2 µs | 6.96 µs | **4.48×** |
+| `charclass/posix_digit_iter` | 24.4 µs | 8.99 µs | **2.71×** |
+| `find_iter_scale/1000` | 26.7 µs | 16.5 µs | **1.62×** |
+| `email/find_all` | 3.25 µs | 1.79 µs | **1.82×** |
+| `real_world/title_name` | 139.5 µs | 135 µs | **1.03×** |
+| `case_insensitive/match` | 14.0 µs | 14.2 µs | ≈1.00× |
 
-1. Audit `JITModule` memory: after `module.finalize_definitions()` the
-   generated code is immutable; add `unsafe impl Send for JitModule` and
-   `unsafe impl Sync for JitModule` with a safety comment.
-2. Store `JitModule` in `Arc<JitModule>` inside `CompiledProgram` so `Clone`
-   does not recompile.
-3. Add a `#[test] fn jit_is_send_sync()` compile-time assertion.
-4. Update `doc/DESIGN.md` to remove the "No JIT" limitation note and add a
-   cross-reference to this document.
-5. Update `doc/BENCHMARKS.md` with final JIT vs. interpreter numbers across
-   all benchmark groups.
-6. Tag a `0.2.0` release.
-
----
-
-## 10. Expected Performance Impact
-
-The table below gives rough estimates based on PCRE2-JIT literature and the
-structure of Aigumo's instruction set.  Actual numbers will be measured in
-Phase 1 and updated in `doc/BENCHMARKS.md`.
-
-| Benchmark | Interpreter | JIT (estimated) | Reason |
-|-----------|-------------|-----------------|--------|
-| `literal/match_mid_1k` | ~98 ns | ~30–50 ns | Char run compiled to tight cmp loop |
-| `quantifier/greedy_match_500` | ~8 µs | ~2–4 µs | Fork/retry loop without dispatch |
-| `pathological/n=20` | ~18 µs (memo) | ~6–10 µs | Same O(n²) algo, less per-step cost |
-| `email/find_all` | ~3.3 µs | ~1–2 µs | Many Fork/Char; JIT fuses them |
-| `case_insensitive/match` (Phase 2) | ~14 µs | ~5–8 µs | `FoldSeq` inlined via helper |
-
-Patterns containing `BackRef` are unaffected (interpreter used).
+Patterns containing `BackRef` or subexpression calls are unaffected
+(interpreter used).
 
 ---
 
-## 11. File Layout After Implementation
+## 11. File Layout
 
 ```
 src/
-  jit.rs           ← new: JIT compiler (feature-gated)
   jit/
-    builder.rs     ← new: Cranelift IR construction
-    helpers.rs     ← new: extern "C" Rust helpers
-    bt_stack.rs    ← new: JIT backtrack stack types
-  lib.rs           ← add: JitModule field in CompiledProgram; dispatch in find()
-  vm.rs            ← unchanged (interpreter remains as fallback)
+    mod.rs       — JitModule; is_eligible(); try_compile(); exec_jit()
+    builder.rs   — Cranelift IR construction (one Block per PC)
+    helpers.rs   — extern "C" Rust helpers; register_symbols()
+  vm.rs          — ExecScratch; BtJit; JitExecCtx; find_with_scratch()
+  lib.rs         — FindIter/CapturesIter with persistent ExecScratch
 doc/
-  JIT.md           ← this file
-  DESIGN.md        ← updated: remove "No JIT" note; add cross-reference
-  BENCHMARKS.md    ← updated: Phase 1 & 4 results added
+  JIT.md         — this file
+  DESIGN.md      — overall architecture; cross-references JIT.md
+  BENCHMARKS.md  — per-phase benchmark comparison tables
 ```
 
 ---

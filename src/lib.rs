@@ -57,6 +57,10 @@ impl Regex {
             re: self,
             text,
             pos: 0,
+            #[cfg(feature = "jit")]
+            scratch: vm::ExecScratch::new(),
+            #[cfg(not(feature = "jit"))]
+            scratch: vm::ExecScratch,
         }
     }
 
@@ -78,6 +82,10 @@ impl Regex {
             re: self,
             text,
             pos: 0,
+            #[cfg(feature = "jit")]
+            scratch: vm::ExecScratch::new(),
+            #[cfg(not(feature = "jit"))]
+            scratch: vm::ExecScratch,
         }
     }
 }
@@ -173,6 +181,7 @@ pub struct FindIter<'r, 't> {
     re: &'r Regex,
     text: &'t str,
     pos: usize,
+    scratch: vm::ExecScratch,
 }
 
 impl<'r, 't> Iterator for FindIter<'r, 't> {
@@ -181,7 +190,10 @@ impl<'r, 't> Iterator for FindIter<'r, 't> {
         if self.pos > self.text.len() {
             return None;
         }
-        let (start, end, _) = self.re.inner.find(self.text, self.pos)?;
+        let (start, end, _) = self
+            .re
+            .inner
+            .find_with_scratch(self.text, self.pos, &mut self.scratch)?;
         // advance past zero-length matches
         self.pos = if end > start {
             end
@@ -200,6 +212,7 @@ pub struct CapturesIter<'r, 't> {
     re: &'r Regex,
     text: &'t str,
     pos: usize,
+    scratch: vm::ExecScratch,
 }
 
 impl<'r, 't> Iterator for CapturesIter<'r, 't> {
@@ -208,7 +221,10 @@ impl<'r, 't> Iterator for CapturesIter<'r, 't> {
         if self.pos > self.text.len() {
             return None;
         }
-        let (start, end, caps) = self.re.inner.find(self.text, self.pos)?;
+        let (start, end, caps) = self
+            .re
+            .inner
+            .find_with_scratch(self.text, self.pos, &mut self.scratch)?;
         self.pos = if end > start {
             end
         } else {

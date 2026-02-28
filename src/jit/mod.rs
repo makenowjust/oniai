@@ -46,9 +46,6 @@ pub(crate) fn is_eligible(prog: &[Inst]) -> bool {
             // Back-references — memo disabled; outcome depends on captured text.
             Inst::BackRef(..)
             | Inst::BackRefRelBack(..)
-            // Multi-codepoint Unicode case folding — Phase 2.
-            | Inst::FoldSeq(_)
-            | Inst::FoldSeqBack(_)
             // Subexpression calls — Phase 2.
             | Inst::Call(_)
             | Inst::Ret
@@ -70,16 +67,22 @@ pub(crate) fn try_compile(
     prog: &[Inst],
     charsets: &[CharSet],
     use_memo: bool,
+    fork_pc_indices: &[Option<u32>],
 ) -> Option<JitModule> {
     if !is_eligible(prog) {
         return None;
     }
 
-    let module = build_module(prog, charsets, use_memo).ok()?;
+    let module = build_module(prog, charsets, use_memo, fork_pc_indices).ok()?;
     Some(module)
 }
 
-fn build_module(prog: &[Inst], charsets: &[CharSet], use_memo: bool) -> Result<JitModule, String> {
+fn build_module(
+    prog: &[Inst],
+    charsets: &[CharSet],
+    use_memo: bool,
+    fork_pc_indices: &[Option<u32>],
+) -> Result<JitModule, String> {
     // ---- ISA / flags ----
     let mut flag_builder = settings::builder();
     flag_builder.set("use_colocated_libcalls", "false").unwrap();
@@ -99,7 +102,7 @@ fn build_module(prog: &[Inst], charsets: &[CharSet], use_memo: bool) -> Result<J
     let mut module = JITModule::new(jit_builder);
 
     // ---- compile function ----
-    let func_id = builder::build(&mut module, prog, charsets, use_memo)?;
+    let func_id = builder::build(&mut module, prog, charsets, use_memo, fork_pc_indices)?;
 
     module
         .finalize_definitions()
@@ -132,7 +135,12 @@ pub(crate) fn exec_jit(
     use_memo: bool,
     memo: &mut MemoState,
     scratch: &mut ExecScratch,
+    fork_pc_indices: &[Option<u32>],
+    fork_pc_count: u32,
 ) -> Option<(usize, usize, Vec<Option<usize>>)> {
+    let _ = fork_pc_indices; // used only at compile time (build_module)
+    let _ = fork_pc_count; // used only at compile time (build_module)
+
     // Reuse scratch buffers — clear bt and reset slots instead of allocating fresh.
     // On the first call slots is empty (len=0, no heap alloc yet); resize allocates
     // exactly once.  On subsequent calls it avoids the allocation entirely.
@@ -148,6 +156,13 @@ pub(crate) fn exec_jit(
     let bt_raw_cap = scratch.bt.capacity();
     let old_bt = std::mem::take(&mut scratch.bt);
     std::mem::forget(old_bt);
+
+    // Lend fork_memo raw parts to ctx.  No take/forget needed because ExecScratch
+    // owns the allocation via raw parts (not a Vec), so there is no Vec destructor
+    // to accidentally double-free on realloc.  We simply read the current raw parts,
+    // pass them to ctx, and update scratch after the call if they changed.
+    let fork_memo_raw_ptr = scratch.fork_memo_ptr;
+    let fork_memo_raw_cap = scratch.fork_memo_cap;
 
     let mut ctx = JitExecCtx {
         text_ptr: text.as_ptr(),
@@ -169,16 +184,31 @@ pub(crate) fn exec_jit(
         memo_has_failures: if memo.fork_failures.is_empty() { 0 } else { 1 },
         atomic_depth: 0,
         bt_retry_count: 0,
+        fork_memo_data_ptr: fork_memo_raw_ptr,
+        fork_memo_len: scratch.fork_memo_len as u64,
+        fork_memo_cap: fork_memo_raw_cap as u64,
     };
 
     let result = unsafe { (jit.func_ptr)(&mut ctx as *mut JitExecCtx as i64, start_pos as i64) };
 
     // Reconstruct scratch.bt from ctx's raw parts (may have changed due to realloc).
     // SAFETY: ctx.bt_data_ptr/bt_len/bt_cap are maintained correctly by all helpers.
-    scratch.bt = unsafe {
-        Vec::from_raw_parts(ctx.bt_data_ptr, ctx.bt_len as usize, ctx.bt_cap as usize)
-    };
+    scratch.bt =
+        unsafe { Vec::from_raw_parts(ctx.bt_data_ptr, ctx.bt_len as usize, ctx.bt_cap as usize) };
     scratch.bt.clear(); // prepare for next use
+
+    // Update scratch's fork_memo raw parts if the JIT helper grew the allocation.
+    // SAFETY: ctx.fork_memo_data_ptr/len/cap are maintained correctly by all helpers.
+    // No reconstruction needed (scratch already holds the raw parts directly).
+    if use_memo && (ctx.fork_memo_cap != fork_memo_raw_cap as u64) {
+        // Allocation was reallocated by jit_fork_memo_record: update scratch raw parts.
+        scratch.fork_memo_ptr = ctx.fork_memo_data_ptr;
+        scratch.fork_memo_len = ctx.fork_memo_len as usize;
+        scratch.fork_memo_cap = ctx.fork_memo_cap as usize;
+    } else if use_memo {
+        // No reallocation, but len may have increased (new failures recorded).
+        scratch.fork_memo_len = ctx.fork_memo_len as usize;
+    }
 
     if result < 0 {
         return None;

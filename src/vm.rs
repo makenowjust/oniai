@@ -375,11 +375,14 @@ pub(crate) enum LookCacheEntry {
 /// through the entire `exec` / `exec_lookaround` / `check_inner_in_range`
 /// call tree.
 pub(crate) struct MemoState {
-    /// Fork failure depths (Algorithms 5 & 7).
-    /// Maps `memo_key(fork_pc, fork_pos)` → minimum atomic depth at which
-    /// both alternatives of that fork were exhausted.  An entry with depth `d`
-    /// may be reused whenever the current `atomic_depth >= d`.
-    pub(crate) fork_failures: HashMap<u64, usize>,
+    /// Fork failure depth bitmasks (Algorithms 5 & 7).
+    /// Maps `memo_key(fork_pc, fork_pos)` → bitmask where bit `d` is set when
+    /// both alternatives of that fork were exhausted at atomic depth `d`.
+    /// Because `max_atomic_depth` is bounded at compile time (≤ 7 in practice),
+    /// a `u8` bitmask suffices.  A cached entry applies whenever
+    /// `(bitmask & depth_mask(current_depth)) != 0`, where
+    /// `depth_mask(d) = (1u8 << (d+1)) - 1` (bits 0..=d).
+    pub(crate) fork_failures: HashMap<u64, u8>,
     /// Lookaround result cache (Algorithm 6).
     /// Maps `memo_key(lk_pc, lk_pos)` → whether the lookaround body matched
     /// and, for positive lookaheads, the capture-slot changes it produced.
@@ -451,12 +454,15 @@ fn do_backtrack(
             Some(Bt::MemoMark { fork_pc, fork_pos }) => {
                 if use_memo {
                     let key = memo_key(fork_pc, fork_pos);
-                    // Keep the minimum depth: a lower depth is more general
-                    // and can be reused in more contexts.
+                    // Set the bit for the current atomic_depth.  A lower depth
+                    // is more general, so a failure at depth 0 covers depth 1+.
+                    // Using a bitmask lets us record all depths seen without a
+                    // min() operation and maps naturally to the JIT dense array.
+                    let bit = 1u8 << (*atomic_depth).min(7);
                     memo.fork_failures
                         .entry(key)
-                        .and_modify(|d| *d = (*d).min(*atomic_depth))
-                        .or_insert(*atomic_depth);
+                        .and_modify(|b| *b |= bit)
+                        .or_insert(bit);
                 }
                 continue;
             }
@@ -659,11 +665,11 @@ pub(crate) fn exec(
             Inst::Fork(alt) => {
                 if ctx.use_memo {
                     let key = memo_key(pc, pos);
-                    // Reuse a recorded failure if it was recorded at a depth ≤
-                    // current atomic_depth (Algorithm 7: a failure under fewer
-                    // atomic constraints is valid under more constraints too).
-                    if let Some(&d) = memo.fork_failures.get(&key)
-                        && d <= atomic_depth
+                    // A cached failure applies when any bit 0..=atomic_depth is
+                    // set in the bitmask: depth_mask = (1 << (depth+1)) - 1.
+                    let depth_mask = (1u16 << (atomic_depth + 1)).wrapping_sub(1) as u8;
+                    if let Some(&bitmask) = memo.fork_failures.get(&key)
+                        && bitmask & depth_mask != 0
                     {
                         fail!();
                     }
@@ -681,8 +687,9 @@ pub(crate) fn exec(
             Inst::ForkNext(alt) => {
                 if ctx.use_memo {
                     let key = memo_key(pc, pos);
-                    if let Some(&d) = memo.fork_failures.get(&key)
-                        && d <= atomic_depth
+                    let depth_mask = (1u16 << (atomic_depth + 1)).wrapping_sub(1) as u8;
+                    if let Some(&bitmask) = memo.fork_failures.get(&key)
+                        && bitmask & depth_mask != 0
                     {
                         fail!();
                     }
@@ -999,7 +1006,7 @@ fn is_word_char(c: char) -> bool {
 
 /// Advance through `text[start..]`, consuming chars until their accumulated
 /// Unicode case fold equals `folded`.  Returns the new position on success.
-fn fold_advance(text: &str, start: usize, folded: &[char]) -> Option<usize> {
+pub(crate) fn fold_advance(text: &str, start: usize, folded: &[char]) -> Option<usize> {
     if folded.is_empty() {
         return Some(start);
     }
@@ -1027,7 +1034,7 @@ fn fold_advance(text: &str, start: usize, folded: &[char]) -> Option<usize> {
 /// until their accumulated Unicode case fold equals `folded` (which was built
 /// left-to-right, so we prepend each new char's fold).  Returns the new
 /// (lower) position on success.
-fn fold_retreat(text: &str, mut pos: usize, folded: &[char]) -> Option<usize> {
+pub(crate) fn fold_retreat(text: &str, mut pos: usize, folded: &[char]) -> Option<usize> {
     if folded.is_empty() {
         return Some(pos);
     }
@@ -1244,6 +1251,31 @@ fn compute_required_char(prog: &[Inst]) -> Option<char> {
     None
 }
 
+/// Map each `Fork`/`ForkNext` instruction to a compact index 0..num_forks.
+/// Returns `true` when the program could exhibit exponential backtracking.
+///
+/// A pattern is potentially pathological when some backward `Jump` (loop)
+/// contains two or more `Fork`/`ForkNext` instructions in its body.  That
+/// means the loop can revisit the same fork position, potentially creating
+/// an exponential number of backtrack states.
+///
+/// When this returns `false`, memoization provides no speed benefit and can
+/// be disabled entirely — eliminating the HashMap/dense-array overhead for
+/// the common case (non-pathological patterns like `a+`, `a?b`, etc.).
+/// Returns a `Vec<Option<u32>>` of the same length as `prog`.
+#[cfg(feature = "jit")]
+pub(crate) fn compute_fork_pc_indices(prog: &[Inst]) -> Vec<Option<u32>> {
+    let mut indices = vec![None; prog.len()];
+    let mut idx: u32 = 0;
+    for (pc, inst) in prog.iter().enumerate() {
+        if matches!(inst, Inst::Fork(_) | Inst::ForkNext(_)) {
+            indices[pc] = Some(idx);
+            idx += 1;
+        }
+    }
+    indices
+}
+
 pub struct CompiledRegex {
     prog: Vec<Inst>,
     charsets: Vec<CharSet>,
@@ -1261,6 +1293,13 @@ pub struct CompiledRegex {
     /// the program is eligible for JIT compilation).
     #[cfg(feature = "jit")]
     jit: Option<crate::jit::JitModule>,
+    /// Maps each PC to its compact fork index (0..num_forks), or `None` for
+    /// non-fork instructions.  Used by the JIT dense-memo optimization.
+    #[cfg(feature = "jit")]
+    fork_pc_indices: Vec<Option<u32>>,
+    /// Total number of Fork/ForkNext instructions.  Used to size the dense memo array.
+    #[cfg(feature = "jit")]
+    fork_pc_count: u32,
 }
 
 impl CompiledRegex {
@@ -1288,7 +1327,17 @@ impl CompiledRegex {
         });
 
         #[cfg(feature = "jit")]
-        let jit = crate::jit::try_compile(&prog_data.prog, &prog_data.charsets, use_memo);
+        let fork_pc_indices = compute_fork_pc_indices(&prog_data.prog);
+        #[cfg(feature = "jit")]
+        let fork_pc_count = fork_pc_indices.iter().filter(|x| x.is_some()).count() as u32;
+
+        #[cfg(feature = "jit")]
+        let jit = crate::jit::try_compile(
+            &prog_data.prog,
+            &prog_data.charsets,
+            use_memo,
+            &fork_pc_indices,
+        );
 
         Ok(CompiledRegex {
             prog: prog_data.prog,
@@ -1300,6 +1349,10 @@ impl CompiledRegex {
             use_memo,
             #[cfg(feature = "jit")]
             jit,
+            #[cfg(feature = "jit")]
+            fork_pc_indices,
+            #[cfg(feature = "jit")]
+            fork_pc_count,
         })
     }
 
@@ -1323,6 +1376,8 @@ impl CompiledRegex {
                 self.use_memo,
                 memo,
                 scratch,
+                &self.fork_pc_indices,
+                self.fork_pc_count,
             );
         }
         let _ = scratch; // unused in interpreter path
@@ -1343,7 +1398,17 @@ impl CompiledRegex {
 
     /// Find the leftmost match starting search from `start_pos`.
     /// Returns `(match_start, match_end, capture_slots)`.
-    pub fn find(&self, text: &str, start_pos: usize) -> Option<(usize, usize, Vec<Option<usize>>)> {
+    ///
+    /// `scratch` is a reusable buffer passed in by the caller.  Callers that
+    /// perform many successive searches on the same text (e.g., `find_iter`)
+    /// should keep the same `ExecScratch` alive across calls so that the
+    /// dense fork-memo array is allocated only once.
+    pub fn find_with_scratch(
+        &self,
+        text: &str,
+        start_pos: usize,
+        scratch: &mut ExecScratch,
+    ) -> Option<(usize, usize, Vec<Option<usize>>)> {
         // Fast pre-filter: if the pattern requires a specific character, check
         // that it appears before running the search loop.  For `Anchored` we
         // skip the scan (one exec() call is cheaper than a memchr over the whole
@@ -1362,15 +1427,10 @@ impl CompiledRegex {
         // the outer execution, and failures found at one starting position can
         // be reused at later starting positions for the same (pc, pos) pair.
         let mut memo = MemoState::new();
-        // Scratch buffers reused across all try_at calls (JIT path only).
-        #[cfg(feature = "jit")]
-        let mut scratch = ExecScratch::new();
-        #[cfg(not(feature = "jit"))]
-        let mut scratch = ExecScratch;
 
         match &self.start_strategy {
             // Only one position to try.
-            StartStrategy::Anchored => self.try_at(text, start_pos, &mut memo, &mut scratch),
+            StartStrategy::Anchored => self.try_at(text, start_pos, &mut memo, scratch),
 
             // Use str::find(prefix_str) to jump directly to each candidate.
             StartStrategy::LiteralPrefix(prefix) => {
@@ -1378,7 +1438,7 @@ impl CompiledRegex {
                 loop {
                     let offset = text[pos..].find(prefix.as_str())?;
                     let candidate = pos + offset;
-                    if let Some(result) = self.try_at(text, candidate, &mut memo, &mut scratch) {
+                    if let Some(result) = self.try_at(text, candidate, &mut memo, scratch) {
                         return Some(result);
                     }
                     // Advance one char past the failed candidate
@@ -1403,7 +1463,7 @@ impl CompiledRegex {
                     let offset =
                         text[pos..].find(|c| chars.iter().any(|&fc| chars_eq_ci(c, fc)))?;
                     let candidate = pos + offset;
-                    if let Some(result) = self.try_at(text, candidate, &mut memo, &mut scratch) {
+                    if let Some(result) = self.try_at(text, candidate, &mut memo, scratch) {
                         return Some(result);
                     }
                     pos = candidate
@@ -1422,7 +1482,7 @@ impl CompiledRegex {
             StartStrategy::Anywhere => {
                 let mut pos = start_pos;
                 loop {
-                    if let Some(result) = self.try_at(text, pos, &mut memo, &mut scratch) {
+                    if let Some(result) = self.try_at(text, pos, &mut memo, scratch) {
                         return Some(result);
                     }
                     if pos >= text.len() {
@@ -1437,6 +1497,18 @@ impl CompiledRegex {
             }
         }
     }
+
+    /// Find the leftmost match starting search from `start_pos`.
+    /// Creates a temporary `ExecScratch`; callers doing many successive searches
+    /// (e.g., `find_iter`) should use `find_with_scratch` directly and pass a
+    /// persistent scratch to avoid repeated allocations of the dense fork-memo array.
+    pub fn find(&self, text: &str, start_pos: usize) -> Option<(usize, usize, Vec<Option<usize>>)> {
+        #[cfg(feature = "jit")]
+        let mut scratch = ExecScratch::new();
+        #[cfg(not(feature = "jit"))]
+        let mut scratch = ExecScratch;
+        self.find_with_scratch(text, start_pos, &mut scratch)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1448,6 +1520,14 @@ impl CompiledRegex {
 pub(crate) struct ExecScratch {
     pub bt: Vec<BtJit>,
     pub slots: Vec<u64>,
+    /// Dense fork-failure memo array, stored as raw parts to avoid the
+    /// `mem::take` + `mem::forget` + reconstruct overhead on every exec_jit call.
+    ///
+    /// Invariant: the three fields are consistent and describe a valid allocation
+    /// (or all-zero when no allocation has been made yet).
+    pub fork_memo_ptr: *mut u8,
+    pub fork_memo_len: usize,
+    pub fork_memo_cap: usize,
 }
 
 #[cfg(feature = "jit")]
@@ -1455,7 +1535,22 @@ impl ExecScratch {
     pub fn new() -> Self {
         ExecScratch {
             bt: Vec::new(),
-            slots: Vec::new(), // allocated lazily on first exec_jit call
+            slots: Vec::new(),
+            fork_memo_ptr: std::ptr::NonNull::<u8>::dangling().as_ptr(),
+            fork_memo_len: 0,
+            fork_memo_cap: 0,
+        }
+    }
+}
+
+#[cfg(feature = "jit")]
+impl Drop for ExecScratch {
+    fn drop(&mut self) {
+        if self.fork_memo_cap > 0 {
+            // SAFETY: if cap > 0, the raw parts describe a valid Vec allocation.
+            let _ = unsafe {
+                Vec::from_raw_parts(self.fork_memo_ptr, self.fork_memo_len, self.fork_memo_cap)
+            };
         }
     }
 }
@@ -1463,6 +1558,13 @@ impl ExecScratch {
 /// Zero-sized stub used when the `jit` feature is disabled.
 #[cfg(not(feature = "jit"))]
 pub(crate) struct ExecScratch;
+
+// SAFETY: ExecScratch owns its allocation exclusively (not shared); the raw
+// pointer `fork_memo_ptr` is valid as long as the ExecScratch is alive.
+#[cfg(feature = "jit")]
+unsafe impl Send for ExecScratch {}
+#[cfg(feature = "jit")]
+unsafe impl Sync for ExecScratch {}
 
 // ---------------------------------------------------------------------------
 
@@ -1495,19 +1597,39 @@ impl BtJit {
 
     #[inline(always)]
     pub fn retry(block_id: u32, pos: u64, keep_pos: u64) -> Self {
-        Self { tag: 0, a: block_id, b: pos, c: keep_pos }
+        Self {
+            tag: 0,
+            a: block_id,
+            b: pos,
+            c: keep_pos,
+        }
     }
     #[inline(always)]
     pub fn save_undo(slot: u32, old_value: u64) -> Self {
-        Self { tag: 1, a: slot, b: old_value, c: 0 }
+        Self {
+            tag: 1,
+            a: slot,
+            b: old_value,
+            c: 0,
+        }
     }
     #[inline(always)]
     pub fn atomic_barrier() -> Self {
-        Self { tag: 2, a: 0, b: 0, c: 0 }
+        Self {
+            tag: 2,
+            a: 0,
+            b: 0,
+            c: 0,
+        }
     }
     #[inline(always)]
     pub fn memo_mark(fork_block_id: u32, fork_pos: u64) -> Self {
-        Self { tag: 3, a: fork_block_id, b: fork_pos, c: 0 }
+        Self {
+            tag: 3,
+            a: fork_block_id,
+            b: fork_pos,
+            c: 0,
+        }
     }
 }
 
@@ -1551,6 +1673,13 @@ pub(crate) struct JitExecCtx {
     /// Number of `BtJit::Retry` entries currently on the bt stack.
     /// `SaveUndo` pushes are skipped when this is zero (no retry to backtrack to).
     pub bt_retry_count: u64,
+    /// Pointer into the dense fork-failure memo array (`Vec<u8>` owned by ExecScratch).
+    /// Lent to ctx via mem::forget; rebuilt in exec_jit after the call.
+    pub fork_memo_data_ptr: *mut u8,
+    /// Current length of the dense memo array (0 until first failure is recorded).
+    pub fork_memo_len: u64,
+    /// Current capacity of the dense memo array (for safe reconstruction after growth).
+    pub fork_memo_cap: u64,
 }
 
 /// Push one entry onto the raw JIT backtrack stack.  May reallocate.
@@ -1565,8 +1694,7 @@ pub(crate) unsafe fn bt_push(ctx: &mut JitExecCtx, entry: BtJit) {
         ctx.bt_len += 1;
     } else {
         // Slow path: grow by reconstructing Vec, pushing, then extracting raw parts.
-        let mut v =
-            unsafe { Vec::from_raw_parts(ctx.bt_data_ptr, len, ctx.bt_cap as usize) };
+        let mut v = unsafe { Vec::from_raw_parts(ctx.bt_data_ptr, len, ctx.bt_cap as usize) };
         v.push(entry);
         ctx.bt_data_ptr = v.as_mut_ptr();
         ctx.bt_cap = v.capacity() as u64;
@@ -1713,7 +1841,7 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
                 if i < slots_out.len() {
                     let new_val = s.map(|v| v as u64).unwrap_or(u64::MAX);
                     if new_val != slots_out[i] {
-                    unsafe {
+                        unsafe {
                             bt_push(jctx, BtJit::save_undo(i as u32, slots_out[i]));
                         }
                     }

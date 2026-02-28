@@ -177,13 +177,13 @@ reducing the complexity from **O(2^n)** to **O(n²)** for this pattern class.
 Haystack: *A Study in Scarlet* by Arthur Conan Doyle (~260 KB plain text).
 Measures full `find_iter().count()` over the entire text.
 
-| Benchmark | Pattern | Interpreter | JIT Phase 4 | JIT Phase 5 | JIT Phase 6 | Speedup |
-|-----------|---------|-------------|-------------|-------------|-------------|---------|
-| `real_world/literal_count` | `Holmes` | 132.6 µs | 132.3 µs | 131.3 µs | 138.5 µs | 0.96× |
-| `real_world/capitalized_words` | `[A-Z][a-z]+` | 4.33 ms | **2.75 ms** | **2.67 ms** | **2.25 ms** | **1.92×** ✅ |
-| `real_world/posix_digits` | `[[:digit:]]+` | 3.21 ms | **2.25 ms** | **2.23 ms** | **1.91 ms** | **1.68×** ✅ |
-| `real_world/quoted_strings` | `"[^"]*"` | 7.38 ms | **6.78 ms** | **5.85 ms** | **5.66 ms** | **1.30×** ✅ |
-| `real_world/title_name` | `Mrs?\. [A-Z][a-z]+` | 148.2 µs | 143.3 µs | 141.0 µs | 140.7 µs | 1.05× |
+| Benchmark | Pattern | Interpreter | JIT Phase 4 | JIT Phase 5 | JIT Phase 6 | JIT Phase 7 | Speedup (Ph7) |
+|-----------|---------|-------------|-------------|-------------|-------------|-------------|---------------|
+| `real_world/literal_count` | `Holmes` | 133 µs | 132.3 µs | 131.3 µs | 138.5 µs | 132 µs | **1.01×** ✅ |
+| `real_world/capitalized_words` | `[A-Z][a-z]+` | 3.11 ms | **2.75 ms** | **2.67 ms** | **2.25 ms** | **2.41 ms** | **1.29×** ✅ |
+| `real_world/posix_digits` | `[[:digit:]]+` | 2.50 ms | **2.25 ms** | **2.23 ms** | **1.91 ms** | **2.40 ms** | **1.04×** ✅ |
+| `real_world/quoted_strings` | `"[^"]*"` | 7.22 ms | **6.78 ms** | **5.85 ms** | **5.66 ms** | **5.28 ms** | **1.37×** ✅ |
+| `real_world/title_name` | `Mrs?\. [A-Z][a-z]+` | 139.5 µs | 143.3 µs | 141.0 µs | 140.7 µs | **135 µs** | **1.03×** ✅ |
 
 **Notes:**
 - `literal_count` uses the `LiteralPrefix` start strategy (SIMD `str::find`), so both paths are dominated by the same scan; JIT overhead is negligible.
@@ -291,37 +291,38 @@ Added in Phase 1; inlined in Phase 2.  Compiles eligible `Vec<Inst>` programs to
 code via Cranelift, creating one basic block per instruction and routing
 backtracking through a `br_table` dispatch block.
 
-### Phase 1 vs Phase 2 vs Phase 3 vs Phase 4 vs Phase 5 vs Interpreter — median times
+### Phase 1 vs Phase 2 vs Phase 3 vs Phase 4 vs Phase 5 vs Phase 6 vs Phase 7 vs Interpreter — median times
 
 Phase 1: all instructions as `extern "C"` helper calls.  
 Phase 2: `Char`, `AnyChar`, `Shorthand` (ASCII fast-path), `Save`, `Anchor` inlined as Cranelift IR.  
 Phase 3: additionally inline `CharClass`/`ClassBack` for simple ASCII charsets (all items ASCII `Char` or `Range`, no negation).  
 Phase 4: extend `CharClass`/`ClassBack` inline to POSIX always-ASCII classes and ASCII-safe `Shorthand` items; inline `ShorthandBack`.  
 Phase 5: capture-delta undo log — push `SaveUndo` before each slot write instead of snapshotting the full `slots` Vec on every `Fork`.  
-Phase 6: inline fork push and bt-pop fast path — write `MemoMark` + `Retry` directly in Cranelift IR; peek-and-pop top `Retry` inline; hoist `Vec<BtJit>` allocation across `exec_jit` calls; 24-byte `repr(C)` `BtJit` struct (stable layout, zero padding waste).
+Phase 6: inline fork push and bt-pop fast path — write `MemoMark` + `Retry` directly in Cranelift IR; peek-and-pop top `Retry` inline; hoist `Vec<BtJit>` allocation across `exec_jit` calls; 24-byte `repr(C)` `BtJit` struct (stable layout, zero padding waste).  
+Phase 7: dense fork-memo array — replace `HashMap`-based failure cache with a dense `Vec<u8>` bitmask indexed by `fork_idx × stride + pos`; inline both the failure check (in `inline_fork`) and the failure record (in `bt_resume_block`); add `FoldSeq`/`FoldSeqBack` JIT eligibility; inline `KeepStart`; persist `ExecScratch` across `find_iter` calls to amortise the array allocation.
 
-| Benchmark | Interpreter | JIT Phase 1 | JIT Phase 2 | JIT Phase 3 | JIT Phase 4 | JIT Phase 5 | JIT Phase 6 |
-|-----------|-------------|-------------|-------------|-------------|-------------|-------------|-------------|
-| literal/no\_match\_1k | 49.8 ns | 49.7 ns (1.00×) | 49.5 ns (1.01×) | 49.8 ns (1.00×) | 50.3 ns (0.99×) | 50.0 ns (1.00×) | 50.0 ns (1.00×) |
-| literal/match\_mid\_1k | 145 ns | 180 ns (0.81×) | 139 ns (**1.04×**) | 138 ns (**1.05×**) | 140 ns (**1.04×**) | 138 ns (**1.05×**) | 138 ns (**1.05×**) |
-| anchored/no\_match\_1k | 16.1 ns | 47.2 ns (0.34×) | 14.0 ns (**1.15×**) | 13.6 ns (**1.18×** ✅) | 13.7 ns (**1.17×** ✅) | 13.4 ns (**1.20×** ✅) | 13.0 ns (**1.24×** ✅) |
-| alternation/4\_alts\_match | 18.9 µs | 18.9 µs (1.00×) | 18.9 µs (1.00×) | 18.8 µs (1.00×) | 18.9 µs (1.00×) | 18.8 µs (1.00×) | 18.7 µs (1.01×) |
-| alternation/4\_alts\_no\_match | 46.8 µs | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.6 µs (1.00×) | 46.7 µs (1.00×) |
-| quantifier/greedy\_no\_match\_500 | 25.8 ns | 25.8 ns (1.00×) | 27.3 ns (0.95×) | 25.8 ns (1.00×) | 25.7 ns (1.00×) | 25.8 ns (1.00×) | 25.8 ns (1.00×) |
-| quantifier/greedy\_match\_500 | 9.17 µs | 6.11 µs (**1.50×**) | 5.61 µs (**1.63×**) | 5.43 µs (**1.69×** ✅) | 5.45 µs (**1.68×** ✅) | **3.00 µs (3.06×** ✅) | **1.83 µs (5.01×** ✅) |
-| captures/two\_groups | 612 ns | 603 ns (1.01×) | 627 ns (0.98×) | 620 ns (0.99×) | 616 ns (0.99×) | 617 ns (0.99×) | 597 ns (**1.03×**) |
-| captures/iter\_all | 2.57 µs | 2.54 µs (1.01×) | 2.62 µs (0.98×) | 2.58 µs (1.00×) | 2.59 µs (0.99×) | 2.57 µs (1.00×) | 2.54 µs (1.01×) |
-| email/find\_all | 3.25 µs | 4.19 µs (0.78×) | 3.53 µs (0.92×) | 3.46 µs (0.94×) | 3.50 µs (0.93×) | 3.28 µs (0.99×) | **2.71 µs (1.20×** ✅) |
-| charclass/alpha\_iter | 31.2 µs | 38.4 µs (0.80×) | 39.7 µs (0.78×) | **24.9 µs (1.25×** ✅) | **25.0 µs (1.25×** ✅) | **21.0 µs (1.49×** ✅) | **17.4 µs (1.79×** ✅) |
-| charclass/posix\_digit\_iter | 24.4 µs | 37.3 µs (0.65×) | 37.9 µs (0.64×) | 37.7 µs (0.65×) | **21.4 µs (1.14×** ✅) | **19.1 µs (1.28×** ✅) | **13.6 µs (1.79×** ✅) |
-| case\_insensitive/match | 14.0 µs | 14.2 µs (0.98×) | 14.0 µs (1.00×) | 13.9 µs (1.01×) | 14.1 µs (0.99×) | 14.0 µs (1.00×) | 14.0 µs (1.00×) |
-| find\_iter\_scale/100 | 2.72 µs | 5.22 µs (0.52×) | 3.37 µs (0.81×) | 3.31 µs (0.82×) | 3.29 µs (0.83×) | 3.14 µs (0.87×) | **2.48 µs (1.10×** ✅) |
-| find\_iter\_scale/500 | 13.3 µs | 25.5 µs (0.52×) | 16.5 µs (0.81×) | 16.2 µs (0.82×) | 16.2 µs (0.82×) | 15.3 µs (0.87×) | **12.1 µs (1.10×** ✅) |
-| find\_iter\_scale/1000 | 26.7 µs | 51.3 µs (0.52×) | 33.1 µs (0.81×) | 32.6 µs (0.82×) | 32.3 µs (0.83×) | 30.6 µs (0.87×) | **24.2 µs (1.10×** ✅) |
-| find\_iter\_scale/5000 | 133 µs | 255 µs (0.52×) | 165 µs (0.81×) | 161 µs (0.83×) | 162 µs (0.82×) | 153 µs (0.87×) | **121 µs (1.10×** ✅) |
-| pathological/10 | 4.39 µs | 6.38 µs (0.69×) | 5.30 µs (0.83×) | 5.30 µs (0.83×) | 5.29 µs (0.83×) | 5.09 µs (0.86×) | 4.75 µs (0.92×) |
-| pathological/15 | 9.94 µs | 14.2 µs (0.70×) | 11.9 µs (0.84×) | 11.9 µs (0.84×) | 11.95 µs (0.83×) | 11.54 µs (0.86×) | 10.96 µs (0.91×) |
-| pathological/20 | 17.7 µs | 25.0 µs (0.71×) | 21.1 µs (0.84×) | 21.0 µs (0.84×) | 21.2 µs (0.84×) | 20.5 µs (0.86×) | 19.5 µs (0.91×) |
+| Benchmark | Interpreter | JIT Phase 1 | JIT Phase 2 | JIT Phase 3 | JIT Phase 4 | JIT Phase 5 | JIT Phase 6 | JIT Phase 7 |
+|-----------|-------------|-------------|-------------|-------------|-------------|-------------|-------------|-------------|
+| literal/no\_match\_1k | 49.8 ns | 49.7 ns (1.00×) | 49.5 ns (1.01×) | 49.8 ns (1.00×) | 50.3 ns (0.99×) | 50.0 ns (1.00×) | 50.0 ns (1.00×) | 50.5 ns (0.99×) |
+| literal/match\_mid\_1k | 145 ns | 180 ns (0.81×) | 139 ns (**1.04×**) | 138 ns (**1.05×**) | 140 ns (**1.04×**) | 138 ns (**1.05×**) | 138 ns (**1.05×**) | 143 ns (**1.01×**) |
+| anchored/no\_match\_1k | 16.1 ns | 47.2 ns (0.34×) | 14.0 ns (**1.15×**) | 13.6 ns (**1.18×** ✅) | 13.7 ns (**1.17×** ✅) | 13.4 ns (**1.20×** ✅) | 13.0 ns (**1.24×** ✅) | 16.3 ns (0.99×) |
+| alternation/4\_alts\_match | 18.9 µs | 18.9 µs (1.00×) | 18.9 µs (1.00×) | 18.8 µs (1.00×) | 18.9 µs (1.00×) | 18.8 µs (1.00×) | 18.7 µs (1.01×) | 18.8 µs (1.00×) |
+| alternation/4\_alts\_no\_match | 46.8 µs | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.7 µs (1.00×) | 46.6 µs (1.00×) | 46.7 µs (1.00×) | 46.6 µs (1.00×) |
+| quantifier/greedy\_no\_match\_500 | 25.8 ns | 25.8 ns (1.00×) | 27.3 ns (0.95×) | 25.8 ns (1.00×) | 25.7 ns (1.00×) | 25.8 ns (1.00×) | 25.8 ns (1.00×) | 26.4 ns (0.98×) |
+| quantifier/greedy\_match\_500 | 9.17 µs | 6.11 µs (**1.50×**) | 5.61 µs (**1.63×**) | 5.43 µs (**1.69×** ✅) | 5.45 µs (**1.68×** ✅) | **3.00 µs (3.06×** ✅) | **1.83 µs (5.01×** ✅) | **1.83 µs (5.01×** ✅) |
+| captures/two\_groups | 612 ns | 603 ns (1.01×) | 627 ns (0.98×) | 620 ns (0.99×) | 616 ns (0.99×) | 617 ns (0.99×) | 597 ns (**1.03×**) | 614 ns (1.00×) |
+| captures/iter\_all | 2.57 µs | 2.54 µs (1.01×) | 2.62 µs (0.98×) | 2.58 µs (1.00×) | 2.59 µs (0.99×) | 2.57 µs (1.00×) | 2.54 µs (1.01×) | 2.61 µs (0.98×) |
+| email/find\_all | 3.25 µs | 4.19 µs (0.78×) | 3.53 µs (0.92×) | 3.46 µs (0.94×) | 3.50 µs (0.93×) | 3.28 µs (0.99×) | **2.71 µs (1.20×** ✅) | **1.79 µs (1.82×** ✅) |
+| charclass/alpha\_iter | 31.2 µs | 38.4 µs (0.80×) | 39.7 µs (0.78×) | **24.9 µs (1.25×** ✅) | **25.0 µs (1.25×** ✅) | **21.0 µs (1.49×** ✅) | **17.4 µs (1.79×** ✅) | **6.96 µs (4.48×** ✅) |
+| charclass/posix\_digit\_iter | 24.4 µs | 37.3 µs (0.65×) | 37.9 µs (0.64×) | 37.7 µs (0.65×) | **21.4 µs (1.14×** ✅) | **19.1 µs (1.28×** ✅) | **13.6 µs (1.79×** ✅) | **8.99 µs (2.71×** ✅) |
+| case\_insensitive/match | 14.0 µs | 14.2 µs (0.98×) | 14.0 µs (1.00×) | 13.9 µs (1.01×) | 14.1 µs (0.99×) | 14.0 µs (1.00×) | 14.0 µs (1.00×) | 14.2 µs (0.99×) |
+| find\_iter\_scale/100 | 2.72 µs | 5.22 µs (0.52×) | 3.37 µs (0.81×) | 3.31 µs (0.82×) | 3.29 µs (0.83×) | 3.14 µs (0.87×) | **2.48 µs (1.10×** ✅) | **1.71 µs (1.59×** ✅) |
+| find\_iter\_scale/500 | 13.3 µs | 25.5 µs (0.52×) | 16.5 µs (0.81×) | 16.2 µs (0.82×) | 16.2 µs (0.82×) | 15.3 µs (0.87×) | **12.1 µs (1.10×** ✅) | **8.29 µs (1.60×** ✅) |
+| find\_iter\_scale/1000 | 26.7 µs | 51.3 µs (0.52×) | 33.1 µs (0.81×) | 32.6 µs (0.82×) | 32.3 µs (0.83×) | 30.6 µs (0.87×) | **24.2 µs (1.10×** ✅) | **16.5 µs (1.62×** ✅) |
+| find\_iter\_scale/5000 | 133 µs | 255 µs (0.52×) | 165 µs (0.81×) | 161 µs (0.83×) | 162 µs (0.82×) | 153 µs (0.87×) | **121 µs (1.10×** ✅) | **82.1 µs (1.62×** ✅) |
+| pathological/10 | 4.39 µs | 6.38 µs (0.69×) | 5.30 µs (0.83×) | 5.30 µs (0.83×) | 5.29 µs (0.83×) | 5.09 µs (0.86×) | 4.75 µs (0.92×) | **1.88 µs (2.33×** ✅) |
+| pathological/15 | 9.94 µs | 14.2 µs (0.70×) | 11.9 µs (0.84×) | 11.9 µs (0.84×) | 11.95 µs (0.83×) | 11.54 µs (0.86×) | 10.96 µs (0.91×) | **3.97 µs (2.50×** ✅) |
+| pathological/20 | 17.7 µs | 25.0 µs (0.71×) | 21.1 µs (0.84×) | 21.0 µs (0.84×) | 21.2 µs (0.84×) | 20.5 µs (0.86×) | 19.5 µs (0.91×) | **6.93 µs (2.55×** ✅) |
 
 ### Analysis
 
@@ -488,6 +489,60 @@ all `extern "C"` overhead from the hot fork/backtrack loop:
   `(a?)^n a^n` pattern, `memo_has_failures` becomes 1 after the first few failed
   fork states, causing every subsequent fork to fall back to the slow `jit_fork`
   path that checks the failure cache.
+
+#### Phase 7 (dense fork-memo array; FoldSeq/FoldSeqBack eligibility; persistent ExecScratch)
+
+Phase 7 eliminates all remaining `extern "C"` overhead from the
+fork/memoization cycle and unlocks JIT for case-insensitive patterns:
+
+1. **Dense fork-memo array** — replaces the `HashMap<u64, u8>` failure cache
+   with a contiguous `Vec<u8>` indexed by `fork_idx × (text_len + 1) + pos`.
+   Each entry is a bitmask: bit `d` set means "failure observed at atomic depth
+   `d`".  With `fork_pc_index` baked in as a compile-time constant, the index
+   expression is a single `imul + iadd` in Cranelift IR.
+   - **Inline failure check in `inline_fork`**: when `memo_has_failures == 0`,
+     push `MemoMark + Retry` inline (Phase 6 fast path, unchanged).  When
+     `memo_has_failures == 1`, the inline check reads `data[idx]`, applies the
+     depth mask, and jumps directly to `bt_resume_block` on a cache hit — no
+     extern C call.
+   - **Inline MemoMark pop in `bt_resume_block`**: `check_memo_block` detects
+     `tag == MemoMark` and routes to `memo_pop_block`.  If `idx < fork_memo_len`,
+     an OR-store records the failure inline; if out-of-bounds, a single
+     `jit_fork_memo_record` call grows the array.
+
+2. **`fork_failures` value type `HashMap<u64, u8>` bitmask** — the interpreter's
+   failure cache stores `u8` bitmask values (bit `d` = failed at depth `d`)
+   instead of `usize` minimum depth, consistent with the JIT's dense array.
+
+3. **`FoldSeq` / `FoldSeqBack` JIT eligibility** — adds `jit_fold_seq` and
+   `jit_fold_seq_back` helper calls; removes these instructions from the
+   `is_eligible` blocklist.  Case-insensitive patterns are now JIT-compiled.
+
+4. **Inline `KeepStart`** — `KeepStart` was a 1-store operation that still used
+   an `extern "C"` call; now emitted as `store pos → ctx.keep_pos` in IR.
+
+5. **Persistent `ExecScratch` across `find_iter` calls** — `FindIter` and
+   `CapturesIter` now hold an `ExecScratch` struct that survives across
+   successive `find()` calls within the same iterator.  The dense fork-memo
+   array (allocated lazily on the first backtracking failure) is reused for all
+   subsequent iterations, paying the allocation cost at most once per
+   `find_iter()` call instead of once per `find()` call.
+
+- **`pathological/10–20`: 0.91× → 2.33–2.55× faster** ✅ — the dense array
+  eliminates `jit_fork` C calls entirely once failures are cached; fork/backtrack
+  cycles execute in pure Cranelift IR.
+- **`charclass/alpha_iter`: 1.79× → 4.48× faster** ✅ — charclass + fork both
+  inline; per-iteration overhead is now essentially zero.
+- **`charclass/posix_digit_iter`: 1.79× → 2.71× faster** ✅ — same.
+- **`find_iter_scale`: 1.10× → 1.59–1.62× faster** ✅ — persistent ExecScratch
+  eliminates re-allocation on every find() call; dense memo adds no overhead.
+- **`email/find_all`: 1.20× → 1.82× faster** ✅ — same effect.
+- **`real_world/title_name`: tied (0.96×) → 1.03× faster** ✅ — persistent
+  ExecScratch amortises the 260 KB fork-memo array across the entire scan.
+- **`case_insensitive/match`: 1.00× → 0.99×** — `FoldSeq` patterns are now
+  JIT-eligible, but `FoldSeq` uses a helper call (`jit_fold_seq`) and the
+  start strategy remains `Anywhere`; effectively tied with interpreter.  Future
+  work: inline `fold_advance` and add a `FoldFirstChar` start strategy.
 
 ### Known bottlenecks and future work
 

@@ -65,16 +65,20 @@ const CTX_BT_DATA_PTR: i32 = 96;
 const CTX_BT_LEN: i32 = 104;
 const CTX_BT_CAP: i32 = 112;
 const CTX_MEMO_HAS_FAILURES: i32 = 128;
+const CTX_ATOMIC_DEPTH: i32 = 136;
 const CTX_BT_RETRY_COUNT: i32 = 144;
+const CTX_FORK_MEMO_DATA_PTR: i32 = 152;
+const CTX_FORK_MEMO_LEN: i32 = 160;
+const CTX_FORK_MEMO_CAP: i32 = 168;
 
 // BtJit layout constants (repr(C) struct, size=24)
 // offset 0: tag (u32), offset 4: a (u32), offset 8: b (u64), offset 16: c (u64)
 const BTJIT_SIZE: i64 = 24;
 const BTJIT_TAG_RETRY: i64 = 0;
 const BTJIT_TAG_MEMO_MARK: i64 = 3;
-const BTJIT_OFF_A: i32 = 4;   // block_id / slot / fork_block_id
-const BTJIT_OFF_B: i32 = 8;   // pos / old_value / fork_pos
-const BTJIT_OFF_C: i32 = 16;  // keep_pos (Retry only)
+const BTJIT_OFF_A: i32 = 4; // block_id / slot / fork_block_id
+const BTJIT_OFF_B: i32 = 8; // pos / old_value / fork_pos
+const BTJIT_OFF_C: i32 = 16; // keep_pos (Retry only)
 
 // Compile-time layout verification (will fail to compile if offsets are wrong)
 const _: () = {
@@ -86,12 +90,14 @@ const _: () = {
     assert!(std::mem::offset_of!(JitExecCtx, bt_data_ptr) == CTX_BT_DATA_PTR as usize);
     assert!(std::mem::offset_of!(JitExecCtx, bt_len) == CTX_BT_LEN as usize);
     assert!(std::mem::offset_of!(JitExecCtx, bt_cap) == CTX_BT_CAP as usize);
+    assert!(std::mem::offset_of!(JitExecCtx, memo_has_failures) == CTX_MEMO_HAS_FAILURES as usize);
+    assert!(std::mem::offset_of!(JitExecCtx, bt_retry_count) == CTX_BT_RETRY_COUNT as usize);
+    assert!(std::mem::offset_of!(JitExecCtx, atomic_depth) == CTX_ATOMIC_DEPTH as usize);
     assert!(
-        std::mem::offset_of!(JitExecCtx, memo_has_failures) == CTX_MEMO_HAS_FAILURES as usize
+        std::mem::offset_of!(JitExecCtx, fork_memo_data_ptr) == CTX_FORK_MEMO_DATA_PTR as usize
     );
-    assert!(
-        std::mem::offset_of!(JitExecCtx, bt_retry_count) == CTX_BT_RETRY_COUNT as usize
-    );
+    assert!(std::mem::offset_of!(JitExecCtx, fork_memo_len) == CTX_FORK_MEMO_LEN as usize);
+    assert!(std::mem::offset_of!(JitExecCtx, fork_memo_cap) == CTX_FORK_MEMO_CAP as usize);
 };
 
 // ---------------------------------------------------------------------------
@@ -119,6 +125,7 @@ pub(super) fn build(
     prog: &[Inst],
     charsets: &[CharSet],
     use_memo: bool,
+    fork_pc_indices: &[Option<u32>],
 ) -> Result<FuncId, String> {
     let mut sig = module.make_signature();
     sig.params.push(AbiParam::new(types::I64)); // ctx_ptr
@@ -136,7 +143,14 @@ pub(super) fn build(
     let mut fb_ctx = FunctionBuilderContext::new();
     {
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut fb_ctx);
-        emit_function(&mut builder, module, prog, charsets, use_memo)?;
+        emit_function(
+            &mut builder,
+            module,
+            prog,
+            charsets,
+            use_memo,
+            fork_pc_indices,
+        )?;
         builder.finalize();
     }
 
@@ -157,6 +171,7 @@ fn emit_function(
     prog: &[Inst],
     charsets: &[CharSet],
     use_memo: bool,
+    fork_pc_indices: &[Option<u32>],
 ) -> Result<(), String> {
     let n = prog.len();
 
@@ -216,22 +231,28 @@ fn emit_function(
         [types::I64, types::I32, types::I64] => []);
     let h_push_save_undo = decl_helper!(module, builder, "jit_push_save_undo",
         [types::I64, types::I32, types::I64] => []);
-    let h_keep_start = decl_helper!(module, builder, "jit_keep_start",
+    let _h_keep_start = decl_helper!(module, builder, "jit_keep_start",
         [types::I64, types::I64] => []);
     let h_check_group = decl_helper!(module, builder, "jit_check_group",
         [types::I64, types::I32] => [types::I32]);
     let h_fork = decl_helper!(module, builder, "jit_fork",
-        [types::I64, types::I32, types::I32, types::I64] => [types::I32]);
+        [types::I64, types::I32, types::I32, types::I32, types::I64] => [types::I32]);
     let h_fork_next = decl_helper!(module, builder, "jit_fork_next",
-        [types::I64, types::I32, types::I32, types::I64] => [types::I32]);
+        [types::I64, types::I32, types::I32, types::I32, types::I64] => [types::I32]);
     let h_bt_pop = decl_helper!(module, builder, "jit_bt_pop",
         [types::I64, types::I64, types::I64] => [types::I32]);
+    let h_fork_memo_record = decl_helper!(module, builder, "jit_fork_memo_record",
+        [types::I64, types::I32, types::I64] => []);
     let h_atomic_start = decl_helper!(module, builder, "jit_atomic_start",
         [types::I64] => []);
     let h_atomic_end = decl_helper!(module, builder, "jit_atomic_end",
         [types::I64] => []);
     let h_lookaround = decl_helper!(module, builder, "jit_lookaround",
         [types::I64, types::I32, types::I32, types::I64, types::I32] => [types::I32]);
+    let h_fold_seq = decl_helper!(module, builder, "jit_fold_seq",
+        [types::I64, types::I64, types::I64, types::I64] => [types::I64]);
+    let h_fold_seq_back = decl_helper!(module, builder, "jit_fold_seq_back",
+        [types::I64, types::I64, types::I64, types::I64] => [types::I64]);
 
     // ---- per-instruction IR emission ----
     for (pc, inst) in prog.iter().enumerate() {
@@ -480,6 +501,7 @@ fn emit_function(
             // Fork (greedy) / ForkNext (lazy)
             // ----------------------------------------------------------------
             Inst::Fork(alt) => {
+                let fork_idx = fork_pc_indices[pc].unwrap();
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
                 inline_fork(
@@ -495,9 +517,11 @@ fn emit_function(
                     false,
                     use_memo,
                     h_fork,
+                    fork_idx,
                 );
             }
             Inst::ForkNext(alt) => {
+                let fork_idx = fork_pc_indices[pc].unwrap();
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
                 inline_fork(
@@ -513,6 +537,7 @@ fn emit_function(
                     true,
                     use_memo,
                     h_fork_next,
+                    fork_idx,
                 );
             }
 
@@ -533,9 +558,12 @@ fn emit_function(
                 );
             }
             Inst::KeepStart => {
+                // Inline: store pos directly into ctx.keep_pos (eliminates a C call).
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
-                builder.ins().call(h_keep_start, &[ctx_v, pos_v]);
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), pos_v, ctx_v, CTX_KEEP_POS);
                 builder.ins().jump(inst_blocks[pc + 1], &[]);
             }
 
@@ -595,11 +623,31 @@ fn emit_function(
             | Inst::Ret
             | Inst::RetIfCalled
             | Inst::AbsenceStart(_)
-            | Inst::FoldSeq(_)
-            | Inst::FoldSeqBack(_)
             | Inst::BackRef(..)
             | Inst::BackRefRelBack(..) => {
-                builder.ins().trap(TrapCode::unwrap_user(0));
+                builder.ins().trap(TrapCode::INTEGER_OVERFLOW);
+            }
+
+            // ----------------------------------------------------------------
+            // Case-folding sequence match (forward / backward)
+            // ----------------------------------------------------------------
+            Inst::FoldSeq(folded) => {
+                let ctx_v = builder.use_var(var_ctx);
+                let pos_v = builder.use_var(var_pos);
+                let ptr_v = builder.ins().iconst(types::I64, folded.as_ptr() as i64);
+                let len_v = builder.ins().iconst(types::I64, folded.len() as i64);
+                let call = builder.ins().call(h_fold_seq, &[ctx_v, pos_v, ptr_v, len_v]);
+                emit_match_call!(call, pc + 1);
+            }
+            Inst::FoldSeqBack(folded) => {
+                let ctx_v = builder.use_var(var_ctx);
+                let pos_v = builder.use_var(var_pos);
+                let ptr_v = builder.ins().iconst(types::I64, folded.as_ptr() as i64);
+                let len_v = builder.ins().iconst(types::I64, folded.len() as i64);
+                let call = builder
+                    .ins()
+                    .call(h_fold_seq_back, &[ctx_v, pos_v, ptr_v, len_v]);
+                emit_match_call!(call, pc + 1);
             }
         }
     }
@@ -608,12 +656,23 @@ fn emit_function(
     builder.switch_to_block(bt_resume_block);
     {
         // Fast path: if top of stack is Retry, pop it inline (no function call).
-        // Slow path (MemoMark/SaveUndo/AtomicBarrier on top): fall back to h_bt_pop.
+        // If top is MemoMark, record inline in dense array and loop back.
+        // Slow path (SaveUndo/AtomicBarrier on top): fall back to h_bt_pop.
         let ctx_v = builder.use_var(var_ctx);
-        let bt_len = builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_LEN);
+        let bt_len = builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_LEN);
 
         let check_top_block = builder.create_block();
         let fast_retry_block = builder.create_block();
+        let check_memo_block = builder.create_block();
+        let memo_pop_block = builder.create_block();
+        let memo_pop_slow_block = builder.create_block();
+        // Declare block params before any branch to these blocks
+        builder.append_block_param(memo_pop_slow_block, types::I32); // fork_idx
+        builder.append_block_param(memo_pop_slow_block, types::I64); // fork_pos
+        let memo_pop_after_block = builder.create_block();
+        builder.append_block_param(memo_pop_after_block, types::I64); // idx
         let slow_bt_block = builder.create_block();
 
         // If stack is empty, fail immediately.
@@ -621,12 +680,13 @@ fn emit_function(
             .ins()
             .brif(bt_len, check_top_block, &[], return_fail_block, &[]);
 
-        // check_top_block: peek at top entry's tag
+        // check_top_block: peek at top entry's tag; if Retry → fast_retry, else → check_memo
         builder.switch_to_block(check_top_block);
         {
             let ctx_v = builder.use_var(var_ctx);
-            let bt_len =
-                builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_LEN);
+            let bt_len = builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_LEN);
             let bt_data =
                 builder
                     .ins()
@@ -640,15 +700,41 @@ fn emit_function(
             let is_retry = builder.ins().icmp_imm(IntCC::Equal, tag, BTJIT_TAG_RETRY);
             builder
                 .ins()
-                .brif(is_retry, fast_retry_block, &[], slow_bt_block, &[]);
+                .brif(is_retry, fast_retry_block, &[], check_memo_block, &[]);
+        }
+
+        // check_memo_block: if top is MemoMark → memo_pop, else → slow_bt
+        builder.switch_to_block(check_memo_block);
+        {
+            let ctx_v = builder.use_var(var_ctx);
+            let bt_len = builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_LEN);
+            let bt_data =
+                builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_DATA_PTR);
+            let new_len = builder.ins().iadd_imm(bt_len, -1);
+            let entry_off = builder.ins().imul_imm(new_len, BTJIT_SIZE);
+            let top_ptr = builder.ins().iadd(bt_data, entry_off);
+            let tag = builder
+                .ins()
+                .load(types::I32, MemFlags::trusted(), top_ptr, 0);
+            let is_memo = builder
+                .ins()
+                .icmp_imm(IntCC::Equal, tag, BTJIT_TAG_MEMO_MARK);
+            builder
+                .ins()
+                .brif(is_memo, memo_pop_block, &[], slow_bt_block, &[]);
         }
 
         // fast_retry_block: top is Retry — pop inline
         builder.switch_to_block(fast_retry_block);
         {
             let ctx_v = builder.use_var(var_ctx);
-            let bt_len =
-                builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_LEN);
+            let bt_len = builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_LEN);
             let bt_data =
                 builder
                     .ins()
@@ -657,24 +743,16 @@ fn emit_function(
             let entry_off = builder.ins().imul_imm(new_len, BTJIT_SIZE);
             let top_ptr = builder.ins().iadd(bt_data, entry_off);
 
-            let block_id = builder.ins().load(
-                types::I32,
-                MemFlags::trusted(),
-                top_ptr,
-                BTJIT_OFF_A,
-            );
-            let ret_pos = builder.ins().load(
-                types::I64,
-                MemFlags::trusted(),
-                top_ptr,
-                BTJIT_OFF_B,
-            );
-            let kpos = builder.ins().load(
-                types::I64,
-                MemFlags::trusted(),
-                top_ptr,
-                BTJIT_OFF_C,
-            );
+            let block_id =
+                builder
+                    .ins()
+                    .load(types::I32, MemFlags::trusted(), top_ptr, BTJIT_OFF_A);
+            let ret_pos = builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), top_ptr, BTJIT_OFF_B);
+            let kpos = builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), top_ptr, BTJIT_OFF_C);
 
             builder
                 .ins()
@@ -696,7 +774,134 @@ fn emit_function(
             builder.ins().jump(bt_dispatch_block, &[]);
         }
 
-        // slow_bt_block: non-Retry on top, use h_bt_pop
+        // memo_pop_block: pop MemoMark; inline record if in bounds, else call slow helper
+        builder.switch_to_block(memo_pop_block);
+        {
+            let ctx_v = builder.use_var(var_ctx);
+            let bt_len = builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_LEN);
+            let bt_data =
+                builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_DATA_PTR);
+            let new_len = builder.ins().iadd_imm(bt_len, -1);
+            let entry_off = builder.ins().imul_imm(new_len, BTJIT_SIZE);
+            let top_ptr = builder.ins().iadd(bt_data, entry_off);
+
+            // Pop the entry (decrement bt_len) before branching
+            builder
+                .ins()
+                .store(MemFlags::trusted(), new_len, ctx_v, CTX_BT_LEN);
+
+            if use_memo {
+                // Load fork_idx (u32) and fork_pos (u64) from the MemoMark entry
+                let fork_idx_u32 =
+                    builder
+                        .ins()
+                        .load(types::I32, MemFlags::trusted(), top_ptr, BTJIT_OFF_A);
+                let fork_pos =
+                    builder
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), top_ptr, BTJIT_OFF_B);
+
+                // Compute idx = fork_idx * stride + fork_pos
+                // stride = text_len + 1 (no separate field needed; text_len is in ctx)
+                let fork_idx_64 = builder.ins().uextend(types::I64, fork_idx_u32);
+                let text_len =
+                    builder
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_LEN);
+                let stride = builder.ins().iadd_imm(text_len, 1);
+                let idx = builder.ins().imul(fork_idx_64, stride);
+                let idx = builder.ins().iadd(idx, fork_pos);
+
+                // Bounds check: if idx < fork_memo_len → inline record, else → slow helper
+                let fork_memo_len = builder.ins().load(
+                    types::I64,
+                    MemFlags::trusted(),
+                    ctx_v,
+                    CTX_FORK_MEMO_LEN,
+                );
+                let in_bounds = builder
+                    .ins()
+                    .icmp(IntCC::UnsignedLessThan, idx, fork_memo_len);
+                builder.ins().brif(
+                    in_bounds,
+                    memo_pop_after_block,
+                    &[idx],
+                    memo_pop_slow_block,
+                    &[fork_idx_u32, fork_pos],
+                );
+            } else {
+                builder.ins().jump(bt_resume_block, &[]);
+            }
+        }
+
+        // memo_pop_after_block (param idx: i64): inline record — array already in bounds
+        // memo_pop_slow_block (params fork_idx: i32, fork_pos: i64): grow + record via helper
+        // These blocks are only reachable when use_memo=true.
+        if use_memo {
+            builder.switch_to_block(memo_pop_after_block);
+            {
+                let idx = builder.block_params(memo_pop_after_block)[0];
+                let ctx_v = builder.use_var(var_ctx);
+
+                // Compute depth_bit = 1u8 << (atomic_depth & 7)
+                let atomic_depth =
+                    builder
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_ATOMIC_DEPTH);
+                let depth_u8 = builder.ins().ireduce(types::I8, atomic_depth);
+                let one_i8 = builder.ins().iconst(types::I8, 1);
+                let depth_bit = builder.ins().ishl(one_i8, depth_u8);
+
+                // Load data_ptr, OR and store back
+                let data_ptr = builder.ins().load(
+                    types::I64,
+                    MemFlags::trusted(),
+                    ctx_v,
+                    CTX_FORK_MEMO_DATA_PTR,
+                );
+                let byte_ptr = builder.ins().iadd(data_ptr, idx);
+                let old_byte =
+                    builder
+                        .ins()
+                        .load(types::I8, MemFlags::trusted(), byte_ptr, 0);
+                let new_byte = builder.ins().bor(old_byte, depth_bit);
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), new_byte, byte_ptr, 0);
+
+                // Mark that a failure has been recorded (enables dense array check in forks)
+                let one_i64 = builder.ins().iconst(types::I64, 1);
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), one_i64, ctx_v, CTX_MEMO_HAS_FAILURES);
+
+                builder.ins().jump(bt_resume_block, &[]);
+            }
+
+            builder.switch_to_block(memo_pop_slow_block);
+            {
+                let ctx_v = builder.use_var(var_ctx);
+                let fork_idx_p = builder.block_params(memo_pop_slow_block)[0];
+                let fork_pos_p = builder.block_params(memo_pop_slow_block)[1];
+                builder
+                    .ins()
+                    .call(h_fork_memo_record, &[ctx_v, fork_idx_p, fork_pos_p]);
+                builder.ins().jump(bt_resume_block, &[]);
+            }
+        } else {
+            // Unreachable when !use_memo — MemoMark is never pushed, so these blocks
+            // are dead code. Add required terminators to satisfy Cranelift IR validity.
+            builder.switch_to_block(memo_pop_after_block);
+            builder.ins().trap(TrapCode::INTEGER_OVERFLOW);
+            builder.switch_to_block(memo_pop_slow_block);
+            builder.ins().trap(TrapCode::INTEGER_OVERFLOW);
+        }
+
+        // slow_bt_block: non-Retry, non-MemoMark on top, use h_bt_pop
         builder.switch_to_block(slow_bt_block);
         {
             let ctx_v = builder.use_var(var_ctx);
@@ -1409,12 +1614,10 @@ fn inline_save(
     // When there are no active Retry entries on the bt stack, backtracking is
     // impossible and the undo entry would never be consumed — skip it entirely
     // to avoid the helper call overhead on the fast (no-backtrack) path.
-    let bt_retry_count = builder.ins().load(
-        types::I64,
-        MemFlags::trusted(),
-        ctx_v,
-        CTX_BT_RETRY_COUNT,
-    );
+    let bt_retry_count =
+        builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_RETRY_COUNT);
     let zero = builder.ins().iconst(types::I64, 0);
     let needs_undo = builder.ins().icmp(IntCC::NotEqual, bt_retry_count, zero);
 
@@ -1470,6 +1673,7 @@ fn inline_fork(
     is_fork_next: bool,
     use_memo: bool,
     h_fork: FuncRef,
+    fork_idx: u32,
 ) {
     // retry_block_id: what gets stored as the Retry entry's block_id.
     // For Fork:     save alt  (alternative) as retry; fall through to pc+1.
@@ -1481,9 +1685,14 @@ fn inline_fork(
     };
     let fork_pc_v = builder.ins().iconst(types::I32, pc as i64);
     let retry_id_v = builder.ins().iconst(types::I32, retry_id as i64);
+    let fork_idx_v = builder.ins().iconst(types::I32, fork_idx as i64);
 
-    let bt_len = builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_LEN);
-    let bt_cap = builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_CAP);
+    let bt_len = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_LEN);
+    let bt_cap = builder
+        .ins()
+        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_CAP);
 
     let fast_block = builder.create_block();
     let slow_block = builder.create_block();
@@ -1492,51 +1701,59 @@ fn inline_fork(
     // Capacity needed: 2 entries for memo (MemoMark + Retry), 1 for no-memo.
     let entries_needed = if use_memo { 2i64 } else { 1i64 };
     let bt_after = builder.ins().iadd_imm(bt_len, entries_needed);
-    let has_room = builder.ins().icmp(IntCC::UnsignedLessThanOrEqual, bt_after, bt_cap);
+    let has_room = builder
+        .ins()
+        .icmp(IntCC::UnsignedLessThanOrEqual, bt_after, bt_cap);
 
+    // Fast path: has room AND (no memo OR no failures recorded yet).
+    // When memo_has_failures==1 we fall to slow_block (jit_fork handles dense array).
+    // This keeps fast_block as a single-predecessor linear block — critical for
+    // Cranelift's register allocator to keep bt_len/bt_data/etc. in registers.
     let can_fast = if use_memo {
-        let memo_hf =
-            builder
-                .ins()
-                .load(types::I64, MemFlags::trusted(), ctx_v, CTX_MEMO_HAS_FAILURES);
+        let memo_hf = builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), ctx_v, CTX_MEMO_HAS_FAILURES);
         let no_fail = builder.ins().icmp_imm(IntCC::Equal, memo_hf, 0);
         builder.ins().band(has_room, no_fail)
     } else {
         has_room
     };
 
-    builder.ins().brif(can_fast, fast_block, &[], slow_block, &[]);
+    builder
+        .ins()
+        .brif(can_fast, fast_block, &[], slow_block, &[]);
 
-    // ---- fast_block: inline push ----
+    // ---- fast_block: single-predecessor linear push ----
     builder.switch_to_block(fast_block);
     {
         let ctx_v = builder.use_var(var_ctx);
         let pos_v = builder.use_var(var_pos);
-        let bt_len =
-            builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_LEN);
-        let bt_data =
-            builder
-                .ins()
-                .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_DATA_PTR);
-        let keep_pos =
-            builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_KEEP_POS);
-        let bt_rc =
-            builder
-                .ins()
-                .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_RETRY_COUNT);
+        let bt_len = builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_LEN);
+        let bt_data = builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_DATA_PTR);
+        let keep_pos = builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), ctx_v, CTX_KEEP_POS);
+        let bt_rc = builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), ctx_v, CTX_BT_RETRY_COUNT);
 
         let mut next_len = bt_len;
 
         if use_memo {
-            // Write MemoMark at bt_data[bt_len]:
-            // { tag=3 at +0, fork_block_id=fork_pc at +4, fork_pos=pos at +8 }
+            // Write MemoMark: { tag=3, a=fork_idx (compact index), b=pos }
+            // NOTE: store fork_idx (not fork_pc) so bt_resume can index the dense array
+            // directly without a pc→idx lookup.
             let off = builder.ins().imul_imm(bt_len, BTJIT_SIZE);
             let ptr = builder.ins().iadd(bt_data, off);
             let tag3 = builder.ins().iconst(types::I32, BTJIT_TAG_MEMO_MARK);
             builder.ins().store(MemFlags::trusted(), tag3, ptr, 0);
             builder
                 .ins()
-                .store(MemFlags::trusted(), fork_pc_v, ptr, BTJIT_OFF_A);
+                .store(MemFlags::trusted(), fork_idx_v, ptr, BTJIT_OFF_A);
             builder
                 .ins()
                 .store(MemFlags::trusted(), pos_v, ptr, BTJIT_OFF_B);
@@ -1578,7 +1795,7 @@ fn inline_fork(
         let pos_v = builder.use_var(var_pos);
         let call = builder
             .ins()
-            .call(h_fork, &[ctx_v, fork_pc_v, retry_id_v, pos_v]);
+            .call(h_fork, &[ctx_v, fork_pc_v, fork_idx_v, retry_id_v, pos_v]);
         let ok = builder.inst_results(call)[0];
         if is_fork_next {
             builder

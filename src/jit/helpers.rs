@@ -10,7 +10,7 @@
 
 use crate::ast::{AnchorKind, Flags, Shorthand};
 use crate::charset;
-use crate::vm::{BtJit, CharSet, JitExecCtx, MemoState, bt_pop, bt_push, exec_lookaround_for_jit, memo_key};
+use crate::vm::{BtJit, CharSet, JitExecCtx, bt_pop, bt_push, exec_lookaround_for_jit, fold_advance, fold_retreat};
 use unicode_casefold::UnicodeCaseFold;
 
 // ---------------------------------------------------------------------------
@@ -392,28 +392,30 @@ pub unsafe extern "C" fn jit_check_group(ctx: *const JitExecCtx, slot: u32) -> u
 pub unsafe extern "C" fn jit_fork(
     ctx: *mut JitExecCtx,
     fork_pc: u32,
+    fork_idx: u32,
     alt_block: u32,
     pos: u64,
 ) -> u32 {
     unsafe {
         let ctx = &mut *ctx;
-        let memo = &mut *(ctx.memo_ptr as *mut MemoState);
         let use_memo = ctx.use_memo != 0;
 
         if use_memo {
-            // Fast-path: skip the hash lookup when no failures have been
-            // recorded yet (common case for non-pathological patterns).
-            if !memo.fork_failures.is_empty() {
-                let key = memo_key(fork_pc as usize, pos as usize);
-                if let Some(&d) = memo.fork_failures.get(&key)
-                    && d <= ctx.atomic_depth as usize
-                {
+            // Dense array cached-failure check
+            let stride = ctx.text_len as usize + 1;
+            let fork_memo_len = ctx.fork_memo_len as usize;
+            let idx = fork_idx as usize * stride + pos as usize;
+            if idx < fork_memo_len {
+                let data = *ctx.fork_memo_data_ptr.add(idx);
+                let depth_mask = (2u16 << (ctx.atomic_depth as u32).min(7)).wrapping_sub(1) as u8;
+                if data & depth_mask != 0 {
                     return 0;
                 }
             }
-            bt_push(ctx, BtJit::memo_mark(fork_pc, pos));
+            bt_push(ctx, BtJit::memo_mark(fork_idx, pos));
         }
 
+        let _ = fork_pc; // kept in signature for ABI symmetry / future use
         push_retry(ctx, alt_block, pos);
         1
     }
@@ -427,26 +429,30 @@ pub unsafe extern "C" fn jit_fork(
 pub unsafe extern "C" fn jit_fork_next(
     ctx: *mut JitExecCtx,
     fork_pc: u32,
+    fork_idx: u32,
     main_block: u32,
     pos: u64,
 ) -> u32 {
     unsafe {
         let ctx = &mut *ctx;
-        let memo = &mut *(ctx.memo_ptr as *mut MemoState);
         let use_memo = ctx.use_memo != 0;
 
         if use_memo {
-            if !memo.fork_failures.is_empty() {
-                let key = memo_key(fork_pc as usize, pos as usize);
-                if let Some(&d) = memo.fork_failures.get(&key)
-                    && d <= ctx.atomic_depth as usize
-                {
+            // Dense array cached-failure check
+            let stride = ctx.text_len as usize + 1;
+            let fork_memo_len = ctx.fork_memo_len as usize;
+            let idx = fork_idx as usize * stride + pos as usize;
+            if idx < fork_memo_len {
+                let data = *ctx.fork_memo_data_ptr.add(idx);
+                let depth_mask = (2u16 << (ctx.atomic_depth as u32).min(7)).wrapping_sub(1) as u8;
+                if data & depth_mask != 0 {
                     return 0;
                 }
             }
-            bt_push(ctx, BtJit::memo_mark(fork_pc, pos));
+            bt_push(ctx, BtJit::memo_mark(fork_idx, pos));
         }
 
+        let _ = fork_pc; // kept in signature for ABI symmetry / future use
         push_retry(ctx, main_block, pos);
         1
     }
@@ -467,7 +473,6 @@ pub unsafe extern "C" fn jit_bt_pop(
 ) -> u32 {
     unsafe {
         let ctx = &mut *ctx;
-        let memo = &mut *(ctx.memo_ptr as *mut MemoState);
         let use_memo = ctx.use_memo != 0;
 
         loop {
@@ -478,11 +483,18 @@ pub unsafe extern "C" fn jit_bt_pop(
                 }
                 BtJit::TAG_MEMO_MARK => {
                     if use_memo {
-                        let key = memo_key(e.a as usize, e.b as usize);
-                        memo.fork_failures
-                            .entry(key)
-                            .and_modify(|d| *d = (*d).min(ctx.atomic_depth as usize))
-                            .or_insert(ctx.atomic_depth as usize);
+                        let fork_idx = e.a as usize;
+                        let pos = e.b as usize;
+                        let stride = ctx.text_len as usize + 1;
+                        let idx = fork_idx * stride + pos;
+                        if idx < ctx.fork_memo_len as usize {
+                            let bit = 1u8 << (ctx.atomic_depth as u32).min(7);
+                            let old = *ctx.fork_memo_data_ptr.add(idx);
+                            *ctx.fork_memo_data_ptr.add(idx) = old | bit;
+                        } else {
+                            // Array too small — grow and record
+                            fork_memo_grow_record(ctx, fork_idx as u32, pos as u64);
+                        }
                         ctx.memo_has_failures = 1;
                     }
                 }
@@ -504,6 +516,56 @@ pub unsafe extern "C" fn jit_bt_pop(
                 }
             }
         }
+    }
+}
+
+/// Grow the dense fork-failure memo array and record a failure at `(fork_idx, fork_pos)`.
+/// Called from `jit_fork_memo_record` (JIT builder slow path) and from `jit_bt_pop`
+/// when the inline-recorded idx is out of bounds of the current array.
+///
+/// # Safety
+/// `ctx.fork_memo_data_ptr/len/cap` must be consistent and valid (lent from ExecScratch).
+unsafe fn fork_memo_grow_record(ctx: &mut JitExecCtx, fork_idx: u32, fork_pos: u64) {
+    unsafe {
+        let stride = ctx.text_len as usize + 1;
+        let idx = fork_idx as usize * stride + fork_pos as usize;
+
+        // Reconstruct Vec from the raw parts lent from ExecScratch.
+        // When len=0 and cap=0, fork_memo_data_ptr is a dangling non-null pointer
+        // (from Vec::new().as_mut_ptr()); Vec::from_raw_parts with cap=0 is safe.
+        let mut v = Vec::from_raw_parts(
+            ctx.fork_memo_data_ptr,
+            ctx.fork_memo_len as usize,
+            ctx.fork_memo_cap as usize,
+        );
+
+        // Grow to cover all positions for fork_idx
+        let new_len = (fork_idx as usize + 1) * stride;
+        v.resize(new_len, 0);
+
+        // Record
+        let bit = 1u8 << (ctx.atomic_depth as u32).min(7);
+        v[idx] |= bit;
+
+        // Update ctx and forget Vec (ownership transferred back)
+        ctx.fork_memo_data_ptr = v.as_mut_ptr();
+        ctx.fork_memo_len = v.len() as u64;
+        ctx.fork_memo_cap = v.capacity() as u64;
+        std::mem::forget(v);
+    }
+}
+
+/// Record a failure in the dense fork-failure memo array, growing it if needed.
+/// Called from the JIT's `memo_pop_slow_block` when `idx >= fork_memo_len`.
+///
+/// # Safety
+/// `ctx.fork_memo_data_ptr/len/cap` must be consistent and valid (lent from ExecScratch).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn jit_fork_memo_record(ctx: *mut JitExecCtx, fork_idx: u32, fork_pos: u64) {
+    unsafe {
+        let ctx = &mut *ctx;
+        fork_memo_grow_record(ctx, fork_idx, fork_pos);
+        ctx.memo_has_failures = 1;
     }
 }
 
@@ -607,6 +669,54 @@ fn anchor_from_u32(v: u32) -> AnchorKind {
 #[allow(dead_code)]
 fn _use_flags(_: Flags) {}
 
+/// Case-folding forward match: advance through `text[pos..]` consuming chars until
+/// their accumulated Unicode case fold equals `folded`.
+/// Returns the new position (as i64 ≥ 0) on success, or -1 on failure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn jit_fold_seq(
+    ctx: *const JitExecCtx,
+    pos: u64,
+    folded_ptr: *const char,
+    folded_len: u64,
+) -> i64 {
+    unsafe {
+        let ctx = &*ctx;
+        let text = std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+            ctx.text_ptr,
+            ctx.text_len as usize,
+        ));
+        let folded = std::slice::from_raw_parts(folded_ptr, folded_len as usize);
+        match fold_advance(text, pos as usize, folded) {
+            Some(new_pos) => new_pos as i64,
+            None => -1,
+        }
+    }
+}
+
+/// Case-folding backward match: retreat through `text[..pos]` consuming chars until
+/// their accumulated Unicode case fold equals `folded`.
+/// Returns the new (lower) position (as i64 ≥ 0) on success, or -1 on failure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn jit_fold_seq_back(
+    ctx: *const JitExecCtx,
+    pos: u64,
+    folded_ptr: *const char,
+    folded_len: u64,
+) -> i64 {
+    unsafe {
+        let ctx = &*ctx;
+        let text = std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+            ctx.text_ptr,
+            ctx.text_len as usize,
+        ));
+        let folded = std::slice::from_raw_parts(folded_ptr, folded_len as usize);
+        match fold_retreat(text, pos as usize, folded) {
+            Some(new_pos) => new_pos as i64,
+            None => -1,
+        }
+    }
+}
+
 /// Symbol table: maps helper name → raw function pointer.
 /// Used by `JITBuilder::symbol()` to resolve external calls in JIT code.
 pub(super) fn register_symbols(jit_builder: &mut cranelift_jit::JITBuilder) {
@@ -636,4 +746,7 @@ pub(super) fn register_symbols(jit_builder: &mut cranelift_jit::JITBuilder) {
     sym!(jit_atomic_start);
     sym!(jit_atomic_end);
     sym!(jit_lookaround);
+    sym!(jit_fork_memo_record);
+    sym!(jit_fold_seq);
+    sym!(jit_fold_seq_back);
 }
