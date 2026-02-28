@@ -1,6 +1,6 @@
-# Fuzzing Aigumo
+# Fuzzing Oniai
 
-Aigumo uses [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) (libFuzzer)
+Oniai uses [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) (libFuzzer)
 to find bugs in the parser, compiler, VM, and JIT.
 
 ---

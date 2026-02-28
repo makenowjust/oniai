@@ -1,5 +1,5 @@
 [package]
-name = "aigumo"
+name = "oniai"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,6 +7,7 @@ edition = "2024"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
 [features]
+default = ["jit"]
 jit = [
     "dep:cranelift-codegen",
     "dep:cranelift-frontend",
@@ -27,6 +28,9 @@ unicode-general-category = "1.1.0"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+regex = "1"
+fancy-regex = "0"
+pcre2 = "0.2"
 
 [[bench]]
 name = "regex"

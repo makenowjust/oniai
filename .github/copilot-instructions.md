@@ -26,10 +26,20 @@ Run the Criterion benchmark suite with:
 cargo bench
 ```
 
-To run a specific benchmark (e.g. only `literal`), use the filter argument:
+To run a specific benchmark group or filter by engine, pass a regex filter:
 
 ```sh
+# Only oniai variants — skips regex/fancy-regex/pcre2 (much faster)
+cargo bench -- oniai
+
+# Only one benchmark group (e.g. literal)
 cargo bench -- literal
+
+# Only the JIT variant
+cargo bench -- oniai/jit
+
+# Advanced-feature groups only
+cargo bench -- "lookahead|lookbehind|backreference|atomic"
 ```
 
 HTML reports are written to `target/criterion/`. To compare against a saved
@@ -66,10 +76,10 @@ This repository uses **Jujutsu (`jj`)** for version control. Use `jj` commands f
 
 ## Project Context
 
-**Aigumo** is a pure-Rust regular expression engine compatible with
+**Oniai** is a pure-Rust regular expression engine compatible with
 [Onigmo](https://github.com/k-takata/Onigmo) (the regex library used by Ruby).
 The library core (`src/lib.rs` and its modules) has no external dependencies;
-the CLI binary (`src/bin/aigumo.rs`) uses `clap` for argument parsing.
+the CLI binary (`src/bin/oniai.rs`) uses `clap` for argument parsing.
 
 The `doc/RE` file is the authoritative reference for **Onigmo (Oniguruma-mod)
 Regular Expressions v6.1.0** — consult it when working on parser or compiler

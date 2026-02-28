@@ -163,9 +163,9 @@ pub(super) fn build(
             {
                 let mut ir_text = String::new();
                 write_function(&mut ir_text, &ctx.func).ok();
-                eprintln!("[aigumo jit] IR:\n{ir_text}");
+                eprintln!("[oniai jit] IR:\n{ir_text}");
                 for err in &errs.0 {
-                    eprintln!("[aigumo jit] verifier: {} -- {}", err.location, err.message);
+                    eprintln!("[oniai jit] verifier: {} -- {}", err.location, err.message);
                 }
             }
         }

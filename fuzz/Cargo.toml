@@ -1,5 +1,5 @@
 [package]
-name = "aigumo-fuzz"
+name = "oniai-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
@@ -11,7 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 
 # Enable jit so fuzz_match_diff can compare JIT vs interpreter outputs.
-[dependencies.aigumo]
+[dependencies.oniai]
 path = ".."
 features = ["jit"]
 

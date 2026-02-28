@@ -1,7 +1,7 @@
-# Aigumo — JIT Compilation Design
+# Oniai — JIT Compilation Design
 
 This document describes the design and implementation of the JIT (Just-In-Time)
-compilation layer in Aigumo.  The JIT is an optional acceleration layer
+compilation layer in Oniai.  The JIT is an optional acceleration layer
 (enabled with `--features jit`) that compiles a `Vec<Inst>` VM program to
 native machine code at regex construction time, replacing the interpreter loop
 in `vm.rs` for eligible patterns.
@@ -10,7 +10,7 @@ in `vm.rs` for eligible patterns.
 
 ## 1. Motivation
 
-Aigumo's current execution model is an **interpreted backtracking VM**.  Each
+Oniai's current execution model is an **interpreted backtracking VM**.  Each
 call to `exec()` steps through `Vec<Inst>` in a `loop`, dispatching on the
 variant of each `Inst` enum.  Despite memoisation and pre-filters, the dispatch
 overhead is non-trivial for short patterns on long texts:
@@ -28,7 +28,7 @@ loops, and enables the CPU branch predictor to work on the actual pattern
 structure.
 
 PCRE2's JIT (by Zoltan Herczeg, using Sljit) reports 2–10× improvements for
-character-intensive patterns.  We expect similar gains for the subset of Aigumo
+character-intensive patterns.  We expect similar gains for the subset of Oniai
 patterns that are JIT-eligible.
 
 ---

@@ -1,9 +1,9 @@
-# Aigumo
+# Oniai
 
 A pure-Rust regular expression engine compatible with
 [Onigmo](https://github.com/k-takata/Onigmo) — the regex library used by Ruby.
 
-Aigumo implements the full Onigmo syntax including look-around (lookahead and
+Oniai implements the full Onigmo syntax including look-around (lookahead and
 variable-length lookbehind), atomic groups, backreferences, named captures,
 subexpression calls (`\g<name>`), the absence operator `(?~...)`, and more.
 Case-insensitive matching uses full Unicode case folding (via the
@@ -34,7 +34,7 @@ behaviour on a broad class of patterns (see [Performance](#performance)).
 cargo install --path .
 ```
 
-This installs the `aigumo` binary into `~/.cargo/bin/`.
+This installs the `oniai` binary into `~/.cargo/bin/`.
 
 ### As a library
 
@@ -42,17 +42,17 @@ Add to `Cargo.toml`:
 
 ```toml
 [dependencies]
-aigumo = { path = "/path/to/aigumo" }
+oniai = { path = "/path/to/oniai" }
 ```
 
 ---
 
 ## CLI usage
 
-`aigumo` is a `grep`-like search tool that uses Onigmo regular expressions.
+`oniai` is a `grep`-like search tool that uses Onigmo regular expressions.
 
 ```
-aigumo [OPTIONS] PATTERN [FILE]...
+oniai [OPTIONS] PATTERN [FILE]...
 ```
 
 When no `FILE` arguments are given, standard input is read.
@@ -84,25 +84,25 @@ When no `FILE` arguments are given, standard input is read.
 
 ```sh
 # Find all function definitions in Rust files
-aigumo 'fn \w+' src/*.rs
+oniai 'fn \w+' src/*.rs
 
 # Case-insensitive search with line numbers
-aigumo -in 'error' server.log
+oniai -in 'error' server.log
 
 # Print only the matched portion (like grep -o)
-aigumo -o '\b[A-Z][a-z]+\b' README.md
+oniai -o '\b[A-Z][a-z]+\b' README.md
 
 # Count matches per file
-aigumo -c 'TODO' src/**/*.rs
+oniai -c 'TODO' src/**/*.rs
 
 # List files containing a pattern
-aigumo -rl 'unsafe' src/
+oniai -rl 'unsafe' src/
 
 # Variable-length lookbehind (not supported by many engines)
-aigumo '(?<=\d{4}-\d{2}-)\d{2}' dates.txt
+oniai '(?<=\d{4}-\d{2}-)\d{2}' dates.txt
 
 # Absence operator: match C-style comments
-aigumo '/\*(?~\*/)\*/' source.c
+oniai '/\*(?~\*/)\*/' source.c
 ```
 
 ---
@@ -110,7 +110,7 @@ aigumo '/\*(?~\*/)\*/' source.c
 ## Library usage
 
 ```rust
-use aigumo::Regex;
+use oniai::Regex;
 
 // Simple match test
 let re = Regex::new(r"\d+").unwrap();
@@ -170,7 +170,7 @@ caps.len() -> usize
 
 ## Supported syntax
 
-Aigumo supports the Onigmo v6.1.0 regex syntax.  A complete reference is in
+Oniai supports the Onigmo v6.1.0 regex syntax.  A complete reference is in
 [`doc/RE`](doc/RE).  Key features:
 
 ### Literals and character classes
@@ -246,7 +246,7 @@ Aigumo supports the Onigmo v6.1.0 regex syntax.  A complete reference is in
 
 ## Performance
 
-Aigumo implements the memoization framework from:
+Oniai implements the memoization framework from:
 
 > Fujinami, H. & Hasuo, I. (2024).  *Efficient Matching with Memoization for
 > Regexes with Look-around and Atomic Grouping.*  arXiv:2401.12639.
@@ -282,7 +282,7 @@ src/
   charset.rs    Character property helpers (Unicode, POSIX)
   error.rs      Error type
   bin/
-    aigumo.rs   grep-like CLI binary
+    oniai.rs   grep-like CLI binary
 doc/
   RE            Onigmo v6.1.0 syntax reference
   DESIGN.md     Architecture and implementation notes
@@ -327,6 +327,23 @@ cargo clippy --tests
 cargo bench
 ```
 
+The full suite compares five engines (oniai/jit, oniai/interp, regex, fancy-regex, pcre2)
+and takes several minutes.  Use Criterion's filter argument to narrow the run:
+
+```sh
+# Only oniai variants (fast — skips comparison libraries)
+cargo bench -- oniai
+
+# Only one benchmark group
+cargo bench -- literal
+
+# Only the JIT variant across all groups
+cargo bench -- oniai/jit
+
+# Advanced-feature groups only (lookahead, lookbehind, …)
+cargo bench -- "lookahead|lookbehind|backreference|atomic"
+```
+
 Results are written to `target/criterion/`.
 
 ### Version control
@@ -339,7 +356,7 @@ raw `git` commands.
 
 ## References
 
-- [Onigmo](https://github.com/k-takata/Onigmo) — the regex library Aigumo is compatible with
+- [Onigmo](https://github.com/k-takata/Onigmo) — the regex library Oniai is compatible with
 - Fujinami, H. & Hasuo, I. (2024).  *Efficient Matching with Memoization for Regexes with Look-around and Atomic Grouping.*  [arXiv:2401.12639](https://arxiv.org/abs/2401.12639)
 - [`doc/DESIGN.md`](doc/DESIGN.md) — detailed architecture document
 - [`doc/BENCHMARKS.md`](doc/BENCHMARKS.md) — benchmark results and analysis

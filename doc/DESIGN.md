@@ -1,6 +1,6 @@
-# Aigumo — Design Document
+# Oniai — Design Document
 
-Aigumo is a pure-Rust regular expression engine compatible with
+Oniai is a pure-Rust regular expression engine compatible with
 [Onigmo](https://github.com/k-takata/Onigmo) (the regex library used by Ruby).
 It follows the classic *compile-then-execute* pipeline:
 
@@ -32,7 +32,7 @@ No external dependencies are used.
 | `src/vm.rs` | Backtracking executor: `Vec<Inst>` × `&str` → match |
 | `src/charset.rs` | Character-property helpers (POSIX, Unicode, shorthands) |
 | `src/error.rs` | `Error` enum (`Parse`, `Compile`) |
-| `src/bin/aigumo.rs` | `grep`-like CLI binary |
+| `src/bin/oniai.rs` | `grep`-like CLI binary |
 
 ---
 

@@ -1084,24 +1084,21 @@ pub(crate) fn fold_advance(text: &str, start: usize, folded: &[char]) -> Option<
     if folded.is_empty() {
         return Some(start);
     }
-    let mut fold_buf: Vec<char> = Vec::with_capacity(folded.len() + 2);
+    let mut fi = 0usize; // index into folded
     let mut pos = start;
     for ch in text[start..].chars() {
-        fold_buf.extend(ch.case_fold());
         pos += ch.len_utf8();
-        match fold_buf.len().cmp(&folded.len()) {
-            std::cmp::Ordering::Equal => {
-                return if fold_buf == folded { Some(pos) } else { None };
+        for fc in ch.case_fold() {
+            if fi >= folded.len() || fc != folded[fi] {
+                return None;
             }
-            std::cmp::Ordering::Greater => return None,
-            std::cmp::Ordering::Less => {
-                if folded[..fold_buf.len()] != *fold_buf {
-                    return None;
-                }
-            }
+            fi += 1;
+        }
+        if fi == folded.len() {
+            return Some(pos);
         }
     }
-    if fold_buf == folded { Some(pos) } else { None }
+    if fi == folded.len() { Some(pos) } else { None }
 }
 
 /// Retreat backwards through `text[..pos]`, consuming chars (right-to-left)
@@ -1112,11 +1109,10 @@ pub(crate) fn fold_retreat(text: &str, mut pos: usize, folded: &[char]) -> Optio
     if folded.is_empty() {
         return Some(pos);
     }
-    let mut fold_buf: Vec<char> = Vec::with_capacity(folded.len() + 2);
+    let mut fi = folded.len(); // we need to match folded[0..fi] from the right
     loop {
-        let needed = folded.len() - fold_buf.len();
-        if needed == 0 {
-            return if fold_buf == folded { Some(pos) } else { None };
+        if fi == 0 {
+            return Some(pos);
         }
         if pos == 0 {
             return None;
@@ -1127,22 +1123,18 @@ pub(crate) fn fold_retreat(text: &str, mut pos: usize, folded: &[char]) -> Optio
             char_start -= 1;
         }
         let ch = text[char_start..pos].chars().next()?;
-        // Prepend this char's fold to fold_buf (we're going right-to-left).
-        // Extend at the end then rotate_right to avoid per-iteration allocation.
-        let old_len = fold_buf.len();
-        fold_buf.extend(ch.case_fold());
-        let ch_fold_len = fold_buf.len() - old_len;
-        fold_buf.rotate_right(ch_fold_len);
+        // Collect this char's case fold into a small stack buffer (max 3 for Unicode)
+        let mut cbuf = ['\0'; 4];
+        let mut clen = 0usize;
+        for fc in ch.case_fold() {
+            cbuf[clen] = fc;
+            clen += 1;
+        }
+        if clen > fi || cbuf[..clen] != folded[fi - clen..fi] {
+            return None;
+        }
+        fi -= clen;
         pos = char_start;
-        // Early-exit: fold_buf may now be longer than folded
-        if fold_buf.len() > folded.len() {
-            return None;
-        }
-        // Check suffix: fold_buf so far should be a suffix of folded
-        let suffix_start = folded.len() - fold_buf.len();
-        if folded[suffix_start..] != *fold_buf {
-            return None;
-        }
     }
 }
 
@@ -1166,8 +1158,16 @@ enum StartStrategy {
     /// Pattern begins with a multi-char case-sensitive literal prefix.
     /// Use `str::find` to jump directly to each occurrence.
     LiteralPrefix(String),
-    /// Pattern's first character must be one of these (case-sensitive).
-    /// Use `str::find` with a closure to skip non-matching positions.
+    /// Top-level alternation of case-sensitive literals (each ≥ 2 chars).
+    /// Run `str::find` for each and take the leftmost candidate.
+    LiteralSet(Vec<String>),
+    /// Pattern starts with a case-insensitive literal (FoldSeq with ≥ 2 chars).
+    /// Stores the full folded sequence; scan uses SIMD str::find for ASCII case
+    /// variants of folded[0] plus a correctness gap-scan for non-ASCII multi-fold
+    /// source chars (e.g. 'ß'→"ss" where folded[0]='s').
+    CaselessPrefix(Vec<char>),
+    /// Pattern's first character must be one of these.
+    /// Use `str::find(char)` per candidate and take the leftmost hit.
     FirstChars(Vec<char>),
     /// No restriction; try every byte-aligned position.
     Anywhere,
@@ -1187,6 +1187,16 @@ impl StartStrategy {
         let prefix = extract_literal_prefix(prog);
         if prefix.len() >= 2 {
             return StartStrategy::LiteralPrefix(prefix);
+        }
+
+        // Try to extract a case-insensitive literal prefix (FoldSeq)
+        if let Some(folded) = extract_caseless_prefix(prog) {
+            return StartStrategy::CaselessPrefix(folded);
+        }
+
+        // Try to extract a set of literals from a top-level alternation
+        if let Some(lits) = extract_literal_set(prog) {
+            return StartStrategy::LiteralSet(lits);
         }
 
         // Collect the set of possible first characters
@@ -1219,6 +1229,85 @@ fn extract_literal_prefix(prog: &[Inst]) -> String {
         }
     }
     prefix
+}
+
+/// If the program starts with a multi-char `FoldSeq` (after zero-width prefix
+/// instructions), return its folded char sequence.  Returns `None` otherwise.
+fn extract_caseless_prefix(prog: &[Inst]) -> Option<Vec<char>> {
+    let mut pc = 0;
+    while pc < prog.len() {
+        match &prog[pc] {
+            Inst::Save(_) | Inst::KeepStart => pc += 1,
+            Inst::Anchor(AnchorKind::StringStart, _) => pc += 1,
+            Inst::FoldSeq(folded) if folded.len() >= 2 => return Some(folded.clone()),
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Try to extract a literal from the program starting at `pc`.
+/// Skips zero-width instructions at the front and collects consecutive
+/// case-sensitive `Char` / `CharFast` instructions.
+/// Returns `Some(literal)` with at least 2 chars, or `None`.
+fn extract_one_literal(prog: &[Inst], start_pc: usize) -> Option<String> {
+    let mut s = String::new();
+    let mut pc = start_pc;
+    while let Some(inst) = prog.get(pc) {
+        match inst {
+            Inst::Save(_) | Inst::KeepStart => pc += 1,
+            Inst::Char(c, false) | Inst::CharFast(c) => {
+                s.push(*c);
+                pc += 1;
+            }
+            _ => break,
+        }
+    }
+    if s.len() >= 2 { Some(s) } else { None }
+}
+
+/// Walk the top-level Fork chain and extract one literal per alternative.
+/// Returns `Some(Vec<String>)` only if every branch yields a literal of
+/// length ≥ 2 and there are at least 2 branches (≥ 3 would beat
+/// `LiteralPrefix` anyway).
+fn extract_literal_set(prog: &[Inst]) -> Option<Vec<String>> {
+    // Skip zero-width prefix instructions to find the first Fork.
+    let mut pc = 0;
+    while pc < prog.len() {
+        match &prog[pc] {
+            Inst::Save(_) | Inst::KeepStart => pc += 1,
+            Inst::Fork(_, _) => break,
+            _ => return None, // not a top-level alternation
+        }
+    }
+    if pc >= prog.len() {
+        return None;
+    }
+
+    let mut literals: Vec<String> = Vec::new();
+
+    // Walk the chain of Fork instructions that make up the alternation.
+    // Each Fork(alt, _) splits into pc+1 (current branch) and alt (next alt).
+    loop {
+        match prog.get(pc) {
+            Some(Inst::Fork(alt_pc, _)) => {
+                let branch_pc = pc + 1;
+                let alt_pc = *alt_pc;
+                // Extract the literal from this branch.
+                let lit = extract_one_literal(prog, branch_pc)?;
+                literals.push(lit);
+                pc = alt_pc;
+            }
+            // Last alternative: no Fork, just a literal body.
+            _ => {
+                let lit = extract_one_literal(prog, pc)?;
+                literals.push(lit);
+                break;
+            }
+        }
+    }
+
+    if literals.len() >= 2 { Some(literals) } else { None }
 }
 
 /// Walk the program from `pc` and collect all characters that could appear
@@ -1533,15 +1622,92 @@ impl CompiledRegex {
                 }
             }
 
-            // Use str::find(closure) to skip positions where the first char
-            // cannot possibly start a match.
-            StartStrategy::FirstChars(chars) => {
-                let chars = chars.as_slice();
+            // Run str::find for each literal and jump to the leftmost hit.
+            StartStrategy::LiteralSet(lits) => {
                 let mut pos = start_pos;
                 loop {
-                    let offset =
-                        text[pos..].find(|c| chars.iter().any(|&fc| chars_eq_ci(c, fc)))?;
-                    let candidate = pos + offset;
+                    let candidate = lits
+                        .iter()
+                        .filter_map(|lit| text[pos..].find(lit.as_str()).map(|o| pos + o))
+                        .min()?;
+                    if let Some(result) = self.try_at(text, candidate, &mut memo, scratch) {
+                        return Some(result);
+                    }
+                    pos = candidate
+                        + text[candidate..]
+                            .chars()
+                            .next()
+                            .map(|c| c.len_utf8())
+                            .unwrap_or(1);
+                    if pos > text.len() {
+                        return None;
+                    }
+                }
+            }
+
+            // Case-insensitive literal prefix: use SIMD str::find for ASCII
+            // case variants of folded[0], plus a correctness gap-scan for
+            // non-ASCII multi-fold source chars.  fold_advance pre-filters
+            // candidates before launching the NFA.
+            StartStrategy::CaselessPrefix(folded) => {
+                let fc0 = folded[0];
+                // ASCII case variants of fc0 (computed once, amortised over the search).
+                let ascii_vars: Vec<char> = fc0
+                    .to_lowercase()
+                    .chain(fc0.to_uppercase())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                let mut pos = start_pos;
+                loop {
+                    // SIMD scan for ASCII first-char variants.
+                    let simd_pos = ascii_vars
+                        .iter()
+                        .filter_map(|&c| text[pos..].find(c).map(|off| pos + off))
+                        .min();
+                    // Correctness: scan the gap [pos..simd_pos) for non-ASCII
+                    // multi-fold source chars (e.g. 'ß'→"ss" when fc0='s').
+                    // The is_ascii() fast-path skips this scan for ASCII-only segments.
+                    let gap_end = simd_pos.unwrap_or(text.len());
+                    let char_pos = if !text[pos..gap_end].is_ascii() {
+                        text[pos..gap_end]
+                            .char_indices()
+                            .find(|(_, c)| {
+                                !c.is_ascii() && c.case_fold().next() == Some(fc0)
+                            })
+                            .map(|(off, _)| pos + off)
+                    } else {
+                        None
+                    };
+                    let candidate = match (char_pos, simd_pos) {
+                        (Some(a), Some(b)) => a.min(b),
+                        (Some(a), None) | (None, Some(a)) => a,
+                        (None, None) => return None,
+                    };
+                    // Pre-filter: verify the full fold sequence before the NFA.
+                    if fold_advance(text, candidate, folded).is_some()
+                        && let Some(result) = self.try_at(text, candidate, &mut memo, scratch) {
+                            return Some(result);
+                        }
+                    pos = candidate
+                        + text[candidate..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+                    if pos > text.len() {
+                        return None;
+                    }
+                }
+            }
+
+            // Use str::find(char) for each candidate first-char — SIMD-
+            // accelerated for ASCII chars.  All case variants are already
+            // enumerated in `chars` by `collect_first_chars`, so a plain
+            // equality match suffices (no case-fold overhead per character).
+            StartStrategy::FirstChars(chars) => {
+                let mut pos = start_pos;
+                loop {
+                    let candidate = chars
+                        .iter()
+                        .filter_map(|&c| text[pos..].find(c).map(|o| pos + o))
+                        .min()?;
                     if let Some(result) = self.try_at(text, candidate, &mut memo, scratch) {
                         return Some(result);
                     }
@@ -1590,8 +1756,8 @@ impl CompiledRegex {
     }
 
     /// Force the interpreter path, bypassing JIT even when it is compiled in.
-    /// Available in test and fuzzing builds only.
-    #[cfg(any(test, fuzzing))]
+    /// Available in test, fuzzing, and JIT-enabled builds (for benchmarking).
+    #[cfg(any(test, fuzzing, feature = "jit"))]
     pub fn find_interp(
         &self,
         text: &str,
@@ -1626,13 +1792,78 @@ impl CompiledRegex {
                     }
                 }
             }
+            StartStrategy::LiteralSet(lits) => {
+                let lits = lits.clone();
+                let mut pos = start_pos;
+                loop {
+                    let candidate = lits
+                        .iter()
+                        .filter_map(|lit| text[pos..].find(lit.as_str()).map(|o| pos + o))
+                        .min()?;
+                    if let Some(r) = self.exec_interp(text, candidate, &mut memo) {
+                        return Some(r);
+                    }
+                    pos = candidate
+                        + text[candidate..]
+                            .chars()
+                            .next()
+                            .map(|c| c.len_utf8())
+                            .unwrap_or(1);
+                    if pos > text.len() {
+                        return None;
+                    }
+                }
+            }
+            StartStrategy::CaselessPrefix(folded) => {
+                let folded = folded.clone();
+                let fc0 = folded[0];
+                let ascii_vars: Vec<char> = fc0
+                    .to_lowercase()
+                    .chain(fc0.to_uppercase())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                let mut pos = start_pos;
+                loop {
+                    let simd_pos = ascii_vars
+                        .iter()
+                        .filter_map(|&c| text[pos..].find(c).map(|off| pos + off))
+                        .min();
+                    let gap_end = simd_pos.unwrap_or(text.len());
+                    let char_pos = if !text[pos..gap_end].is_ascii() {
+                        text[pos..gap_end]
+                            .char_indices()
+                            .find(|(_, c)| {
+                                !c.is_ascii() && c.case_fold().next() == Some(fc0)
+                            })
+                            .map(|(off, _)| pos + off)
+                    } else {
+                        None
+                    };
+                    let candidate = match (char_pos, simd_pos) {
+                        (Some(a), Some(b)) => a.min(b),
+                        (Some(a), None) | (None, Some(a)) => a,
+                        (None, None) => return None,
+                    };
+                    if fold_advance(text, candidate, &folded).is_some()
+                        && let Some(r) = self.exec_interp(text, candidate, &mut memo) {
+                            return Some(r);
+                        }
+                    pos = candidate
+                        + text[candidate..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+                    if pos > text.len() {
+                        return None;
+                    }
+                }
+            }
             StartStrategy::FirstChars(chars) => {
                 let chars = chars.clone();
                 let mut pos = start_pos;
                 loop {
-                    let offset =
-                        text[pos..].find(|c| chars.iter().any(|&fc| chars_eq_ci(c, fc)))?;
-                    let candidate = pos + offset;
+                    let candidate = chars
+                        .iter()
+                        .filter_map(|&c| text[pos..].find(c).map(|o| pos + o))
+                        .min()?;
                     if let Some(r) = self.exec_interp(text, candidate, &mut memo) {
                         return Some(r);
                     }
@@ -1667,7 +1898,7 @@ impl CompiledRegex {
     }
 
     /// Run the interpreter at exactly `pos`, bypassing JIT.
-    #[cfg(any(test, fuzzing))]
+    #[cfg(any(test, fuzzing, feature = "jit"))]
     fn exec_interp(
         &self,
         text: &str,
@@ -1919,8 +2150,63 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
     positive: bool,
 ) -> bool {
     let jctx = unsafe { &mut *ctx };
+    let use_memo = jctx.use_memo != 0;
+    let memo = unsafe { &mut *(jctx.memo_ptr as *mut MemoState) };
+    let lk_key = memo_key(lk_pc, pos);
 
-    // Reconstruct the interpreter context from raw pointers.
+    // Fast path: check the Algorithm-6 lookaround cache *before* constructing
+    // a State (which heap-allocates a Vec for capture slots).  On a cache hit
+    // this avoids an allocation entirely, making repeated lookaround evaluation
+    // at already-visited (lk_pc, pos) pairs much cheaper.
+    if use_memo
+        && let Some(entry) = memo.look_results.get(&lk_key).cloned()
+    {
+        return match entry {
+                LookCacheEntry::BodyMatched {
+                    slot_delta,
+                    keep_pos_delta,
+                } => {
+                    // Apply the captured slot delta directly to jctx.slots_ptr
+                    // without constructing an intermediate State.
+                    if positive {
+                        let slots_out = unsafe {
+                            std::slice::from_raw_parts_mut(
+                                jctx.slots_ptr,
+                                jctx.slots_len as usize,
+                            )
+                        };
+                        if jctx.bt_retry_count > 0 {
+                            for &(idx, val) in &slot_delta {
+                                if idx < slots_out.len() {
+                                    let new_u64 = val.map(|v| v as u64).unwrap_or(u64::MAX);
+                                    if new_u64 != slots_out[idx] {
+                                        unsafe {
+                                            bt_push(
+                                                jctx,
+                                                BtJit::save_undo(idx as u32, slots_out[idx]),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        for (idx, val) in slot_delta {
+                            if idx < slots_out.len() {
+                                slots_out[idx] = val.map(|v| v as u64).unwrap_or(u64::MAX);
+                            }
+                        }
+                        if let Some(kp) = keep_pos_delta {
+                            jctx.keep_pos = kp.map(|v| v as u64).unwrap_or(u64::MAX);
+                        }
+                    }
+                    true
+                }
+                LookCacheEntry::BodyNotMatched => false,
+            };
+    }
+
+    // Slow path: cache miss (or memoization disabled).
+    // Reconstruct the interpreter context and run the body.
     let prog =
         unsafe { std::slice::from_raw_parts(jctx.prog_ptr as *const Inst, jctx.prog_len as usize) };
     let charsets = unsafe {
@@ -1940,23 +2226,19 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
         charsets,
         text,
         search_start: jctx.search_start as usize,
-        use_memo: jctx.use_memo != 0,
+        use_memo,
         num_null_checks: jctx.null_check_len as usize,
     };
 
-    // Reconstruct State from JitExecCtx slots.
+    // Build the sub-execution state directly from jctx rather than going
+    // through an intermediate `state` that would be cloned again by
+    // `exec_lookaround` — saving one Vec allocation per call.
     let slots_slice =
         unsafe { std::slice::from_raw_parts(jctx.slots_ptr, jctx.slots_len as usize) };
-    let mut state = State {
+    let mut sub = State {
         slots: slots_slice
             .iter()
-            .map(|&v| {
-                if v == u64::MAX {
-                    None
-                } else {
-                    Some(v as usize)
-                }
-            })
+            .map(|&v| if v == u64::MAX { None } else { Some(v as usize) })
             .collect(),
         keep_pos: if jctx.keep_pos == u64::MAX {
             None
@@ -1967,56 +2249,29 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
         null_check_slots: vec![(usize::MAX, 0); jctx.null_check_len as usize],
     };
 
-    let memo = unsafe { &mut *(jctx.memo_ptr as *mut MemoState) };
-    let use_memo = jctx.use_memo != 0;
-
-    // Full lookaround logic including the Algorithm-6 look_results cache.
-    let lk_key = memo_key(lk_pc, pos);
     let matched = if use_memo {
-        if let Some(entry) = memo.look_results.get(&lk_key).cloned() {
-            match entry {
-                LookCacheEntry::BodyMatched {
-                    slot_delta,
-                    keep_pos_delta,
-                } => {
-                    if positive {
-                        for (idx, val) in slot_delta {
-                            if idx >= state.slots.len() {
-                                state.slots.resize(idx + 1, None);
-                            }
-                            state.slots[idx] = val;
-                        }
-                        if let Some(kp) = keep_pos_delta {
-                            state.keep_pos = kp;
-                        }
-                    }
-                    true
-                }
-                LookCacheEntry::BodyNotMatched => false,
+        // Cache miss — run the body and store the result for future hits.
+        let pre_slots = sub.slots.clone();
+        let pre_keep = sub.keep_pos;
+        let m = exec(&interp_ctx, body_pc, pos, &mut sub, 1, memo).is_some();
+        let entry = if m {
+            let slot_delta = compute_slot_delta(&pre_slots, &sub.slots);
+            let keep_pos_delta = if sub.keep_pos != pre_keep {
+                Some(sub.keep_pos)
+            } else {
+                None
+            };
+            LookCacheEntry::BodyMatched {
+                slot_delta,
+                keep_pos_delta,
             }
         } else {
-            let pre_slots = state.slots.clone();
-            let pre_keep = state.keep_pos;
-            let m = exec_lookaround(&interp_ctx, body_pc, pos, &mut state, 0, memo);
-            let entry = if m {
-                let slot_delta = compute_slot_delta(&pre_slots, &state.slots);
-                let keep_pos_delta = if state.keep_pos != pre_keep {
-                    Some(state.keep_pos)
-                } else {
-                    None
-                };
-                LookCacheEntry::BodyMatched {
-                    slot_delta,
-                    keep_pos_delta,
-                }
-            } else {
-                LookCacheEntry::BodyNotMatched
-            };
-            memo.look_results.insert(lk_key, entry);
-            m
-        }
+            LookCacheEntry::BodyNotMatched
+        };
+        memo.look_results.insert(lk_key, entry);
+        m
     } else {
-        exec_lookaround(&interp_ctx, body_pc, pos, &mut state, 0, memo)
+        exec(&interp_ctx, body_pc, pos, &mut sub, 1, memo).is_some()
     };
 
     // On success, propagate state changes back into the JIT context.
@@ -2026,7 +2281,7 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
         let slots_out =
             unsafe { std::slice::from_raw_parts_mut(jctx.slots_ptr, jctx.slots_len as usize) };
         if jctx.bt_retry_count > 0 {
-            for (i, &s) in state.slots.iter().enumerate() {
+            for (i, &s) in sub.slots.iter().enumerate() {
                 if i < slots_out.len() {
                     let new_val = s.map(|v| v as u64).unwrap_or(u64::MAX);
                     if new_val != slots_out[i] {
@@ -2037,12 +2292,12 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
                 }
             }
         }
-        for (i, &s) in state.slots.iter().enumerate() {
+        for (i, &s) in sub.slots.iter().enumerate() {
             if i < slots_out.len() {
                 slots_out[i] = s.map(|v| v as u64).unwrap_or(u64::MAX);
             }
         }
-        jctx.keep_pos = state.keep_pos.map(|v| v as u64).unwrap_or(u64::MAX);
+        jctx.keep_pos = sub.keep_pos.map(|v| v as u64).unwrap_or(u64::MAX);
     }
 
     matched

@@ -1,4 +1,4 @@
-//! JIT compilation for Aigumo.
+//! JIT compilation for Oniai.
 //!
 //! Enabled with `--features jit`.  Compiles a `Vec<Inst>` to native machine
 //! code via Cranelift.  Transparent fallback to the interpreter for ineligible
@@ -78,9 +78,9 @@ pub(crate) fn try_compile(
         Err(_e) => {
             #[cfg(debug_assertions)]
             {
-                eprintln!("[aigumo jit] build_module error: {_e}");
+                eprintln!("[oniai jit] build_module error: {_e}");
                 for (i, inst) in prog.iter().enumerate() {
-                    eprintln!("[aigumo jit]   prog[{i}] = {inst:?}");
+                    eprintln!("[oniai jit]   prog[{i}] = {inst:?}");
                 }
             }
             return None;

@@ -14,7 +14,7 @@ fuzz_target!(|data: &[u8]| {
     let pattern = String::from_utf8_lossy(&rest[..pat_len]);
     let subject = String::from_utf8_lossy(&rest[pat_len..]);
 
-    let Ok(re) = aigumo::Regex::new(&pattern) else {
+    let Ok(re) = oniai::Regex::new(&pattern) else {
         return;
     };
 

@@ -7,5 +7,5 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|data: &[u8]| {
     let pattern = String::from_utf8_lossy(data);
     // We don't care about the result — only about not panicking.
-    let _ = aigumo::Regex::new(&pattern);
+    let _ = oniai::Regex::new(&pattern);
 });

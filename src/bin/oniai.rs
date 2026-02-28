@@ -1,6 +1,6 @@
-//! `aigumo` — a grep-like search tool backed by the Aigumo regex engine.
+//! `oniai` — a grep-like search tool backed by the Oniai regex engine.
 //!
-//! Usage: aigumo [OPTIONS] PATTERN [FILE...]
+//! Usage: oniai [OPTIONS] PATTERN [FILE...]
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
@@ -9,7 +9,7 @@ use std::process;
 
 use clap::Parser;
 
-use aigumo::Regex;
+use oniai::Regex;
 
 // ---------------------------------------------------------------------------
 // CLI argument definition
@@ -17,11 +17,11 @@ use aigumo::Regex;
 
 #[derive(Parser)]
 #[command(
-    name = "aigumo",
+    name = "oniai",
     version,
     about = "Search for PATTERN in each FILE (or stdin).\n\
              PATTERN is an Onigmo-compatible regular expression.",
-    override_usage = "aigumo [OPTIONS] PATTERN [FILE]..."
+    override_usage = "oniai [OPTIONS] PATTERN [FILE]..."
 )]
 struct Args {
     /// Regular expression to search for
@@ -139,7 +139,7 @@ impl<W: Write> Searcher<'_, W> {
                 Ok(l) => l,
                 Err(e) => {
                     let name = filename.as_deref().unwrap_or("<stdin>");
-                    eprintln!("aigumo: {name}: {e}");
+                    eprintln!("oniai: {name}: {e}");
                     self.status = 2;
                     return;
                 }
@@ -261,7 +261,7 @@ fn collect_paths(args: &Args) -> Vec<PathBuf> {
             if args.recursive {
                 walk_dir(&p, &mut paths);
             } else {
-                eprintln!("aigumo: {f}: Is a directory");
+                eprintln!("oniai: {f}: Is a directory");
             }
         } else {
             paths.push(p);
@@ -274,7 +274,7 @@ fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) => {
-            eprintln!("aigumo: {}: {e}", dir.display());
+            eprintln!("oniai: {}: {e}", dir.display());
             return;
         }
     };
@@ -306,7 +306,7 @@ fn main() {
     let re = match Regex::new(&pattern) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("aigumo: invalid pattern: {e}");
+            eprintln!("oniai: invalid pattern: {e}");
             process::exit(2);
         }
     };
@@ -345,7 +345,7 @@ fn main() {
             let file = match File::open(path) {
                 Ok(f) => f,
                 Err(e) => {
-                    eprintln!("aigumo: {}: {e}", path.display());
+                    eprintln!("oniai: {}: {e}", path.display());
                     status = 2;
                     continue;
                 }

@@ -1,7 +1,7 @@
-//! Integration tests for the Aigumo regex engine.
+//! Integration tests for the Oniai regex engine.
 //! Organized by feature section matching doc/RE.
 
-use aigumo::Regex;
+use oniai::Regex;
 
 // Helper macros
 macro_rules! assert_match {

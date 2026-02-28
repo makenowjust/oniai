@@ -1,8 +1,8 @@
-//! Aigumo — Onigmo-compatible regular expression engine.
+//! Oniai — Onigmo-compatible regular expression engine.
 //!
 //! # Example
 //! ```
-//! use aigumo::Regex;
+//! use oniai::Regex;
 //!
 //! let re = Regex::new(r"(\w+)\s+(\w+)").unwrap();
 //! let caps = re.captures("hello world").unwrap();
@@ -96,6 +96,13 @@ impl Regex {
             #[cfg(not(feature = "jit"))]
             scratch: vm::ExecScratch,
         }
+    }
+    /// Returns an iterator over interpreter-path matches.
+    /// Not part of the public API; exposed only for JIT vs interpreter benchmarking.
+    #[cfg(feature = "jit")]
+    #[doc(hidden)]
+    pub fn find_iter_interp<'r, 't>(&'r self, text: &'t str) -> FindIterInterp<'r, 't> {
+        FindIterInterp { re: self, text, pos: 0 }
     }
 }
 
@@ -251,4 +258,31 @@ impl<'r, 't> Iterator for CapturesIter<'r, 't> {
 
 fn next_char_len(s: &str, pos: usize) -> usize {
     s[pos..].chars().next().map(|c| c.len_utf8()).unwrap_or(1)
+}
+
+/// Iterator over interpreter-path matches; mirrors [`FindIter`] but bypasses JIT.
+/// Not part of the public API; exposed only for JIT vs interpreter benchmarking.
+#[cfg(feature = "jit")]
+#[doc(hidden)]
+pub struct FindIterInterp<'r, 't> {
+    re: &'r Regex,
+    text: &'t str,
+    pos: usize,
+}
+
+#[cfg(feature = "jit")]
+impl<'r, 't> Iterator for FindIterInterp<'r, 't> {
+    type Item = Match<'t>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos > self.text.len() {
+            return None;
+        }
+        let (start, end, _) = self.re.inner.find_interp(self.text, self.pos)?;
+        self.pos = if end > start {
+            end
+        } else {
+            end + next_char_len(self.text, end)
+        };
+        Some(Match { text: self.text, start, end })
+    }
 }
