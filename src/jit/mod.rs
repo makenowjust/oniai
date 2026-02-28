@@ -150,7 +150,7 @@ pub(crate) fn exec_jit(
     scratch.slots.clear();
     scratch.slots.resize(slot_count, u64::MAX);
     scratch.null_check.clear();
-    scratch.null_check.resize(num_null_checks, u64::MAX);
+    scratch.null_check.resize(num_null_checks * 2, u64::MAX);
 
     // "Lend" the bt allocation to ctx so JIT helpers can work with raw pointers.
     // Take ownership of the internal allocation via mem::forget to prevent double-free

@@ -855,4 +855,9 @@ fn null_loop_check_empty_body() {
     let re = Regex::new(r"()+").unwrap();
     let m = re.find("ar)bar").unwrap();
     assert_eq!(m.start(), 0);
+    // Onigmo-compatible: last iteration (empty match) is committed, so
+    // the capture group reflects the empty string from the final pass.
+    let re = Regex::new(r"(?:(a*))*").unwrap();
+    let caps = re.captures("aa").unwrap();
+    assert_eq!(caps.get(1).map(|m| m.as_str()), Some(""));
 }

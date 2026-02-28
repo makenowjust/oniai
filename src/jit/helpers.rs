@@ -717,25 +717,40 @@ pub unsafe extern "C" fn jit_fold_seq_back(
     }
 }
 
-/// Save the current position into the null-check slot for this loop iteration.
+/// Save `(pos, bt_len)` into the null-check slot for this loop iteration.
+/// The slot is stored as two consecutive u64 values: [pos, bt_len].
+/// Must be called BEFORE the Fork/ForkNext pushes its retry so that
+/// saved bt_len is below the Fork's retry on the stack.
 pub unsafe extern "C" fn jit_null_check_start(ctx: *mut JitExecCtx, slot: u32, pos: u64) {
     unsafe {
         let ctx = &mut *ctx;
-        *ctx.null_check_ptr.add(slot as usize) = pos;
+        let base = slot as usize * 2;
+        *ctx.null_check_ptr.add(base) = pos;
+        *ctx.null_check_ptr.add(base + 1) = ctx.bt_len;
     }
 }
 
-/// Return 1 (fail/backtrack) if position hasn't advanced since NullCheckStart,
-/// meaning the loop body matched empty — preventing an infinite loop.
+/// Check whether position has advanced since `NullCheckStart`.
+/// If not (null match): truncate the JIT backtrack stack to the saved depth
+/// (committing captures from this iteration) and return 1 so the caller
+/// jumps to `exit_pc`.  Returns 0 if position advanced (loop continues).
 pub unsafe extern "C" fn jit_null_check_end(
-    ctx: *const JitExecCtx,
+    ctx: *mut JitExecCtx,
     slot: u32,
     pos: u64,
 ) -> u32 {
     unsafe {
-        let ctx = &*ctx;
-        let saved = *ctx.null_check_ptr.add(slot as usize);
-        u32::from(saved == pos)
+        let ctx = &mut *ctx;
+        let base = slot as usize * 2;
+        let saved_pos = *ctx.null_check_ptr.add(base);
+        let saved_bt = *ctx.null_check_ptr.add(base + 1);
+        if saved_pos == pos {
+            // Commit: truncate bt stack so the Fork's retry + body saves are gone.
+            ctx.bt_len = saved_bt;
+            1
+        } else {
+            0
+        }
     }
 }
 

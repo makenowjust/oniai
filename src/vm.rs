@@ -200,12 +200,18 @@ pub enum Inst {
     /// Lazy fork: try `usize` first; on failure try pc+1
     ForkNext(usize),
 
-    /// Record `pos` in null-check slot `n` at the start of an optional loop iteration.
+    /// Record `(pos, bt_depth)` in null-check slot `n`.
+    /// Must appear **before** the Fork/ForkNext of the loop so that the saved
+    /// `bt_depth` is below the Fork's retry entry on the backtrack stack.
     NullCheckStart(usize),
 
-    /// Fail (exit the loop) if `pos` is still the value stored in slot `n`.
-    /// Prevents a loop whose body matched the empty string from iterating forever.
-    NullCheckEnd(usize),
+    /// Commit the current loop iteration and exit the loop if position has not
+    /// advanced since the matching `NullCheckStart`.
+    /// On null: truncate the backtrack stack to the saved depth (discarding the
+    /// Fork retry and any body save/undo entries without executing them, so
+    /// captures from this iteration are **kept**), then jump to `exit_pc`.
+    /// This matches Onigmo's semantics: the empty-match iteration is committed.
+    NullCheckEnd { slot: usize, exit_pc: usize },
 
     /// Save current position to slot
     Save(usize),
@@ -268,10 +274,10 @@ pub(crate) struct State {
     pub(crate) keep_pos: Option<usize>,
     /// Return address stack for subexpression calls
     pub(crate) call_stack: Vec<usize>,
-    /// Per-loop-guard saved positions for null-loop checks.
+    /// Per-loop-guard saved `(pos, bt_depth)` for null-loop checks.
     /// Indexed by the slot number in `NullCheckStart`/`NullCheckEnd`.
-    /// Initialised to `usize::MAX` (no saved position).
-    pub(crate) null_check_slots: Vec<usize>,
+    /// Initialised to `(usize::MAX, 0)` (no saved position).
+    pub(crate) null_check_slots: Vec<(usize, usize)>,
 }
 
 impl State {
@@ -280,7 +286,7 @@ impl State {
             slots: vec![None; num_groups * 2],
             keep_pos: None,
             call_stack: Vec::new(),
-            null_check_slots: vec![usize::MAX; num_null_checks],
+            null_check_slots: vec![(usize::MAX, 0); num_null_checks],
         }
     }
 }
@@ -717,15 +723,22 @@ pub(crate) fn exec(
             }
 
             Inst::NullCheckStart(slot) => {
-                state.null_check_slots[*slot] = pos;
+                // Save (pos, bt_depth) BEFORE the loop's Fork/ForkNext pushes its retry.
+                state.null_check_slots[*slot] = (pos, bt.len());
                 pc += 1;
             }
 
-            Inst::NullCheckEnd(slot) => {
-                if state.null_check_slots[*slot] == pos {
-                    fail!();
+            Inst::NullCheckEnd { slot, exit_pc } => {
+                let (saved_pos, saved_bt_len) = state.null_check_slots[*slot];
+                if pos == saved_pos {
+                    // Commit: discard the Fork's retry + body save/undo entries by
+                    // truncating the bt stack.  Captures from this (empty) iteration
+                    // are kept in state.slots — this matches Onigmo's behaviour.
+                    bt.truncate(saved_bt_len);
+                    pc = *exit_pc;
+                } else {
+                    pc += 1;
                 }
-                pc += 1;
             }
 
             Inst::Save(slot) => {
@@ -941,7 +954,7 @@ pub(crate) fn exec_lookaround(
         slots: state.slots.clone(),
         keep_pos: state.keep_pos,
         call_stack: Vec::new(),
-        null_check_slots: vec![usize::MAX; ctx.num_null_checks],
+        null_check_slots: vec![(usize::MAX, 0); ctx.num_null_checks],
     };
     if exec(ctx, body_pc, pos, &mut sub, depth + 1, memo).is_some() {
         state.slots = sub.slots;
@@ -1917,7 +1930,7 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
             Some(jctx.keep_pos as usize)
         },
         call_stack: Vec::new(),
-        null_check_slots: vec![usize::MAX; jctx.null_check_len as usize],
+        null_check_slots: vec![(usize::MAX, 0); jctx.null_check_len as usize],
     };
 
     let memo = unsafe { &mut *(jctx.memo_ptr as *mut MemoState) };

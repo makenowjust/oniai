@@ -484,66 +484,51 @@ impl Compiler {
 
             // Greedy / reluctant {n,}
             (None, QuantKind::Greedy) => {
-                // loop: Fork(exit), NullCheckStart, body, NullCheckEnd, Jump(Fork)
+                // Layout: NullCheckStart, Fork(exit), body, NullCheckEnd{exit}, Jump(NullCheckStart)
                 let slot = self.alloc_null_check();
-                let fork_pc = self.emit(Inst::Fork(0));
+                let null_check_start_pc = self.pc();
                 self.emit(Inst::NullCheckStart(slot));
+                let fork_pc = self.pc();
+                self.emit(Inst::Fork(0)); // patched to exit_pc below
                 self.compile_node_inner(node, flags, backward)?;
-                self.emit(Inst::NullCheckEnd(slot));
-                let jump_pc = self.emit(Inst::Jump(fork_pc));
-                let _ = jump_pc;
-                self.patch_jump(fork_pc, self.pc());
+                // exit_pc is the instruction after NullCheckEnd + Jump
+                let exit_pc = self.pc() + 2;
+                self.emit(Inst::NullCheckEnd { slot, exit_pc });
+                self.emit(Inst::Jump(null_check_start_pc));
+                // self.pc() == exit_pc now
+                self.patch_jump(fork_pc, exit_pc);
             }
             (None, QuantKind::Reluctant) => {
+                // Layout: NullCheckStart, ForkNext(exit), body, NullCheckEnd{exit}, Jump(NullCheckStart)
+                // ForkNext(exit): try exit first (lazy), retry = body (pc+1)
                 let slot = self.alloc_null_check();
-                let fork_pc = self.emit(Inst::ForkNext(0)); // try exit first (lazy)
-                let body_start = self.pc();
+                let null_check_start_pc = self.pc();
                 self.emit(Inst::NullCheckStart(slot));
+                let fork_pc = self.pc();
+                self.emit(Inst::ForkNext(0)); // patched to exit_pc below
                 self.compile_node_inner(node, flags, backward)?;
-                self.emit(Inst::NullCheckEnd(slot));
-                self.emit(Inst::Jump(fork_pc));
-                let end_pc = self.pc();
-                self.patch_jump(fork_pc, body_start); // on failure: try body
-                // Actually ForkNext(end_pc): try end_pc first (skip body), else continue
-                // Rewrite: ForkNext means "try pc+1 first (body), else jump"
-                // Let's redefine: ForkNext(alt) = reluctant: try alt first, else pc+1
-                // So ForkNext(exit): try exit (skip) first, then on re-try go to body
-                // Hmm, actually for reluctant we want: first attempt = zero iterations.
-                // Lazy *? : try 0 first, then 1, then 2...
-                // Code: ForkNext(exit_pc); [body]; Jump(ForkNext)
-                // ForkNext(exit): saves (ForkNext+1) as retry, tries exit first
-                // On retry: tries pc+1 (body)
-                // This needs careful re-examination.
-                // Let me re-clarify the semantics:
-                // Fork(alt): greedy — try pc+1 (continue), on failure retry via alt
-                // ForkNext(alt): lazy — try alt (skip/exit) first, on failure retry via pc+1
-                // For lazy *?: ForkNext(exit); body; Jump(ForkNext)
-                // At ForkNext: we try exit first (0 iterations). If outer fails, we retry
-                // and try body (1 iteration). After body, jump back to ForkNext for next iteration.
-                // This is correct! The patch above is wrong. Let me redo.
-                // We already emitted: ForkNext(0-placeholder), body, Jump(fork_pc)
-                // We need ForkNext to point to exit (after the jump), which is self.pc()
-                self.patch_jump(fork_pc, end_pc);
+                let exit_pc = self.pc() + 2;
+                self.emit(Inst::NullCheckEnd { slot, exit_pc });
+                self.emit(Inst::Jump(null_check_start_pc));
+                self.patch_jump(fork_pc, exit_pc);
             }
             (None, QuantKind::Possessive) => {
-                // Atomic loop with null-check guard
+                // Layout: AtomicStart, NullCheckStart, Fork(loop_end), body,
+                //         NullCheckEnd{loop_end}, Jump(NullCheckStart), AtomicEnd
                 let slot = self.alloc_null_check();
-                let atomic_start = self.emit(Inst::AtomicStart(0));
-                let fork_pc = self.emit(Inst::Fork(0));
+                let atomic_start = self.emit(Inst::AtomicStart(0)); // patched below
+                let null_check_start_pc = self.pc();
                 self.emit(Inst::NullCheckStart(slot));
+                let fork_pc = self.pc();
+                self.emit(Inst::Fork(0)); // patched to loop_end below
                 self.compile_node_inner(node, flags, backward)?;
-                self.emit(Inst::NullCheckEnd(slot));
-                self.emit(Inst::Jump(fork_pc));
-                let loop_end = self.pc();
+                // loop_end is the pc of AtomicEnd (after NullCheckEnd + Jump)
+                let loop_end = self.pc() + 2;
+                self.emit(Inst::NullCheckEnd { slot, exit_pc: loop_end });
+                self.emit(Inst::Jump(null_check_start_pc));
+                // self.pc() == loop_end
                 self.emit(Inst::AtomicEnd);
                 self.patch_jump(fork_pc, loop_end);
-                let after_atomic = self.pc();
-                self.patch_jump(atomic_start, loop_end);
-                // Wait, AtomicStart needs end_pc which is the AtomicEnd instruction's pc
-                // The loop_end (before AtomicEnd) is where Fork jumps on "no more"
-                // AtomicEnd is at loop_end, after_atomic = loop_end + 1
-                // Fix: AtomicStart(atomic_end_pc) where atomic_end_pc = index of AtomicEnd
-                let _ = after_atomic;
                 self.patch_jump(atomic_start, loop_end);
             }
 

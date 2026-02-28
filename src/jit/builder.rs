@@ -595,16 +595,17 @@ fn emit_function(
                 builder.ins().call(h_null_check_start, &[ctx_v, slot_v, pos_v]);
                 builder.ins().jump(inst_blocks[pc + 1], &[]);
             }
-            Inst::NullCheckEnd(slot) => {
+            Inst::NullCheckEnd { slot, exit_pc } => {
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
                 let slot_v = builder.ins().iconst(types::I32, *slot as i64);
                 let call = builder.ins().call(h_null_check_end, &[ctx_v, slot_v, pos_v]);
-                let fail_flag = builder.inst_results(call)[0];
-                // fail_flag == 1 means pos didn't advance → treat as failure (backtrack)
+                let null_flag = builder.inst_results(call)[0];
+                // null_flag == 1: null iteration detected, bt truncated, jump to exit_pc
+                // null_flag == 0: pos advanced, continue to pc+1 (loop body → Jump)
                 builder
                     .ins()
-                    .brif(fail_flag, bt_resume_block, &[], inst_blocks[pc + 1], &[]);
+                    .brif(null_flag, inst_blocks[*exit_pc], &[], inst_blocks[pc + 1], &[]);
             }
 
             // ----------------------------------------------------------------
