@@ -168,6 +168,30 @@ fn bench_pathological(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// Pathological backtracking — cross-position reuse
+//
+// `find_iter` reuses the same ExecScratch across all start positions, so
+// memoization data accumulated at position k is available at position k+1.
+// With the `memo_has_failures` fix this benchmark shows a significant
+// reduction in work compared to the baseline (fresh scratch each call).
+// ---------------------------------------------------------------------------
+
+fn bench_pathological_iter(c: &mut Criterion) {
+    let mut group = c.benchmark_group("pathological_iter");
+    for n in [10usize, 15, 20] {
+        let pattern = format!("{}{}", "a?".repeat(n), "a".repeat(n));
+        // Haystack: many 'b's (no match) followed by one match at the end.
+        // find_iter must scan every position, exercising cross-position memo reuse.
+        let haystack = format!("{}{}", "b".repeat(n * 10), "a".repeat(n));
+        let re = Regex::new(&pattern).unwrap();
+        group.bench_with_input(BenchmarkId::from_parameter(n), &haystack, |b, h| {
+            b.iter(|| re.find_iter(black_box(h)).count())
+        });
+    }
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Real-world text: "A Study in Scarlet"
 // ---------------------------------------------------------------------------
 
@@ -222,6 +246,7 @@ criterion_group!(
     bench_case_insensitive,
     bench_find_iter_scale,
     bench_pathological,
+    bench_pathological_iter,
     bench_real_world,
 );
 criterion_main!(benches);

@@ -154,9 +154,23 @@ pub(super) fn build(
         builder.finalize();
     }
 
-    module
-        .define_function(func_id, &mut ctx)
-        .map_err(|e| format!("define jit_exec: {e}"))?;
+    module.define_function(func_id, &mut ctx).map_err(|e| {
+        #[cfg(debug_assertions)]
+        {
+            use cranelift_codegen::CodegenError;
+            use cranelift_codegen::write::write_function;
+            if let cranelift_module::ModuleError::Compilation(CodegenError::Verifier(ref errs)) = e
+            {
+                let mut ir_text = String::new();
+                write_function(&mut ir_text, &ctx.func).ok();
+                eprintln!("[aigumo jit] IR:\n{ir_text}");
+                for err in &errs.0 {
+                    eprintln!("[aigumo jit] verifier: {} -- {}", err.location, err.message);
+                }
+            }
+        }
+        format!("define jit_exec: {e}")
+    })?;
     module.clear_context(&mut ctx);
     Ok(func_id)
 }
@@ -962,16 +976,17 @@ fn emit_function(
                 let idx = builder.block_params(memo_pop_after_block)[0];
                 let ctx_v = builder.use_var(var_ctx);
 
-                // Compute depth_bit = 1u8 << (atomic_depth & 7)
+                // Compute depth_bit = 1u32 << (atomic_depth & 7)
+                // Use i32 throughout — Cranelift doesn't support ishl/bor/icmp_imm on i8.
                 let atomic_depth =
                     builder
                         .ins()
                         .load(types::I64, MemFlags::trusted(), ctx_v, CTX_ATOMIC_DEPTH);
-                let depth_u8 = builder.ins().ireduce(types::I8, atomic_depth);
-                let one_i8 = builder.ins().iconst(types::I8, 1);
-                let depth_bit = builder.ins().ishl(one_i8, depth_u8);
+                let depth_u32 = builder.ins().ireduce(types::I32, atomic_depth);
+                let one_i32 = builder.ins().iconst(types::I32, 1);
+                let depth_bit = builder.ins().ishl(one_i32, depth_u32);
 
-                // Load data_ptr, OR and store back
+                // Load data_ptr, OR and store back (istore8 truncates to 8 bits)
                 let data_ptr = builder.ins().load(
                     types::I64,
                     MemFlags::trusted(),
@@ -981,11 +996,11 @@ fn emit_function(
                 let byte_ptr = builder.ins().iadd(data_ptr, idx);
                 let old_byte = builder
                     .ins()
-                    .load(types::I8, MemFlags::trusted(), byte_ptr, 0);
+                    .uload8(types::I32, MemFlags::trusted(), byte_ptr, 0);
                 let new_byte = builder.ins().bor(old_byte, depth_bit);
                 builder
                     .ins()
-                    .store(MemFlags::trusted(), new_byte, byte_ptr, 0);
+                    .istore8(MemFlags::trusted(), new_byte, byte_ptr, 0);
 
                 // Mark that a failure has been recorded (enables dense array check in forks)
                 let one_i64 = builder.ins().iconst(types::I64, 1);
@@ -1865,11 +1880,19 @@ fn inline_fork(
         .ins()
         .icmp(IntCC::UnsignedLessThanOrEqual, bt_after, bt_cap);
 
-    // Fast path: has room AND (no memo OR no failures recorded yet).
-    // When memo_has_failures==1 we fall to slow_block (jit_fork handles dense array).
-    // This keeps fast_block as a single-predecessor linear block — critical for
-    // Cranelift's register allocator to keep bt_len/bt_data/etc. in registers.
-    let can_fast = if use_memo {
+    // Routing:
+    //  • !has_room                                → slow_block (C helper handles realloc)
+    //  • has_room && !use_memo                    → fast_block
+    //  • has_room && memo_has_failures == 0       → fast_block (no failures yet)
+    //  • has_room && memo_has_failures == 1
+    //      && atomic_depth <= 1                   → inline_check_block (dense-array read in IR)
+    //      && atomic_depth >= 2                   → slow_block (rare; C helper is fine)
+    //
+    // The inline check emits ~8 IR ops vs a C call; it eliminates jit_fork overhead
+    // for the entire backtracking hot loop once any failure has been recorded.
+    // Restricting to atomic_depth <= 1 avoids a complex depth-mask computation;
+    // atomic_depth >= 2 (multiple nested atomic groups) is extremely rare.
+    if use_memo {
         let memo_hf = builder.ins().load(
             types::I64,
             MemFlags::trusted(),
@@ -1877,16 +1900,107 @@ fn inline_fork(
             CTX_MEMO_HAS_FAILURES,
         );
         let no_fail = builder.ins().icmp_imm(IntCC::Equal, memo_hf, 0);
-        builder.ins().band(has_room, no_fail)
+        let atomic_depth =
+            builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), ctx_v, CTX_ATOMIC_DEPTH);
+
+        // can_fast: has room AND no failures recorded yet
+        let can_fast = builder.ins().band(has_room, no_fail);
+
+        // check_block: reached when can_fast == 0 (either !has_room or failures exist)
+        let check_block = builder.create_block();
+        builder
+            .ins()
+            .brif(can_fast, fast_block, &[], check_block, &[]);
+
+        // check_block: If has_room AND atomic_depth <= 1: inline dense-array check in IR.
+        // Otherwise fall to slow_block (C helper: handles realloc or deep atomics).
+        builder.switch_to_block(check_block);
+        let depth_le1 = builder
+            .ins()
+            .icmp_imm(IntCC::UnsignedLessThanOrEqual, atomic_depth, 1);
+        let can_inline = builder.ins().band(has_room, depth_le1);
+        // inline_check_block: has_room=true, atomic_depth<=1, memo_has_failures=1
+        // Compute idx = fork_idx * (text_len + 1) + pos, read dense array byte,
+        // apply depth mask, branch.
+        // do_check_block receives idx as a block param to avoid cross-block SSA.
+        let inline_check_block = builder.create_block();
+        let do_check_block = builder.create_block();
+        builder.append_block_param(do_check_block, types::I64); // idx
+        builder
+            .ins()
+            .brif(can_inline, inline_check_block, &[], slow_block, &[]);
+
+        builder.switch_to_block(inline_check_block);
+        {
+            let ctx_v = builder.use_var(var_ctx);
+            let pos_v = builder.use_var(var_pos);
+            let text_len = builder
+                .ins()
+                .load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_LEN);
+            let stride = builder.ins().iadd_imm(text_len, 1);
+            let fork_idx_64 = builder.ins().iconst(types::I64, fork_idx as i64);
+            let idx = builder.ins().imul(fork_idx_64, stride);
+            let idx = builder.ins().iadd(idx, pos_v);
+            let fork_memo_len =
+                builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), ctx_v, CTX_FORK_MEMO_LEN);
+            let in_bounds = builder
+                .ins()
+                .icmp(IntCC::UnsignedLessThan, idx, fork_memo_len);
+            // Out of bounds → no failure recorded; push normally
+            builder
+                .ins()
+                .brif(in_bounds, do_check_block, &[idx], fast_block, &[]);
+        }
+
+        // do_check_block(idx): idx is in bounds; read one byte and check mask.
+        // atomic_depth is re-loaded from ctx (avoids cross-block SSA use).
+        builder.switch_to_block(do_check_block);
+        {
+            let idx = builder.block_params(do_check_block)[0];
+            let ctx_v = builder.use_var(var_ctx);
+            let fork_memo_data_ptr = builder.ins().load(
+                types::I64,
+                MemFlags::trusted(),
+                ctx_v,
+                CTX_FORK_MEMO_DATA_PTR,
+            );
+            let data_ptr = builder.ins().iadd(fork_memo_data_ptr, idx);
+            // Use i32 for byte load and mask arithmetic — Cranelift doesn't support
+            // ishl/band/icmp_imm on i8.  uload8(i32) zero-extends to i32.
+            let data = builder
+                .ins()
+                .uload8(types::I32, MemFlags::trusted(), data_ptr, 0);
+            // depth_mask = (1 << (atomic_depth + 1)) - 1
+            //   depth=0 → mask=0b00000001, depth=1 → mask=0b00000011
+            // Re-load atomic_depth here to avoid using a cross-block SSA value.
+            let atomic_depth =
+                builder
+                    .ins()
+                    .load(types::I64, MemFlags::trusted(), ctx_v, CTX_ATOMIC_DEPTH);
+            let depth_i32 = builder.ins().ireduce(types::I32, atomic_depth);
+            let shift_amt = builder.ins().iadd_imm(depth_i32, 1);
+            let one_i32 = builder.ins().iconst(types::I32, 1);
+            let mask = builder.ins().ishl(one_i32, shift_amt);
+            let mask = builder.ins().iadd_imm(mask, -1);
+            let and_result = builder.ins().band(data, mask);
+            let is_failure = builder.ins().icmp_imm(IntCC::NotEqual, and_result, 0);
+            // Failure cached → bt_resume_block (skip push, continue backtracking)
+            // No failure     → fast_block (push inline, continue matching)
+            builder
+                .ins()
+                .brif(is_failure, bt_resume_block, &[], fast_block, &[]);
+        }
     } else {
-        has_room
-    };
+        builder
+            .ins()
+            .brif(has_room, fast_block, &[], slow_block, &[]);
+    }
 
-    builder
-        .ins()
-        .brif(can_fast, fast_block, &[], slow_block, &[]);
-
-    // ---- fast_block: single-predecessor linear push ----
+    // ---- fast_block ----
     builder.switch_to_block(fast_block);
     {
         let ctx_v = builder.use_var(var_ctx);

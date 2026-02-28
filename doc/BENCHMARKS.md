@@ -545,15 +545,15 @@ fork/memoization cycle and unlocks JIT for case-insensitive patterns:
    Each entry is a bitmask: bit `d` set means "failure observed at atomic depth
    `d`".  With `fork_pc_index` baked in as a compile-time constant, the index
    expression is a single `imul + iadd` in Cranelift IR.
-   - **Inline failure check in `inline_fork`**: when `memo_has_failures == 0`,
-     push `MemoMark + Retry` inline (Phase 6 fast path, unchanged).  When
-     `memo_has_failures == 1`, the inline check reads `data[idx]`, applies the
-     depth mask, and jumps directly to `bt_resume_block` on a cache hit — no
-     extern C call.
+   - **Inline fast path in `inline_fork`**: when `memo_has_failures == 0`,
+     push `MemoMark + Retry` entirely in Cranelift IR — no C call.  When
+     `memo_has_failures == 1` (any failure has ever been recorded), the fast
+     path is skipped and the existing `jit_fork` C helper handles the dense
+     array lookup.  Inlining that lookup too is left as future work.
    - **Inline MemoMark pop in `bt_resume_block`**: `check_memo_block` detects
      `tag == MemoMark` and routes to `memo_pop_block`.  If `idx < fork_memo_len`,
-     an OR-store records the failure inline; if out-of-bounds, a single
-     `jit_fork_memo_record` call grows the array.
+     an OR-store records the failure inline (no C call); if out-of-bounds, a
+     single `jit_fork_memo_record` call grows the array.
 
 2. **`fork_failures` value type `HashMap<u64, u8>` bitmask** — the interpreter's
    failure cache stores `u8` bitmask values (bit `d` = failed at depth `d`)
@@ -574,8 +574,9 @@ fork/memoization cycle and unlocks JIT for case-insensitive patterns:
    `find_iter()` call instead of once per `find()` call.
 
 - **`pathological/10–20`: 0.91× → 2.33–2.55× faster** ✅ — the dense array
-  eliminates `jit_fork` C calls entirely once failures are cached; fork/backtrack
-  cycles execute in pure Cranelift IR.
+  makes `jit_fork` C calls cheaper (array index vs HashMap lookup), and the
+  inline fast path eliminates C calls entirely for forks that have never
+  produced a failure; combined, fork/memoize cycles become much faster.
 - **`charclass/alpha_iter`: 1.79× → 4.48× faster** ✅ — charclass + fork both
   inline; per-iteration overhead is now essentially zero.
 - **`charclass/posix_digit_iter`: 1.79× → 2.71× faster** ✅ — same.
@@ -657,13 +658,66 @@ Phase 9 makes two improvements over Phase 8:
 
 Log: `log/bench-jit-charfast-2026-02-28.txt`.
 
+#### Phase 10 (fix Cranelift i8 verifier errors + `memo_has_failures` initialisation)
+
+Two correctness bugs were fixed that together prevented JIT memoisation from
+working properly for pathological and several real-world patterns:
+
+1. **Cranelift i8 arithmetic verifier errors** — Cranelift does not support
+   `i8` as the controlling type for `ishl`, `band`, `bor`, `icmp_imm`, or
+   plain `store`.  Two places in `builder.rs` used `types::I8` for byte-level
+   fork-memo operations:
+   - `memo_pop_after_block` (bt-resume block): recorded a failure bit using
+     `load(I8)` / `bor(I8)` / `store(I8)`.
+   - `do_check_block` (inline\_fork, failure check): read and masked the byte
+     using `uload8(I8)` / `ireduce(I8)` / `ishl(I8)` / `band(I8)` /
+     `icmp_imm(I8)`.
+   Both sites were fixed to use `types::I32` throughout, with `uload8(I32, …)`
+   for zero-extending byte loads and `istore8(…)` for truncating byte stores.
+   The verifier errors silently disabled JIT compilation for all patterns that
+   include fork-memoisation logic, causing silent fallback to the interpreter.
+
+2. **`memo_has_failures` initialisation** — `exec_jit` initialised the
+   `memo_has_failures` field of `JitExecCtx` only from
+   `memo.fork_failures.is_empty()`, but the JIT never writes to the interpreter
+   `HashMap` — it writes only to the dense `ExecScratch::fork_memo_*` byte
+   array.  The result was that `memo_has_failures` was always `0` at the start
+   of every `try_at` call, preventing the inline fast-fail check
+   (`do_check_block`) from ever running.  The fix also checks
+   `scratch.fork_memo_len == 0` so accumulated failure data is reflected
+   correctly across positions in `find_iter`.
+
+3. **`bench_pathological_iter` benchmark** — new benchmark that exercises
+   cross-position memo reuse via `find_iter` (fresh `ExecScratch` held for
+   the lifetime of the iterator, failure bits accumulating across positions).
+
+**Observed impact (Phase 9 → Phase 10):**
+
+| Benchmark | Phase 9 | Phase 10 | Change | vs interpreter |
+|-----------|---------|----------|--------|----------------|
+| `pathological/10` | 2.19 µs | 1.41 µs | **−36%** | **3.14×** |
+| `pathological/15` | 4.65 µs | 2.79 µs | **−40%** | **3.69×** |
+| `pathological/20` | 8.12 µs | 4.82 µs | **−41%** | **3.75×** |
+| `email/find_all` | 1.83 µs | 1.18 µs | **−36%** | **2.81×** |
+| `pathological_iter/10` | (new) | 4.52 µs | — | — |
+| `pathological_iter/15` | (new) | 7.56 µs | — | — |
+| `pathological_iter/20` | (new) | 11.08 µs | — | — |
+| All other benchmarks | — | — | ≤ 2% noise | — |
+
+The large pathological improvement comes from two compounding effects: the
+verifier fix lets JIT compilation succeed (previously fell back to interpreter),
+and the `memo_has_failures` fix ensures failure bits recorded at one start
+position are visible at the next, halving redundant fork exploration.
+
+Log: `log/bench-jit-i8-fix-2026-02-28.txt`.
+
 ---
 
 ### Known bottlenecks and future work
 
-| Root cause | Current | Future plan |
+| Root cause | Current (Phase 10) | Future plan |
 |------------|---------|-------------|
-| `pathological` overhead | 0.91× | Inline memoisation check in JIT IR; currently falls back to extern C once any failure is recorded |
+| `pathological` remaining overhead | 3.1–3.75× vs interpreter | Inline the `memo_has_failures == 1` failure-check path fully in Cranelift IR; currently `inline_fork` still calls `jit_fork` C helper once any failure is recorded |
 | Non-ASCII shorthand fallback | helper call per non-ASCII char | Inline two/three-byte UTF-8 decode for common cases |
 | Unicode / negated `CharClass` | helper call ~15 cy | Inline POSIX Alpha/Word for `ascii_range=true` patterns |
 

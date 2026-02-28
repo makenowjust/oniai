@@ -528,7 +528,11 @@ impl Compiler {
                     let null_check_start_pc = self.pc();
                     self.emit(Inst::NullCheckStart(slot));
                     let fork_pc = self.pc();
-                    let guard = if backward { None } else { first_literal_of_node(node, flags.ignore_case) };
+                    let guard = if backward {
+                        None
+                    } else {
+                        first_literal_of_node(node, flags.ignore_case)
+                    };
                     self.emit(Inst::Fork(0, guard)); // patched to exit_pc below
                     self.compile_node_inner(node, flags, backward)?;
                     // exit_pc is the instruction after NullCheckEnd + Jump
@@ -539,7 +543,11 @@ impl Compiler {
                     self.patch_jump(fork_pc, exit_pc);
                 } else {
                     // Simple loop: Fork(exit), body, Jump(Fork)
-                    let guard = if backward { None } else { first_literal_of_node(node, flags.ignore_case) };
+                    let guard = if backward {
+                        None
+                    } else {
+                        first_literal_of_node(node, flags.ignore_case)
+                    };
                     let fork_pc = self.emit(Inst::Fork(0, guard));
                     self.compile_node_inner(node, flags, backward)?;
                     self.emit(Inst::Jump(fork_pc));
@@ -577,7 +585,11 @@ impl Compiler {
                     let null_check_start_pc = self.pc();
                     self.emit(Inst::NullCheckStart(slot));
                     let fork_pc = self.pc();
-                    let guard = if backward { None } else { first_literal_of_node(node, flags.ignore_case) };
+                    let guard = if backward {
+                        None
+                    } else {
+                        first_literal_of_node(node, flags.ignore_case)
+                    };
                     self.emit(Inst::Fork(0, guard)); // patched to loop_end below
                     self.compile_node_inner(node, flags, backward)?;
                     // loop_end is the pc of AtomicEnd (after NullCheckEnd + Jump)
@@ -594,7 +606,11 @@ impl Compiler {
                 } else {
                     // Simple atomic loop: AtomicStart, Fork(loop_end), body, Jump(Fork), AtomicEnd
                     let atomic_start = self.emit(Inst::AtomicStart(0));
-                    let guard = if backward { None } else { first_literal_of_node(node, flags.ignore_case) };
+                    let guard = if backward {
+                        None
+                    } else {
+                        first_literal_of_node(node, flags.ignore_case)
+                    };
                     let fork_pc = self.emit(Inst::Fork(0, guard));
                     self.compile_node_inner(node, flags, backward)?;
                     self.emit(Inst::Jump(fork_pc));
@@ -657,7 +673,11 @@ impl Compiler {
                 // Atomic wrapper around optional iterations
                 let atomic_start = self.emit(Inst::AtomicStart(0));
                 for _ in 0..extra {
-                    let guard = if backward { None } else { first_literal_of_node(node, flags.ignore_case) };
+                    let guard = if backward {
+                        None
+                    } else {
+                        first_literal_of_node(node, flags.ignore_case)
+                    };
                     let fork_pc = self.emit(Inst::Fork(0, guard));
                     self.compile_node_inner(node, flags, backward)?;
                     let after = self.pc();
@@ -695,7 +715,11 @@ impl Compiler {
         // We'll collect their pcs and patch them all at the end.
         let mut fork_pcs = Vec::new();
         for _ in 0..extra {
-            let guard = if backward { None } else { first_literal_of_node(node, flags.ignore_case) };
+            let guard = if backward {
+                None
+            } else {
+                first_literal_of_node(node, flags.ignore_case)
+            };
             let fp = self.emit(Inst::Fork(0, guard));
             fork_pcs.push(fp);
             self.compile_node_inner(node, flags, backward)?;
@@ -905,18 +929,19 @@ fn first_literal_of_node(node: &Node, ic: bool) -> Option<char> {
     match node {
         Node::Literal(c) => Some(*c),
         Node::Concat(nodes) => first_literal_of_node(nodes.first()?, ic),
-        Node::Capture { node, flags: gf, .. } | Node::NamedCapture { node, flags: gf, .. } => {
-            first_literal_of_node(node, ic || gf.ignore_case)
+        Node::Capture {
+            node, flags: gf, ..
         }
+        | Node::NamedCapture {
+            node, flags: gf, ..
+        } => first_literal_of_node(node, ic || gf.ignore_case),
         Node::Group { node, flags: gf } => first_literal_of_node(node, ic || gf.ignore_case),
         Node::Atomic(node) => first_literal_of_node(node, ic),
         Node::InlineFlags { flags: fmod, node } => {
             let new_ic = (ic || fmod.on.ignore_case) && !fmod.off.ignore_case;
             first_literal_of_node(node, new_ic)
         }
-        Node::Quantifier { node, range, .. } if range.min >= 1 => {
-            first_literal_of_node(node, ic)
-        }
+        Node::Quantifier { node, range, .. } if range.min >= 1 => first_literal_of_node(node, ic),
         _ => None,
     }
 }

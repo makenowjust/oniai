@@ -73,7 +73,19 @@ pub(crate) fn try_compile(
         return None;
     }
 
-    let module = build_module(prog, charsets, use_memo, fork_pc_indices).ok()?;
+    let module = match build_module(prog, charsets, use_memo, fork_pc_indices) {
+        Ok(m) => m,
+        Err(_e) => {
+            #[cfg(debug_assertions)]
+            {
+                eprintln!("[aigumo jit] build_module error: {_e}");
+                for (i, inst) in prog.iter().enumerate() {
+                    eprintln!("[aigumo jit]   prog[{i}] = {inst:?}");
+                }
+            }
+            return None;
+        }
+    };
     Some(module)
 }
 
@@ -187,7 +199,16 @@ pub(crate) fn exec_jit(
         bt_len: 0,
         bt_cap: bt_raw_cap as u64,
         memo_ptr: memo as *mut MemoState as *mut (),
-        memo_has_failures: if memo.fork_failures.is_empty() { 0 } else { 1 },
+        // Enable the inline fast-fail check when either the interpreter HashMap OR the
+        // JIT's own dense array already has recorded failures.  The JIT never writes to
+        // `memo.fork_failures`, so without the `scratch.fork_memo_len` term the flag
+        // would be stuck at 0 for every call even when the dense array is populated,
+        // losing the cross-position memoization benefit.
+        memo_has_failures: if memo.fork_failures.is_empty() && scratch.fork_memo_len == 0 {
+            0
+        } else {
+            1
+        },
         atomic_depth: 0,
         bt_retry_count: 0,
         fork_memo_data_ptr: fork_memo_raw_ptr,
