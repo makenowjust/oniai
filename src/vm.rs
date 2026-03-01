@@ -31,7 +31,7 @@ pub struct CharSet {
     pub ranges: Vec<(char, char)>,
     /// 128-bit ASCII fast-path bitmap (one bit per codepoint < 128).
     /// Avoids binary search for the common case of ASCII input.
-    ascii_bits: [u64; 2],
+    pub(crate) ascii_bits: [u64; 2],
 }
 
 impl CharSet {

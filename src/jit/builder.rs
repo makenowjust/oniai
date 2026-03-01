@@ -1206,24 +1206,48 @@ fn is_ascii_only_charset(cs: &CharSet) -> bool {
     cs.ranges.iter().all(|&(_, hi)| (hi as u32) < 128)
 }
 
-/// Extract ASCII sub-ranges from a `CharSet`'s inversion list.
-fn charset_ascii_ranges(cs: &CharSet) -> Vec<(u8, u8)> {
-    cs.ranges
-        .iter()
-        .filter_map(|&(lo, hi)| {
-            let lo_u = lo as u32;
-            if lo_u >= 128 {
-                return None;
-            }
-            let hi_u = (hi as u32).min(127) as u8;
-            Some((lo_u as u8, hi_u))
-        })
-        .collect()
-}
-
 // ---------------------------------------------------------------------------
 // Low-level byte-check emitters (avoid double-borrow in argument position)
 // ---------------------------------------------------------------------------
+
+/// Emit a branch-free ASCII bitmap lookup: returns I8 value 1 if `byte`
+/// (an I32 in 0..127) is accepted by the charset, 0 otherwise.
+///
+/// Uses the two `u64` words from `CharSet::ascii_bits` as inline constants
+/// (negation **not** applied — callers XOR with 1 for negated charsets).
+///
+/// Preferred over `emit_ascii_ranges_check` for charsets with ≥3 ASCII
+/// ranges, where the fixed overhead is smaller than the cascade of checks.
+///
+/// Produces:
+///   word  = select(byte >> 6 == 1, bits[1], bits[0])
+///   shifted = word >> (byte & 63)
+///   ok    = shifted & 1   (ireduce to I8)
+fn emit_ascii_bitmap_check(
+    builder: &mut FunctionBuilder<'_>,
+    byte: Value, // I32, value 0..127
+    bits: [u64; 2],
+) -> Value {
+    // word_idx = byte >> 6  (0 or 1, because byte < 128)
+    let shift6 = builder.ins().iconst(types::I32, 6);
+    let word_idx = builder.ins().ushr(byte, shift6);
+    let one_i32 = builder.ins().iconst(types::I32, 1);
+    let is_hi = builder.ins().icmp(IntCC::Equal, word_idx, one_i32);
+    let w0 = builder.ins().iconst(types::I64, bits[0] as i64);
+    let w1 = builder.ins().iconst(types::I64, bits[1] as i64);
+    let word = builder.ins().select(is_hi, w1, w0);
+
+    // bit_idx = byte & 63
+    let mask63 = builder.ins().iconst(types::I32, 63);
+    let bit_idx = builder.ins().band(byte, mask63);
+    let bit_idx64 = builder.ins().uextend(types::I64, bit_idx);
+
+    // ok = (word >> bit_idx) & 1
+    let shifted = builder.ins().ushr(word, bit_idx64);
+    let one_i64 = builder.ins().iconst(types::I64, 1);
+    let result64 = builder.ins().band(shifted, one_i64);
+    builder.ins().ireduce(types::I8, result64)
+}
 
 /// `(byte - lo) <= (hi - lo)`  — unsigned range check on an I32 byte value.
 fn emit_range_check(builder: &mut FunctionBuilder<'_>, byte: Value, lo: u8, hi: u8) -> Value {
@@ -1244,8 +1268,8 @@ fn emit_eq_check(builder: &mut FunctionBuilder<'_>, byte: Value, ch: u8) -> Valu
 /// Emit an I8 boolean: 1 if `byte` (I32, zero-extended u8) matches any
 /// precomputed ASCII range, 0 otherwise.
 ///
-/// Emits a cascade of `(byte - lo) <= (hi - lo)` unsigned range checks
-/// OR-ed together.  For an empty slice emits the constant 0.
+/// Preferred over `emit_ascii_bitmap_check` for charsets with ≤2 ASCII
+/// ranges, where the cascade is shorter than the bitmap overhead.
 fn emit_ascii_ranges_check(
     builder: &mut FunctionBuilder<'_>,
     ranges: &[(u8, u8)],
@@ -1263,11 +1287,44 @@ fn emit_ascii_ranges_check(
     result
 }
 
-/// Inline forward `CharClass` match using precomputed `ascii_ranges`.
+/// Extract ASCII sub-ranges from a `CharSet`'s inversion list.
+fn charset_ascii_ranges(cs: &CharSet) -> Vec<(u8, u8)> {
+    cs.ranges
+        .iter()
+        .filter_map(|&(lo, hi)| {
+            let lo_u = lo as u32;
+            if lo_u >= 128 {
+                return None;
+            }
+            let hi_u = (hi as u32).min(127) as u8;
+            Some((lo_u as u8, hi_u))
+        })
+        .collect()
+}
+
+/// Emit the best ASCII match check for a charset.
 ///
-/// For ASCII bytes: emits precomputed range checks (no helper call).
-/// For non-ASCII bytes: either fails inline (ASCII-only charset) or calls
-/// the `jit_match_class` helper for correct Unicode handling.
+/// Chooses the bitmap approach when there are ≥3 ASCII ranges (bitmap's
+/// fixed ~8-instruction overhead beats a long cascade), and the direct
+/// range-check cascade for ≤2 ranges (lower overhead for simple classes).
+fn emit_ascii_check(
+    builder: &mut FunctionBuilder<'_>,
+    byte: Value,
+    cs: &CharSet,
+    ascii_ranges: &[(u8, u8)],
+) -> Value {
+    if ascii_ranges.len() >= 3 {
+        emit_ascii_bitmap_check(builder, byte, cs.ascii_bits)
+    } else {
+        emit_ascii_ranges_check(builder, ascii_ranges, byte)
+    }
+}
+
+/// Inline forward `CharClass` match.
+///
+/// For ASCII bytes: emits a precomputed ASCII check (bitmap for ≥3 ranges,
+/// range-cascade for ≤2 ranges).  For non-ASCII bytes: either fails inline
+/// (ASCII-only charset) or calls the `jit_match_class` helper.
 ///
 /// Creates 2–3 sub-blocks.
 #[allow(clippy::too_many_arguments)]
@@ -1285,8 +1342,8 @@ fn inline_charclass_fwd(
     cs: &CharSet,
     idx: usize,
 ) {
+
     let ascii_ranges = charset_ascii_ranges(cs);
-    let ascii_ranges = ascii_ranges.as_slice();
 
     // --- bounds check ---
     let text_len = builder
@@ -1341,13 +1398,13 @@ fn inline_charclass_fwd(
             .brif(is_fail, bt_resume, &[], inst_blocks[pc + 1], &[]);
     }
 
-    // --- ascii_check_block: precomputed range checks ---
+    // --- ascii_check_block: range-check or bitmap depending on complexity ---
     builder.append_block_param(ascii_check_block, types::I32);
     builder.switch_to_block(ascii_check_block);
     let byte_p = builder.block_params(ascii_check_block)[0];
     let pos_v = builder.use_var(var_pos);
-    let raw_ok = emit_ascii_ranges_check(builder, ascii_ranges, byte_p);
-    // For negated charsets the ASCII match is: byte is NOT in ascii_ranges.
+    let raw_ok = emit_ascii_check(builder, byte_p, cs, &ascii_ranges);
+    // For negated charsets the ASCII match is: byte is NOT in the charset's ASCII ranges.
     let ok = if cs.negate {
         let one = builder.ins().iconst(types::I8, 1);
         builder.ins().bxor(raw_ok, one)
@@ -1361,7 +1418,11 @@ fn inline_charclass_fwd(
         .brif(ok, inst_blocks[pc + 1], &[], bt_resume, &[]);
 }
 
-/// Inline backward `CharClass` match using precomputed `ascii_ranges`.
+/// Inline backward `CharClass` match.
+///
+/// For ASCII bytes: emits a precomputed ASCII check (bitmap for ≥3 ranges,
+/// range-cascade for ≤2 ranges).  For non-ASCII bytes: either fails inline
+/// (ASCII-only charset) or calls the `jit_match_class_back` helper.
 ///
 /// Mirrors `inline_charclass_fwd` but reads `pos - 1` and advances backward.
 #[allow(clippy::too_many_arguments)]
@@ -1380,9 +1441,6 @@ fn inline_charclass_back(
     idx: usize,
 ) {
     let ascii_ranges = charset_ascii_ranges(cs);
-    let ascii_ranges = ascii_ranges.as_slice();
-
-    // --- pos > 0 check ---
     let zero = builder.ins().iconst(types::I64, 0);
     let not_at_start = builder.ins().icmp(IntCC::UnsignedGreaterThan, pos_v, zero);
     let read_block = builder.create_block();
@@ -1434,13 +1492,13 @@ fn inline_charclass_back(
             .brif(is_fail, bt_resume, &[], inst_blocks[pc + 1], &[]);
     }
 
-    // --- ascii_check_block: precomputed range checks ---
+    // --- ascii_check_block: range-check or bitmap depending on complexity ---
     builder.append_block_param(ascii_check_block, types::I32);
     builder.switch_to_block(ascii_check_block);
     let byte_p = builder.block_params(ascii_check_block)[0];
     let pos_v = builder.use_var(var_pos);
-    let raw_ok = emit_ascii_ranges_check(builder, ascii_ranges, byte_p);
-    // For negated charsets the ASCII match is: byte is NOT in ascii_ranges.
+    let raw_ok = emit_ascii_check(builder, byte_p, cs, &ascii_ranges);
+    // For negated charsets the ASCII match is: byte is NOT in the charset's ASCII ranges.
     let ok = if cs.negate {
         let one = builder.ins().iconst(types::I8, 1);
         builder.ins().bxor(raw_ok, one)
