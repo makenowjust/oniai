@@ -1,6 +1,6 @@
 use crate::ast::*;
 use crate::bytetrie::ByteTrie;
-use crate::casefold::case_fold;
+use crate::casefold::{case_fold, CaseFold};
 use crate::charset;
 use crate::data::casefold_data::SIMPLE_CASE_FOLDS;
 use crate::error::Error;
@@ -58,6 +58,68 @@ fn try_extract_plain_string(node: &Node) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// Maximum total number of case-fold variant strings before we give up
+/// and fall back to the Fork chain for case-insensitive alternation.
+const MAX_FOLD_VARIANTS: usize = 1024;
+
+/// Return all chars whose simple case fold equals `target`.
+///
+/// Includes `target` itself (it folds to itself) and every source char in
+/// `SIMPLE_CASE_FOLDS` that maps to `target`.
+fn chars_folding_to(target: char) -> Vec<char> {
+    let mut out = vec![target];
+    for &(src, folded) in SIMPLE_CASE_FOLDS {
+        if folded == target && src != target {
+            out.push(src);
+        }
+    }
+    out
+}
+
+/// For each alternative string in `alts`, enumerate all byte strings that
+/// are case-fold-equivalent under Unicode single-codepoint folding.
+///
+/// Returns `None` if:
+/// - any char in any alternative has a multi-codepoint fold (e.g. ß → ss),
+/// - or the total variant count exceeds [`MAX_FOLD_VARIANTS`].
+///
+/// The returned list contains the original strings plus all variants; the
+/// caller is responsible for checking `is_prefix_free` on the result.
+fn expand_alts_case_folded(alts: &[String]) -> Option<Vec<String>> {
+    let mut all_variants: Vec<String> = Vec::new();
+    for s in alts {
+        // Build a list of char alternatives for each position.
+        let mut per_char: Vec<Vec<char>> = Vec::new();
+        for c in s.chars() {
+            let fold_target = match case_fold(c) {
+                CaseFold::Single(f) => f,
+                CaseFold::Multi(_) => return None, // e.g. ß → ss
+            };
+            per_char.push(chars_folding_to(fold_target));
+        }
+        // Count combinations; bail early if over the cap.
+        let n_variants: usize = per_char.iter().map(|v| v.len()).product();
+        if all_variants.len() + n_variants > MAX_FOLD_VARIANTS {
+            return None;
+        }
+        // Enumerate all combinations via rolling expansion.
+        let mut variants = vec![String::new()];
+        for char_alts in &per_char {
+            let mut next = Vec::with_capacity(variants.len() * char_alts.len());
+            for base in &variants {
+                for &c in char_alts {
+                    let mut v = base.clone();
+                    v.push(c);
+                    next.push(v);
+                }
+            }
+            variants = next;
+        }
+        all_variants.extend(variants);
+    }
+    Some(all_variants)
 }
 
 // ---------------------------------------------------------------------------
@@ -482,28 +544,36 @@ impl Compiler {
             return self.compile_node_inner(&alts[0], flags, backward);
         }
 
-        // Optimization: if all alternatives are plain (non-folded) literal strings
-        // and the string set is prefix-free, emit a single AltTrie/AltTrieBack
-        // instruction instead of a Fork chain.  Prefix-free is required so that
-        // the deterministic (longest-match) trie produces the same result as the
-        // leftmost-wins backtracking Fork chain.
-        if !flags.ignore_case {
+        // Optimization: if all alternatives are plain literal strings and the
+        // string set (after case-folding when ic=true) is prefix-free, emit a
+        // single AltTrie/AltTrieBack instruction instead of a Fork chain.
+        // Prefix-free is required so that the deterministic (longest-match)
+        // trie produces the same result as the leftmost-wins Fork chain.
+        {
             let strings: Option<Vec<String>> = alts.iter().map(try_extract_plain_string).collect();
             if let Some(strings) = strings {
-                let mut trie = ByteTrie::new();
-                for s in &strings {
-                    trie.insert(s.as_bytes());
-                }
-                if trie.is_prefix_free() {
-                    let idx = self.alt_tries.len();
-                    if backward {
-                        self.alt_tries.push(trie.reversed());
-                        self.emit(Inst::AltTrieBack(idx));
-                    } else {
-                        self.alt_tries.push(trie);
-                        self.emit(Inst::AltTrie(idx));
+                // For case-insensitive patterns expand to all fold variants first.
+                let trie_strings = if flags.ignore_case {
+                    expand_alts_case_folded(&strings)
+                } else {
+                    Some(strings)
+                };
+                if let Some(trie_strings) = trie_strings {
+                    let mut trie = ByteTrie::new();
+                    for s in &trie_strings {
+                        trie.insert(s.as_bytes());
                     }
-                    return Ok(());
+                    if trie.is_prefix_free() {
+                        let idx = self.alt_tries.len();
+                        if backward {
+                            self.alt_tries.push(trie.reversed());
+                            self.emit(Inst::AltTrieBack(idx));
+                        } else {
+                            self.alt_tries.push(trie);
+                            self.emit(Inst::AltTrie(idx));
+                        }
+                        return Ok(());
+                    }
                 }
             }
         }

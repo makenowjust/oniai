@@ -686,6 +686,16 @@ fn alternation_leftmost() {
     // leftmost alternative wins
     assert_find!(r"foo|foobar", "foobar", "foo");
 }
+#[test]
+fn alternation_case_insensitive() {
+    // AltTrie path: case-insensitive string alternation
+    assert_match!(r"(?i:get|post|put|delete)", "GET /index");
+    assert_match!(r"(?i:get|post|put|delete)", "Post /data");
+    assert_match!(r"(?i:get|post|put|delete)", "DELETE /item");
+    assert_no_match!(r"(?i:get|post|put|delete)", "PATCH /item");
+    // Leftmost-wins semantics preserved (prefix-free check prevents AltTrie for this case)
+    assert_find!(r"(?i)foo|foobar", "FooBar", "Foo");
+}
 
 // ---------------------------------------------------------------------------
 // Case sensitivity

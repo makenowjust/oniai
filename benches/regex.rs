@@ -342,6 +342,36 @@ fn bench_case_insensitive(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// Case-insensitive alternation — AltTrie vs Fork chain
+// Pattern: (?i)get|post|put|delete  on HTTP-like request lines
+// ---------------------------------------------------------------------------
+
+fn bench_case_insensitive_alt(c: &mut Criterion) {
+    // Haystack: 1 match every ~30 chars (sparse); pattern hits on "DELETE" / "Post"
+    let haystack = rep("xxxxxxxxxx DELETE /foo HTTP/1.1\r\n", 200); // ~6600 chars
+
+    let o = Regex::new(r"(?i:get|post|put|delete)").unwrap();
+    let s = regex::Regex::new(r"(?i:get|post|put|delete)").unwrap();
+    let f = fancy_regex::Regex::new(r"(?i:get|post|put|delete)").unwrap();
+    let p = pcre2::bytes::Regex::new(r"(?i:get|post|put|delete)").unwrap();
+
+    let mut g = c.benchmark_group("case_insensitive_alt/find_all");
+    bench_all!(
+        g,
+        o.find_iter(black_box(&haystack)).count(),
+        o.find_iter_interp(black_box(&haystack)).count(),
+        s.find_iter(black_box(&haystack)).count(),
+        f.find_iter(black_box(&haystack))
+            .map(|r| r.unwrap())
+            .count(),
+        p.find_iter(black_box(haystack.as_bytes()))
+            .map(|r| r.unwrap())
+            .count()
+    );
+    g.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Lookahead — `regex` does not support; oniai / fancy-regex / pcre2 only
 // Pattern: \w+(?=,)  — words immediately followed by a comma
 // ---------------------------------------------------------------------------
@@ -667,5 +697,6 @@ criterion_group!(
     bench_pathological_iter,
     bench_real_world,
     bench_class_start,
+    bench_case_insensitive_alt,
 );
 criterion_main!(benches);
