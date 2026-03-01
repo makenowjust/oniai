@@ -277,10 +277,7 @@ mod tests {
     // CharSet::matches via binary search and do NOT appear in the ByteTrie.
 
     fn make_ranges_charset(ranges: Vec<(char, char)>) -> CharSet {
-        CharSet {
-            negate: false,
-            ranges,
-        }
+        CharSet::new(false, ranges)
     }
 
     /// A charset containing only ß must have the multi-fold sequences in its trie.

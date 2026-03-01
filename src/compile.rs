@@ -1077,10 +1077,7 @@ fn shorthand_charset(sh: Shorthand, ascii_range: bool, ignore_case: bool) -> Cha
     };
     // Shorthands are never negated — \W etc. compile as NonWord which already
     // produces the positive (non-negated) complemented ranges.
-    CharSet {
-        negate: false,
-        ranges,
-    }
+    CharSet::new(false, ranges)
 }
 
 /// Build a `CharSet` for a Unicode property (`\p{...}`) at compile time.
@@ -1092,7 +1089,7 @@ fn unicode_prop_charset(name: &str, negate: bool, ignore_case: bool) -> CharSet 
     } else {
         ranges
     };
-    CharSet { negate, ranges }
+    CharSet::new(negate, ranges)
 }
 
 pub fn compile_charset(
@@ -1126,10 +1123,7 @@ pub fn compile_charset(
         ranges = intersect_ranges(&ranges, &inner_eff);
     }
 
-    Ok(CharSet {
-        negate: cc.negate,
-        ranges,
-    })
+    Ok(CharSet::new(cc.negate, ranges))
 }
 
 fn expand_class_item(

@@ -29,28 +29,59 @@ pub struct CharSet {
     /// case-fold equivalents; multi-codepoint folds (e.g. ß→"ss") are handled
     /// separately by the ByteTrie.
     pub ranges: Vec<(char, char)>,
+    /// 128-bit ASCII fast-path bitmap (one bit per codepoint < 128).
+    /// Avoids binary search for the common case of ASCII input.
+    ascii_bits: [u64; 2],
 }
 
 impl CharSet {
+    /// Construct a `CharSet` from a negation flag and a sorted, merged range list.
+    pub fn new(negate: bool, ranges: Vec<(char, char)>) -> Self {
+        let ascii_bits = Self::build_ascii_bits(&ranges);
+        CharSet { negate, ranges, ascii_bits }
+    }
+
+    fn build_ascii_bits(ranges: &[(char, char)]) -> [u64; 2] {
+        let mut bits = [0u64; 2];
+        for &(lo, hi) in ranges {
+            let lo_u = lo as u32;
+            if lo_u >= 128 {
+                break; // ranges are sorted; no ASCII codepoints follow
+            }
+            let hi_u = (hi as u32).min(127);
+            for cp in lo_u..=hi_u {
+                bits[(cp >> 6) as usize] |= 1u64 << (cp & 63);
+            }
+        }
+        bits
+    }
+
     /// Returns `true` when `ch` is contained in this character set.
+    ///
+    /// ASCII codepoints use a precomputed 128-bit bitmap (O(1)).
+    /// Non-ASCII codepoints fall back to binary search on `ranges`.
     ///
     /// No case folding is performed here; the caller is responsible for
     /// ensuring that the ranges were built with case-fold expansion when
     /// needed.  Multi-codepoint folds are handled at the instruction level via
     /// the ByteTrie.
     pub fn matches(&self, ch: char) -> bool {
-        let found = self
-            .ranges
-            .binary_search_by(|&(lo, hi)| {
-                if ch < lo {
-                    std::cmp::Ordering::Greater
-                } else if ch > hi {
-                    std::cmp::Ordering::Less
-                } else {
-                    std::cmp::Ordering::Equal
-                }
-            })
-            .is_ok();
+        let found = if (ch as u32) < 128 {
+            let cp = ch as u32;
+            (self.ascii_bits[(cp >> 6) as usize] >> (cp & 63)) & 1 != 0
+        } else {
+            self.ranges
+                .binary_search_by(|&(lo, hi)| {
+                    if ch < lo {
+                        std::cmp::Ordering::Greater
+                    } else if ch > hi {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
+                .is_ok()
+        };
         if self.negate { !found } else { found }
     }
 }
