@@ -1,5 +1,6 @@
 use crate::ast::{AnchorKind, Flags, Shorthand};
 use crate::bytetrie::ByteTrie;
+use crate::casefold::{CaseFold, case_fold};
 use crate::casefold_trie::{
     charset_to_bytetrie, charset_to_bytetrie_back, fold_seq_to_trie, fold_seq_to_trie_back,
 };
@@ -11,7 +12,6 @@ use crate::parser::parse;
 ///
 /// Uses backtracking search with an explicit save/restore state.
 use std::collections::HashMap;
-use unicode_casefold::UnicodeCaseFold;
 
 // ---------------------------------------------------------------------------
 // Character set types (used by instructions)
@@ -62,9 +62,10 @@ impl CharSet {
             // first character; they should only match a range if `ch` itself falls
             // within it.  Therefore we use the single-char fold when the fold
             // sequence has exactly one codepoint, and fall back to `ch` otherwise.
-            let mut fold = ch.case_fold();
-            let first = fold.next().unwrap_or(ch);
-            if fold.next().is_none() { first } else { ch }
+            match case_fold(ch) {
+                CaseFold::Single(f) => f,
+                CaseFold::Multi(_) => ch,
+            }
         } else {
             ch
         };
@@ -134,8 +135,14 @@ impl CharSetItem {
             }
             CharSetItem::Range(lo, hi) => {
                 if ignore_case {
-                    let lo_fold = lo.case_fold().next().unwrap_or(*lo);
-                    let hi_fold = hi.case_fold().next().unwrap_or(*hi);
+                    let lo_fold = match case_fold(*lo) {
+                        CaseFold::Single(f) => f,
+                        CaseFold::Multi(_) => *lo,
+                    };
+                    let hi_fold = match case_fold(*hi) {
+                        CaseFold::Single(f) => f,
+                        CaseFold::Multi(_) => *hi,
+                    };
                     ch_lo >= lo_fold && ch_lo <= hi_fold
                 } else {
                     ch >= *lo && ch <= *hi
@@ -156,7 +163,7 @@ fn chars_eq_ci(a: char, b: char) -> bool {
     if a == b {
         return true;
     }
-    a.case_fold().eq(b.case_fold())
+    case_fold(a).chars() == case_fold(b).chars()
 }
 
 // ---------------------------------------------------------------------------
@@ -1174,8 +1181,8 @@ pub(crate) fn fold_advance(text: &str, start: usize, folded: &[char]) -> Option<
     let mut pos = start;
     for ch in text[start..].chars() {
         pos += ch.len_utf8();
-        for fc in ch.case_fold() {
-            if fi >= folded.len() || fc != folded[fi] {
+        for fc in case_fold(ch).chars() {
+            if fi >= folded.len() || *fc != folded[fi] {
                 return None;
             }
             fi += 1;
@@ -1212,8 +1219,8 @@ pub(crate) fn fold_retreat(text: &str, mut pos: usize, folded: &[char]) -> Optio
         // Collect this char's case fold into a small stack buffer (max 3 for Unicode)
         let mut cbuf = ['\0'; 4];
         let mut clen = 0usize;
-        for fc in ch.case_fold() {
-            cbuf[clen] = fc;
+        for fc in case_fold(ch).chars() {
+            cbuf[clen] = *fc;
             clen += 1;
         }
         if clen > fi || cbuf[..clen] != folded[fi - clen..fi] {
@@ -1228,7 +1235,11 @@ pub(crate) fn fold_retreat(text: &str, mut pos: usize, folded: &[char]) -> Optio
 /// Returns the new position (end of the matched text slice) on success, or `None`.
 /// Handles multi-character Unicode case folds (e.g. `ß` ↔ `ss`, `ﬁ` ↔ `fi`).
 fn caseless_advance(text: &str, start: usize, pattern: &str) -> Option<usize> {
-    let folded: Vec<char> = pattern.case_fold().collect();
+    let folded: Vec<char> = pattern.chars().flat_map(|c| {
+        let f = case_fold(c);
+        // Collect into a small owned vec; Multi is &'static so cheap to iterate
+        f.chars().to_vec()
+    }).collect();
     fold_advance(text, start, &folded)
 }
 

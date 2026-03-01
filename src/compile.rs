@@ -1,10 +1,10 @@
 use crate::ast::*;
+use crate::casefold::case_fold;
 use crate::charset;
 use crate::error::Error;
 use crate::vm::{CharSet, CharSetItem, Inst};
 /// Compiler: transforms a parsed AST into a VM instruction sequence.
 use std::collections::HashMap;
-use unicode_casefold::UnicodeCaseFold;
 
 // ---------------------------------------------------------------------------
 // Nullable analysis
@@ -151,7 +151,7 @@ impl Compiler {
 
             Node::Literal(c) => {
                 if ic {
-                    let folded: Vec<char> = c.case_fold().collect();
+                    let folded: Vec<char> = case_fold(*c).chars().to_vec();
                     if backward {
                         self.emit(Inst::FoldSeqBack(folded));
                     } else {
@@ -220,7 +220,7 @@ impl Compiler {
                     };
                     for child in iter {
                         if let Node::Literal(c) = child {
-                            fold_accum.extend(c.case_fold());
+                            fold_accum.extend(case_fold(*c).chars().iter().copied());
                             continue;
                         }
                         if !fold_accum.is_empty() {

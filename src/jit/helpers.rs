@@ -10,12 +10,12 @@
 
 use crate::ast::{AnchorKind, Flags, Shorthand};
 use crate::bytetrie::ByteTrie;
+use crate::casefold::case_fold;
 use crate::charset;
 use crate::vm::{
     BtJit, CharSet, JitExecCtx, bt_pop, bt_push, exec_lookaround_for_jit, fold_advance,
     fold_retreat,
 };
-use unicode_casefold::UnicodeCaseFold;
 
 // ---------------------------------------------------------------------------
 // Internal utilities
@@ -59,7 +59,7 @@ fn chars_eq_ci(a: char, b: char) -> bool {
     if a == b {
         return true;
     }
-    a.case_fold().eq(b.case_fold())
+    case_fold(a).chars() == case_fold(b).chars()
 }
 
 /// Push a `BtJit::Retry` entry.  Slots are **not** snapshotted here; instead

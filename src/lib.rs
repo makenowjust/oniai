@@ -12,6 +12,7 @@
 
 mod ast;
 mod bytetrie;
+mod casefold;
 mod casefold_trie;
 mod charset;
 mod compile;
