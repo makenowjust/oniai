@@ -1563,10 +1563,12 @@ fn build_match_tries(prog: &[Inst], charsets: &[CharSet]) -> Vec<Option<ByteTrie
 /// but acceptable only for small result sets — we conservatively skip them to
 /// avoid large compile-time cost for `\w`, `[[:alpha:]]`, etc.
 fn charset_is_simple(cs: &CharSet) -> bool {
-    cs.items
-        .iter()
-        .all(|item| matches!(item, CharSetItem::Char(_) | CharSetItem::Range(_, _)))
-        && cs.intersections.iter().all(charset_is_simple)
+    !cs.negate
+        && cs.intersections.is_empty()
+        && cs
+            .items
+            .iter()
+            .all(|item| matches!(item, CharSetItem::Char(_) | CharSetItem::Range(_, _)))
 }
 
 pub struct CompiledRegex {

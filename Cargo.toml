@@ -26,6 +26,9 @@ cranelift-module   = { version = "0.119", optional = true }
 cranelift-native   = { version = "0.119", optional = true }
 unicode-general-category = "1.1.0"
 
+[build-dependencies]
+unicode-casefold = "0.2"
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 regex = "1"

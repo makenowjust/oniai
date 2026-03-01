@@ -31,6 +31,8 @@ No external dependencies are used.
 | `src/compile.rs` | Compiler: `Node` → `Vec<Inst>` + `Vec<CharSet>` |
 | `src/vm.rs` | Backtracking executor: `Vec<Inst>` × `&str` → match |
 | `src/charset.rs` | Character-property helpers (POSIX, Unicode, shorthands) |
+| `src/bytetrie.rs` | Immutable byte-trie data structure used for case-fold matching |
+| `src/casefold_trie.rs` | Compile-time case-fold expansion: `fold_seq_to_trie`, `charset_to_bytetrie` |
 | `src/error.rs` | `Error` enum (`Parse`, `Compile`) |
 | `src/bin/oniai.rs` | `grep`-like CLI binary |
 
@@ -254,6 +256,7 @@ State {
 Ctx<'t> {
     prog:         &[Inst],
     charsets:     &[CharSet],
+    match_tries:  &[Option<ByteTrie>],  // parallel to prog; precomputed for FoldSeq/Class(ic=true)
     text:         &str,
     search_start: usize,              // for \G anchor
     use_memo:     bool,               // false when pattern has BackRef/CheckGroup
@@ -398,25 +401,53 @@ depth (subexpression call recursion via `\g<...>`) is independently capped at
 
 ### Case-insensitive matching
 
-When the `i` flag is active, `Char(c, true)` and `*Back` variants use
-`chars_eq_ci(a, b)`, which compares the full Unicode case folds of both
-characters via the `unicode-casefold` crate (`char.case_fold()` iterator).
-This correctly handles edge cases such as:
+#### Compile-time byte trie (fast path)
 
-- The Kelvin sign `\u{212A}` matching `k`/`K`.
-- Characters whose full case fold is the identity (e.g. `ß` matches `ß` as
-  a single character).
+At `Regex::new()` time, `build_match_tries` constructs a `ByteTrie` for each
+`FoldSeq`, `FoldSeqBack`, and case-insensitive `Class`/`ClassBack` instruction:
 
-For `BackRef` matching (strings), `caseless_advance(text, pos, pattern)` is
-used instead of a simple character-by-character comparison.  It folds both
-strings one codepoint at a time and handles **multi-codepoint folds** such as
-`ß` ↔ `ss` and the `ﬁ` ligature ↔ `fi`.  Because the text portion consumed
-may have a different byte length from the captured string, `caseless_advance`
-returns the new `pos` after the match rather than a boolean.
+- **`FoldSeq(chars)`** → `fold_seq_to_trie(&chars)` (from `src/casefold_trie.rs`):
+  enumerates all Unicode codepoints whose `case_fold()` produces `chars` (or
+  some sequence of codepoints that together produce `chars`), then inserts their
+  UTF-8 encodings.  For example, `FoldSeq(['s'])` produces a trie that accepts
+  `"s"`, `"S"`, `"ſ"` (U+017F), `"K"` (Kelvin U+212A), etc.
+- **`Class(idx, true)`** (simple charsets only — no `\w`, `[[:alpha:]]` etc.) →
+  `charset_to_bytetrie`: scans all Unicode codepoints and inserts those that
+  match the charset.  Complex charsets (with `Shorthand`, `Posix`, or `Unicode`
+  property items) fall back to the slow path to avoid large tries.
+- The resulting `Vec<Option<ByteTrie>>` is stored in `CompiledRegex::match_tries`
+  and passed to `Ctx` as `match_tries: &[Option<ByteTrie>]`.
 
-The `FirstChars` start-position pre-filter uses `chars_eq_ci` when scanning
-for candidate positions so that e.g. `(?i:k)` correctly finds a Kelvin sign in
-the text.
+At match time in `exec()`, when `match_tries[pc]` is `Some(trie)` the engine
+calls `trie.advance(text.as_bytes(), pos)` — a plain byte-walk with no UTF-8
+decoding and no `case_fold()` calls.  The trie returns the end position of the
+longest accepted prefix, or `None` to trigger backtracking.
+
+#### Scalar fallback
+
+When no ByteTrie is available (complex charsets, backreference patterns, or the
+JIT path), matching falls back to:
+
+- **`Char(c, true)`** / **`CharBack`**: `chars_eq_ci(a, b)` compares the full
+  Unicode case folds via `char.case_fold()`.  Handles edge cases like the
+  Kelvin sign `\u{212A}` matching `k`/`K`.
+- **`FoldSeq(chars)`** (trie absent): `fold_advance(text, pos, chars)` advances
+  char-by-char comparing fold outputs — zero allocation, O(match_len).
+- **`BackRef`** matching (strings): `caseless_advance(text, pos, pattern)` folds
+  both strings one codepoint at a time, handling multi-codepoint folds such as
+  `ß` ↔ `ss` and `ﬁ` ↔ `fi`.
+
+#### Start-position scanner
+
+`StartStrategy::CaselessPrefix { folded, non_ascii_first_bytes }` is used when
+the pattern begins with a `FoldSeq` instruction.  The scanner:
+1. Pre-computes ASCII case variants of `folded[0]` and uses SIMD `str::find`
+   for each — fast for ASCII-dominant text.
+2. Uses `non_ascii_first_bytes` (derived from the ByteTrie root transitions) to
+   scan for non-ASCII starting bytes using raw `&[u8]` byte comparisons —
+   avoids any `case_fold()` calls in the scanner hot path.
+3. Pre-filters each candidate position with `fold_advance` before launching the
+   full NFA.
 
 
 
@@ -429,7 +460,12 @@ before the main loop:
 2. **`StartStrategy`** — choose how to advance through candidate start positions:
    - `Anchored`: try only `start_pos` once.
    - `LiteralPrefix(s)`: use `str::find(s)` to jump to each occurrence.
-   - `FirstChars(set)`: use `str::find(closure)` to skip non-starting chars.
+   - `CaselessPrefix { folded, non_ascii_first_bytes }`: use SIMD `str::find`
+     for ASCII variants of `folded[0]`, plus raw byte scans for non-ASCII first
+     bytes; pre-filter each candidate with `fold_advance`.
+   - `LiteralSet(lits)`: use `str::find` for each literal in a top-level
+     alternation; take the leftmost candidate.
+   - `FirstChars(set)`: use `str::find(char)` per possible first character.
    - `Anywhere`: try every byte-aligned position.
 
 ---

@@ -92,7 +92,11 @@ cargo bench 2>&1 | tee log/bench-$(date +%F).txt
 
 | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
 |----------:|-------------:|------:|------------:|------:|
-| 14.3 µs | 14.3 µs | **83 ns** | 85 ns | **79 ns** |
+| 283 ns | **257 ns** | 83 ns | 85 ns | **79 ns** |
+
+The 3× gap vs pcre2/regex is due to one NFA call (~200–250 ns) per match found;
+closing it would require a DFA engine.  Both paths improved significantly after
+the UTF-8 byte-trie optimization (from ~14 µs, a ×55 speedup).
 
 ---
 
@@ -113,10 +117,9 @@ oniai's JIT is 1.7× faster than its interpreter for this case.
 
 | oniai/jit | oniai/interp | fancy-regex | pcre2 |
 |----------:|-------------:|------------:|------:|
-| 22.5 ms | 20.5 ms | 6.9 ms | **421 µs** |
+| 22.2 ms | 22.4 ms | 6.9 ms | **421 µs** |
 
 `pcre2` is 50× faster than `fancy-regex` and ~50× faster than oniai.
-(Note: oniai/jit is slightly *slower* than oniai/interp here — lookbehind handling has suboptimal JIT codegen.)
 
 ### Backreference: `(\b\w+\b) \1` (doubled word) — "A Study in Scarlet"
 

@@ -134,15 +134,15 @@ For the benchmark haystack (300 x's + "HELLO" + 300 x's = 605 chars), this meant
 calls × ~13 µs overhead = the observed ~8 µs.
 
 **Fix (2026-02-28)**:
-1. New `StartStrategy::CaselessPrefix(Vec<char>)` — stores the full folded sequence.
-2. `extract_caseless_prefix(prog)` — returns `folded.clone()` if first meaningful instruction
-   is `FoldSeq(folded)` with `folded.len() ≥ 2`.
+1. New `StartStrategy::CaselessPrefix { folded, non_ascii_first_bytes }` — stores the full
+   folded sequence plus non-ASCII first bytes from the ByteTrie.
+2. `extract_caseless_prefix(prog)` — returns `(folded.clone(), foldseq_pc)` if first meaningful
+   instruction is `FoldSeq(folded)` with non-empty folded.
 3. In `StartStrategy::compute`, check between `LiteralPrefix` and `LiteralSet`.
 4. In scan loop (`find_with_scratch` + `find_interp`):
    - Pre-compute ASCII case variants of `folded[0]` (e.g. `['H','h']`)
    - SIMD `str::find(c)` per variant → leftmost hit
-   - Correctness gap scan: if `text[pos..simd_hit]` is non-ASCII, char-scan for chars
-     whose `case_fold().next() == Some(folded[0])` (covers e.g. 'ß'→'ss' for `folded[0]='s'`)
+   - Scan raw bytes for `non_ascii_first_bytes` (ByteTrie-derived; avoids `case_fold()` per char)
    - At each candidate, `fold_advance(text, pos, folded)` pre-filter (zero-alloc) before NFA
 
 **Result (2026-02-28)**:
@@ -157,7 +157,46 @@ non-backtracking match engine — out of scope.
 
 ---
 
-## TODO-3 — Reduce lookaround sub-execution overhead
+## TODO-4 — Unicode case-fold correctness fixes and compile-time UTF-8 byte-trie optimization ✅ DONE
+
+**Priority: High** (correctness and performance)
+
+**Problems**:
+1. `/(?i)[a-z]/` incorrectly matched `ß` (whose full fold is `ss`, not in `[a-z]`), because
+   `matches_slow` used `case_fold().next()` (first codepoint only) as the comparison key.
+2. `/(?i)s/` failed to match `ſ` (U+017F), because `extract_caseless_prefix` skipped single-char
+   `FoldSeq` instructions, falling through to `collect_first_chars` which only emitted the ASCII
+   pair `{s, S}`.
+3. `FoldSeq` and case-insensitive `Class` instructions called `case_fold()` and decoded UTF-8
+   at every match position — O(n) `case_fold()` calls for a length-n text.
+
+**Fixes (2026-03-01)**:
+1. `matches_slow`: only substitute the fold result when the fold is a single codepoint (simple
+   fold); otherwise compare the original character.  Effect: `/(?i)[a-z]/` no longer matches `ß`.
+2. Route any non-empty `FoldSeq` (including length-1) through `CaselessPrefix` scanner, whose
+   gap scan correctly finds non-ASCII codepoints like `ſ`.
+3. At `Regex::new()` time, `build_match_tries` constructs a `ByteTrie` for each `FoldSeq`,
+   `FoldSeqBack`, and simple case-insensitive `Class`/`ClassBack` instruction.  At match time,
+   `exec()` walks the trie directly over raw bytes — no UTF-8 decoding, no `case_fold()` calls.
+4. `CaselessPrefix` scanner uses the ByteTrie's non-ASCII first bytes for raw-byte scanning
+   instead of calling `case_fold()` per character in the gap scan.
+
+**New modules**:
+- `src/bytetrie.rs`: `ByteTrie`/`TrieNode` data structure with `insert`, `advance`, `advance_back`, `reversed`, `first_bytes`.
+- `src/casefold_trie.rs`: `fold_seq_to_trie`, `fold_seq_to_trie_back`, `charset_to_bytetrie`, `charset_to_bytetrie_back`.
+
+**Result (2026-03-01)**:
+| Benchmark | Before (post TODO-2c) | After | Change |
+|-----------|----------------------:|------:|-------:|
+| case_insensitive/match/oniai/jit | 294 ns | **283 ns** | −4% |
+| case_insensitive/match/oniai/interp | 312 ns | **257 ns** | −17% |
+
+The interp path is now only 3× slower than `regex` / pcre2 (vs 4× before).
+The remaining gap is the per-match NFA startup cost (~200–250 ns).
+
+---
+
+
 
 **Priority: Low** (housekeeping, but important before any further optimization)
 
