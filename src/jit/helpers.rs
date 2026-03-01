@@ -114,8 +114,11 @@ pub unsafe extern "C" fn jit_match_any_char(ctx: *const JitExecCtx, pos: u64, do
 
 /// Match `charsets[idx]` at `text[pos..]`.
 ///
-/// For case-insensitive matching, prefers the ByteTrie from `class_tries[idx]`
-/// which correctly handles multi-codepoint folds (e.g. ß → "ss").
+/// For case-insensitive matching, uses the ByteTrie from `class_tries[idx]`:
+/// - Non-negated charset: trie is a positive advancer (handles multi-char folds).
+/// - Negated charset: trie covers the inner (non-negated) items and acts as a
+///   rejection guard — if the inner trie matches at this position, the negated
+///   class fails; otherwise one char is consumed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn jit_match_class(
     ctx: *const JitExecCtx,
@@ -125,30 +128,37 @@ pub unsafe extern "C" fn jit_match_class(
 ) -> i64 {
     unsafe {
         let ctx = &*ctx;
-        let text = text_from_ctx(ctx);
         let ic = ignore_case != 0;
-        // Case-insensitive: use per-charset ByteTrie when available (handles
-        // multi-codepoint folds like ß → "ss").
+        let charsets = std::slice::from_raw_parts(
+            ctx.charsets_ptr as *const CharSet,
+            ctx.charsets_len as usize,
+        );
+        let cs = &charsets[idx as usize];
+        // Case-insensitive: use per-charset ByteTrie when available.
         if ic && ctx.class_tries_len > 0 {
             let class_tries = std::slice::from_raw_parts(
                 ctx.class_tries_ptr as *const Option<ByteTrie>,
                 ctx.class_tries_len as usize,
             );
             if let Some(Some(trie)) = class_tries.get(idx as usize) {
-                return match trie.advance(text.as_bytes(), pos as usize) {
-                    Some(new_pos) => new_pos as i64,
-                    None => -1,
-                };
+                let text = text_from_ctx(ctx);
+                if cs.negate {
+                    // Trie is for inner items.  If inner matches → excluded → fail.
+                    if trie.advance(text.as_bytes(), pos as usize).is_some() {
+                        return -1;
+                    }
+                    // Inner doesn't match; fall through to single-char check.
+                } else {
+                    return match trie.advance(text.as_bytes(), pos as usize) {
+                        Some(new_pos) => new_pos as i64,
+                        None => -1,
+                    };
+                }
             }
         }
-        let charsets = std::slice::from_raw_parts(
-            ctx.charsets_ptr as *const CharSet,
-            ctx.charsets_len as usize,
-        );
+        let text = text_from_ctx(ctx);
         match char_at(text, pos as usize) {
-            Some((c, len)) if charsets[idx as usize].matches(c, false, ic) => {
-                (pos as usize + len) as i64
-            }
+            Some((c, len)) if cs.matches(c, false, ic) => (pos as usize + len) as i64,
             _ => -1,
         }
     }

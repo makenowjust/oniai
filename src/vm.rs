@@ -613,12 +613,30 @@ pub(crate) fn exec(
 
             Inst::Class(idx, ignore_case) => {
                 if let Some(trie) = ctx.match_tries.get(pc).and_then(|o| o.as_ref()) {
-                    match trie.advance(ctx.text.as_bytes(), pos) {
-                        Some(new_pos) => {
-                            pos = new_pos;
-                            pc += 1;
+                    let cs = &ctx.charsets[*idx];
+                    if cs.negate && *ignore_case {
+                        // Negated case-insensitive charset: the trie covers the
+                        // *inner* (non-negated) items.  If the inner trie matches
+                        // here (e.g. [ß] matches "ss"), the position is excluded
+                        // by the negation → fail.  Otherwise consume one char.
+                        if trie.advance(ctx.text.as_bytes(), pos).is_some() {
+                            fail!();
                         }
-                        None => fail!(),
+                        match ctx.char_at(pos) {
+                            Some((c, len)) if cs.matches(c, false, *ignore_case) => {
+                                pos += len;
+                                pc += 1;
+                            }
+                            _ => fail!(),
+                        }
+                    } else {
+                        match trie.advance(ctx.text.as_bytes(), pos) {
+                            Some(new_pos) => {
+                                pos = new_pos;
+                                pc += 1;
+                            }
+                            None => fail!(),
+                        }
                     }
                 } else {
                     match ctx.char_at(pos) {
@@ -669,12 +687,27 @@ pub(crate) fn exec(
 
             Inst::ClassBack(idx, ignore_case) => {
                 if let Some(trie) = ctx.match_tries.get(pc).and_then(|o| o.as_ref()) {
-                    match trie.advance_back(ctx.text.as_bytes(), pos) {
-                        Some(new_pos) => {
-                            pos = new_pos;
-                            pc += 1;
+                    let cs = &ctx.charsets[*idx];
+                    if cs.negate && *ignore_case {
+                        // Same guard logic as Inst::Class, but backward.
+                        if trie.advance_back(ctx.text.as_bytes(), pos).is_some() {
+                            fail!();
                         }
-                        None => fail!(),
+                        match ctx.char_before(pos) {
+                            Some((c, len)) if cs.matches(c, false, *ignore_case) => {
+                                pos -= len;
+                                pc += 1;
+                            }
+                            _ => fail!(),
+                        }
+                    } else {
+                        match trie.advance_back(ctx.text.as_bytes(), pos) {
+                            Some(new_pos) => {
+                                pos = new_pos;
+                                pc += 1;
+                            }
+                            None => fail!(),
+                        }
                     }
                 } else {
                     match ctx.char_before(pos) {
@@ -1523,9 +1556,9 @@ pub(crate) fn compute_fork_pc_indices(prog: &[Inst]) -> Vec<Option<u32>> {
 /// matching:
 /// - `FoldSeq(folded)` → trie of all UTF-8 sequences that fold to `folded`
 /// - `FoldSeqBack(folded)` → reversed trie (for backward matching)
-/// - `Class(idx, true)` → trie of all matching codepoints (case-insensitive,
-///   only when the charset has exclusively `Char`/`Range` items to avoid
-///   expensive full Unicode enumeration for `\w`, `[[:alpha:]]`, etc.)
+/// - `Class(idx, true)` with a non-negated simple charset → positive advancer trie
+/// - `Class(idx, true)` with a negated simple charset → inner-content trie used
+///   as a **rejection guard** (the interpreter checks separately)
 /// - `ClassBack(idx, true)` → reversed trie of the above
 ///
 /// All other instruction types get `None`.
@@ -1536,7 +1569,9 @@ fn build_match_tries(prog: &[Inst], charsets: &[CharSet]) -> Vec<Option<ByteTrie
             Inst::FoldSeqBack(folded) => Some(fold_seq_to_trie_back(folded)),
             Inst::Class(idx, true) => {
                 let cs = &charsets[*idx];
-                if charset_is_simple(cs) {
+                // charset_to_bytetrie ignores cs.negate, so we can use it for
+                // both positive (advancer) and negated (rejection guard) charsets.
+                if charset_is_simple(cs) || (cs.negate && charset_items_are_simple(cs)) {
                     Some(charset_to_bytetrie(cs, true, false))
                 } else {
                     None
@@ -1544,7 +1579,7 @@ fn build_match_tries(prog: &[Inst], charsets: &[CharSet]) -> Vec<Option<ByteTrie
             }
             Inst::ClassBack(idx, true) => {
                 let cs = &charsets[*idx];
-                if charset_is_simple(cs) {
+                if charset_is_simple(cs) || (cs.negate && charset_items_are_simple(cs)) {
                     Some(charset_to_bytetrie_back(cs, true, false))
                 } else {
                     None
@@ -1555,31 +1590,37 @@ fn build_match_tries(prog: &[Inst], charsets: &[CharSet]) -> Vec<Option<ByteTrie
         .collect()
 }
 
-/// Returns `true` when a `CharSet` contains only `Char` and `Range` items (no
-/// `Shorthand`, `Posix`, or `Unicode` property items, and no nested charsets
-/// with complex items).  For such charsets, building a `ByteTrie` by scanning
-/// all Unicode codepoints is fast because the charset matching is O(items) per
-/// codepoint.  For charsets with Unicode property items the scan is still O(1.1M)
-/// but acceptable only for small result sets — we conservatively skip them to
-/// avoid large compile-time cost for `\w`, `[[:alpha:]]`, etc.
-fn charset_is_simple(cs: &CharSet) -> bool {
-    !cs.negate
-        && cs.intersections.is_empty()
+/// Returns `true` when a `CharSet`'s *items* are all `Char` or `Range`
+/// and it has no intersection sub-charsets.  Does **not** check `negate`.
+/// This is the predicate for whether a ByteTrie can be built from the inner
+/// content of the charset (whether positive or negated).
+fn charset_items_are_simple(cs: &CharSet) -> bool {
+    cs.intersections.is_empty()
         && cs
             .items
             .iter()
             .all(|item| matches!(item, CharSetItem::Char(_) | CharSetItem::Range(_, _)))
 }
 
+/// Returns `true` when a `CharSet` can be used as a *positive advancer* trie:
+/// non-negated, no intersections, and only `Char`/`Range` items.
+fn charset_is_simple(cs: &CharSet) -> bool {
+    !cs.negate && charset_items_are_simple(cs)
+}
+
 /// Per-charset ByteTrie for case-insensitive `Class` instructions.  Indexed by
 /// charset index (parallel to `charsets`).  Used by the JIT helper which
 /// dispatches by charset index rather than PC.
+///
+/// For non-negated simple charsets: trie is a positive advancer.
+/// For negated simple charsets: trie is the inner-content trie used as a
+/// rejection guard in `jit_match_class`.
 #[cfg(feature = "jit")]
 fn build_class_tries(charsets: &[CharSet]) -> Vec<Option<ByteTrie>> {
     charsets
         .iter()
         .map(|cs| {
-            if charset_is_simple(cs) {
+            if charset_is_simple(cs) || (cs.negate && charset_items_are_simple(cs)) {
                 Some(charset_to_bytetrie(cs, true, false))
             } else {
                 None

@@ -1025,3 +1025,53 @@ fn case_fold_backref_kelvin() {
     assert_match!(r"(?i)\A(k)\1\z", "kK");
     assert_match!(r"(?i)\A(k)\1\z", "k\u{212A}"); // Kelvin sign
 }
+
+// --- §14.5 Negated character classes under (?i) ---
+
+#[test]
+fn case_fold_neg_class_sharp_s_no_match_at_ss() {
+    // (?i)[^ß] must NOT match at the start of "ss":
+    // [ß] would match "ss" there, so [^ß] is excluded at that position.
+    // The find() result should start at position 1 (the second 's').
+    let re = Regex::new(r"(?i)[^ß]").unwrap();
+    let m = re.find("ss").expect("should find a match somewhere");
+    assert_eq!(m.start(), 1, "match must not start at position 0");
+    assert_eq!(m.as_str(), "s");
+}
+
+#[test]
+fn case_fold_neg_class_sharp_s_no_match_at_capital_sharp_s() {
+    // ẞ (U+1E9E) also folds to "ss", so [^ß] must not match at ẞ.
+    let re = Regex::new(r"(?i)[^ß]").unwrap();
+    assert_no_match!(r"(?i)\A[^ß]\z", "ẞ");
+    // But ẞ's position is excluded; the char after it is not.
+    let m = re.find("ẞx").expect("should match x");
+    assert_eq!(m.as_str(), "x");
+}
+
+#[test]
+fn case_fold_neg_class_sharp_s_no_match_at_sharp_s_itself() {
+    // ß itself is in [ß], so [^ß] must not match at ß.
+    assert_no_match!(r"(?i)\A[^ß]\z", "ß");
+    // After ß, 'x' is not in [ß] → [^ß] matches.
+    let re = Regex::new(r"(?i)[^ß]").unwrap();
+    let m = re.find("ßx").expect("should match x");
+    assert_eq!(m.as_str(), "x");
+}
+
+#[test]
+fn case_fold_neg_class_sharp_s_matches_unrelated_chars() {
+    // Characters unrelated to ß are not excluded.
+    assert_match!(r"(?i)\A[^ß]\z", "a");
+    assert_match!(r"(?i)\A[^ß]\z", "x");
+    assert_match!(r"(?i)\A[^ß]\z", "ſ"); // ſ folds to 's', not 'ss'
+}
+
+#[test]
+fn case_fold_neg_class_sharp_s_find_all() {
+    // "ssx" — positions 0 is excluded (ß trie matches "ss"), pos 1 matches 's',
+    // pos 2 matches 'x'.
+    let re = Regex::new(r"(?i)[^ß]").unwrap();
+    let matches: Vec<&str> = re.find_iter("ssx").map(|m| m.as_str()).collect();
+    assert_eq!(matches, vec!["s", "x"], "expected ['s','x'] not ['ss','x']");
+}

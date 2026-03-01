@@ -309,6 +309,13 @@ Under `(?i)`, character matching inside classes works as follows:
   only `ß` itself (and `SS` etc. only if their fold equals `['s','s']`), but
   does **not** match a single `s` because `['s'] ≠ ['s','s']`.
 
+- **Negated classes under `(?i)`** (e.g. `[^ß]`): a position is excluded if
+  the **positive** version `[ß]` would match there (including multi-char fold
+  sequences).  When the negated class does match, it consumes exactly one
+  character.  Example: `(?i)[^ß]` does **not** match at position 0 of `ss`
+  (because `(?i)[ß]` matches the two-char sequence `ss` there), but **does**
+  match the second `s` at position 1.
+
 - **Ranges** (e.g. `[a-z]`): each character `c` is compared against the range
   bounds using its **simple (single-codepoint) case fold**.  A character `c`
   has a simple fold if and only if `c.case_fold()` yields exactly one codepoint
@@ -734,7 +741,35 @@ fully supported:
 (?i)(ﬁ)\1   matches "ﬁfi"  (fold of "ﬁ" = ['f','i'] matches "fi")
 ```
 
-### 14.5 Notable Unicode characters
+### 14.5 Negated character classes under `(?i)`
+
+A negated class `(?i)[^X]` is the complement of `(?i)[X]`, **including
+multi-codepoint fold equivalences**.  Specifically:
+
+- At a given position, if `(?i)[X]` would match (possibly consuming more than
+  one byte — e.g. matching `ss` for `[ß]`), then `(?i)[^X]` does **not** match
+  at that position.
+- When `(?i)[^X]` does match, it always consumes exactly **one character**
+  (the character at that position).
+
+Practical consequences for `(?i)[^ß]` on the text `ss`:
+
+| Position | `(?i)[ß]` result | `(?i)[^ß]` result | Reason |
+|----------|-----------------|-------------------|--------|
+| 0 | matches `ss` (2 bytes) | **no match** | positive class matches here |
+| 1 | no match | matches `s` (1 byte) | `s` alone ≠ fold of `ß` |
+
+More examples:
+
+```
+(?i)[^ß]  on "ssX"  → matches "s" at pos 1, then "X" at pos 2
+(?i)[^ß]  on "ßX"   → does not match at pos 0 (ß itself is in [ß]),
+                       matches "X" at pos 2
+(?i)[^ß]  on "ẞX"   → does not match at pos 0 (ẞ folds to "ss" = fold of ß),
+                       matches "X" at pos 3
+```
+
+### 14.6 Notable Unicode characters
 
 | Character | Codepoint | Folds to | Notes |
 |-----------|-----------|----------|-------|
@@ -746,7 +781,7 @@ fully supported:
 | `ﬃ` (ffi ligature) | U+FB03 | `ffi` | |
 | `ﬄ` (ffl ligature) | U+FB04 | `ffl` | |
 
-### 14.6 Memoization and case-insensitive patterns
+### 14.7 Memoization and case-insensitive patterns
 
 Case-insensitive matching does not affect whether memoization is enabled.
 Memoization is disabled only when the pattern contains `BackRef` or
