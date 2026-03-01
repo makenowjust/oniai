@@ -7,7 +7,7 @@
 // To update the Unicode data, run:
 //   sh scripts/fetch_unicode_data.sh [VERSION]
 
-include!("general_category_data.rs");
+use crate::data::general_category_data::*;
 
 /// Unicode General Category (all 30 values).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

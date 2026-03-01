@@ -16,6 +16,7 @@ mod casefold;
 mod casefold_trie;
 mod charset;
 mod compile;
+mod data;
 mod error;
 mod general_category;
 #[cfg(feature = "jit")]

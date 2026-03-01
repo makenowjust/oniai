@@ -8,8 +8,8 @@
 //!   data/extracted/DerivedGeneralCategory.txt
 //!
 //! And writes:
-//!   src/casefold_data.rs
-//!   src/general_category_data.rs
+//!   src/data/casefold_data.rs
+//!   src/data/general_category_data.rs
 //!
 //! Fetch fresh Unicode data first if needed:
 //!   sh scripts/fetch_unicode_data.sh [VERSION]
@@ -99,8 +99,8 @@ fn gen_casefold() {
     }
     out.push_str("];\n");
 
-    fs::write("src/casefold_data.rs", &out).expect("failed to write src/casefold_data.rs");
-    eprintln!("Wrote src/casefold_data.rs ({} simple, {} multi folds)", simple.len(), multi.len());
+    fs::write("src/data/casefold_data.rs", &out).expect("failed to write src/data/casefold_data.rs");
+    eprintln!("Wrote src/data/casefold_data.rs ({} simple, {} multi folds)", simple.len(), multi.len());
 }
 
 // ─── DerivedGeneralCategory.txt ─────────────────────────────────────────────
@@ -192,9 +192,9 @@ fn gen_general_category() {
     }
     out.push_str("];\n");
 
-    fs::write("src/general_category_data.rs", &out)
-        .expect("failed to write src/general_category_data.rs");
-    eprintln!("Wrote src/general_category_data.rs ({} ranges)", merged.len());
+    fs::write("src/data/general_category_data.rs", &out)
+        .expect("failed to write src/data/general_category_data.rs");
+    eprintln!("Wrote src/data/general_category_data.rs ({} ranges)", merged.len());
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -204,7 +204,6 @@ const DO_NOT_EDIT: &str = "\
 // To regenerate:\n\
 //   sh scripts/fetch_unicode_data.sh   # update data/ if needed\n\
 //   cargo run --manifest-path scripts/gen_unicode_tables/Cargo.toml\n\n";
-
 fn strip_comment(line: &str) -> &str {
     if let Some(pos) = line.find('#') {
         &line[..pos]
