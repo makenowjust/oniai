@@ -872,3 +872,152 @@ fn null_loop_check_absence_body() {
     assert_match!(r"(?~#)*", "");
     assert_match!(r"(?~a)*", "b");
 }
+
+// ---------------------------------------------------------------------------
+// §14 Unicode Case Folding — detailed specification tests
+// ---------------------------------------------------------------------------
+
+// --- §14.1 Multi-codepoint case folds for literals outside character classes ---
+
+#[test]
+fn case_fold_sharp_s_literal_matches_two_s() {
+    // ß folds to ['s','s']. FoldSeq(['s','s']) must match both ß itself and the
+    // two-character sequences ss / Ss / sS / SS.
+    assert_match!(r"(?i)\Aß\z", "ß"); // self
+    assert_match!(r"(?i)\Aß\z", "ss"); // lowercase
+    assert_match!(r"(?i)\Aß\z", "SS"); // uppercase
+    assert_match!(r"(?i)\Aß\z", "Ss"); // mixed
+    assert_match!(r"(?i)\Aß\z", "sS"); // mixed
+    // Single 's' must NOT match ß because it only produces one fold char.
+    assert_no_match!(r"(?i)\Aß\z", "s");
+}
+
+#[test]
+fn case_fold_two_s_literal_matches_sharp_s() {
+    // Consecutive case-insensitive literals are merged into one FoldSeq.
+    // (?i)ss compiles to FoldSeq(['s','s']), which matches ß.
+    assert_match!(r"(?i)\Ass\z", "ss");
+    assert_match!(r"(?i)\Ass\z", "SS");
+    assert_match!(r"(?i)\Ass\z", "ß"); // ß folds to ['s','s'] — MUST match
+    assert_no_match!(r"(?i)\Ass\z", "s"); // only one char
+}
+
+#[test]
+fn case_fold_kelvin_sign_matches_k() {
+    // The Kelvin sign U+212A folds to 'k', so (?i)k matches it and vice versa.
+    assert_match!(r"(?i)\Ak\z", "k");
+    assert_match!(r"(?i)\Ak\z", "K");
+    assert_match!(r"(?i)\Ak\z", "\u{212A}"); // Kelvin sign
+    assert_match!("(?i)\\A\u{212A}\\z", "k");
+    assert_match!("(?i)\\A\u{212A}\\z", "K");
+    assert_match!("(?i)\\A\u{212A}\\z", "\u{212A}");
+}
+
+#[test]
+fn case_fold_fi_ligature_matches_fi() {
+    // ﬁ (U+FB01) folds to ['f','i']. FoldSeq(['f','i']) matches "fi", "Fi", etc.
+    assert_match!("(?i)\\Aﬁ\\z", "ﬁ"); // self
+    assert_match!("(?i)\\Aﬁ\\z", "fi");
+    assert_match!("(?i)\\Aﬁ\\z", "FI");
+    assert_match!("(?i)\\Aﬁ\\z", "Fi");
+    assert_match!(r"(?i)\Afi\z", "ﬁ"); // "fi" pattern matches ﬁ ligature
+    assert_no_match!("(?i)\\Aﬁ\\z", "f"); // incomplete
+}
+
+// --- §14.2 Single chars inside character classes use chars_eq_ci ---
+
+#[test]
+fn case_fold_class_char_sharp_s() {
+    // [ß] under (?i) uses chars_eq_ci('ß', ch).
+    // chars_eq_ci('ß', 'S') = ['s','s'].eq(['s']) = FALSE — single S does not match.
+    // chars_eq_ci('ß', 'ß') = ['s','s'].eq(['s','s']) = TRUE.
+    assert_match!(r"(?i)\A[ß]\z", "ß");
+    // SS: S folds to ['s'], not ['s','s'] — does NOT equal ß's fold ['s','s']
+    assert_no_match!(r"(?i)\A[ß]\z", "s");
+    assert_no_match!(r"(?i)\A[ß]\z", "S");
+}
+
+#[test]
+fn case_fold_class_char_kelvin() {
+    // [k] under (?i): chars_eq_ci('k', '\u{212A}') = ['k'].eq(['k']) = true
+    assert_match!(r"(?i)[k]", "k");
+    assert_match!(r"(?i)[k]", "K");
+    assert_match!(r"(?i)[k]", "\u{212A}"); // Kelvin sign
+}
+
+// --- §14.3 Range matching uses simple (single-codepoint) fold only ---
+
+#[test]
+fn case_fold_range_ascii_uppercase() {
+    // (?i)[a-z] should match all ASCII uppercase letters via simple-fold comparison.
+    assert_match!(r"(?i)[a-z]", "A");
+    assert_match!(r"(?i)[a-z]", "Z");
+    assert_match!(r"(?i)[a-z]", "a");
+    assert_match!(r"(?i)[a-z]", "z");
+}
+
+#[test]
+fn case_fold_range_sharp_s_first_fold() {
+    // ß folds to the TWO-char sequence "ss"; it has no single-codepoint simple
+    // fold.  So (?i)[a-z] must NOT match ß — ß itself is not in [a-z].
+    assert_no_match!(r"(?i)[a-z]", "ß");
+    // But ß DOES match [^a-z] negated (it falls outside the range entirely).
+    assert_match!(r"(?i)[^a-z]", "ß");
+}
+
+#[test]
+fn case_fold_range_long_s_single_fold() {
+    // ſ (U+017F Latin Small Letter Long S) has a SINGLE-char simple fold to 's'.
+    // So (?i)[a-z] SHOULD match ſ.
+    assert_match!(r"(?i)[a-z]", "ſ");
+    assert_match!(r"(?i)[A-Z]", "ſ");
+}
+
+#[test]
+fn case_fold_range_kelvin_sign_first_fold() {
+    // Kelvin sign U+212A folds to 'k', which is in [a-z].
+    assert_match!(r"(?i)[a-z]", "\u{212A}");
+}
+
+// --- literal match must also work (this was the reported bug) ---
+
+#[test]
+fn case_fold_literal_long_s_matches() {
+    // (?i)s compiled to FoldSeq(['s']). The start-position scanner must not
+    // skip ſ (U+017F) even though it is non-ASCII.
+    assert_match!(r"(?i)s", "ſ");
+    assert_match!(r"(?i)s", "S");
+    assert_match!(r"(?i)S", "ſ");
+    assert_match!(r"(?i)S", "s");
+    // Kelvin sign (U+212A) folds to 'k', so (?i)k must match it too.
+    assert_match!(r"(?i)k", "\u{212A}");
+    assert_match!(r"(?i)K", "\u{212A}");
+}
+
+// --- §14.4 Backreferences under (?i) ---
+
+#[test]
+fn case_fold_backref_sharp_s_ss() {
+    // (?i)(ß)\1: captured text is "ß" (fold=['s','s']); \1 must match "ss".
+    // caseless_advance folds both sides to ['s','s'] and compares.
+    assert_match!(r"(?i)\A(ß)\1\z", "ßss");
+    assert_match!(r"(?i)\A(ß)\1\z", "ßSS");
+    assert_match!(r"(?i)\A(ß)\1\z", "ßß"); // ß also folds to ['s','s']
+    assert_no_match!(r"(?i)\A(ß)\1\z", "ßs"); // only one 's'
+}
+
+#[test]
+fn case_fold_backref_ss_matches_sharp_s() {
+    // (?i)(ss)\1: captured text is "ss" (fold=['s','s']); \1 must match "ß".
+    assert_match!(r"(?i)\A(ss)\1\z", "ssß");
+    assert_match!(r"(?i)\A(ss)\1\z", "ssss");
+    assert_no_match!(r"(?i)\A(ss)\1\z", "sss"); // fold(['s','s']) != fold of 3 chars
+}
+
+#[test]
+fn case_fold_backref_kelvin() {
+    // (?i)(k)\1: captured "k"; \1 matches 'K' and Kelvin sign.
+    assert_match!(r"(?i)\A(k)\1\z", "kk");
+    assert_match!(r"(?i)\A(k)\1\z", "kK");
+    assert_match!(r"(?i)\A(k)\1\z", "k\u{212A}"); // Kelvin sign
+}

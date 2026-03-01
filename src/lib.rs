@@ -11,6 +11,8 @@
 //! ```
 
 mod ast;
+mod bytetrie;
+mod casefold_trie;
 mod charset;
 mod compile;
 mod error;
@@ -102,7 +104,11 @@ impl Regex {
     #[cfg(feature = "jit")]
     #[doc(hidden)]
     pub fn find_iter_interp<'r, 't>(&'r self, text: &'t str) -> FindIterInterp<'r, 't> {
-        FindIterInterp { re: self, text, pos: 0 }
+        FindIterInterp {
+            re: self,
+            text,
+            pos: 0,
+        }
     }
 }
 
@@ -283,6 +289,10 @@ impl<'r, 't> Iterator for FindIterInterp<'r, 't> {
         } else {
             end + next_char_len(self.text, end)
         };
-        Some(Match { text: self.text, start, end })
+        Some(Match {
+            text: self.text,
+            start,
+            end,
+        })
     }
 }

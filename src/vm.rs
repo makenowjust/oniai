@@ -1,4 +1,8 @@
 use crate::ast::{AnchorKind, Flags, Shorthand};
+use crate::bytetrie::ByteTrie;
+use crate::casefold_trie::{
+    charset_to_bytetrie, charset_to_bytetrie_back, fold_seq_to_trie, fold_seq_to_trie_back,
+};
 use crate::charset;
 use crate::compile::{CompileOptions, compile};
 use crate::error::Error;
@@ -52,7 +56,15 @@ impl CharSet {
     /// Used only during `compute_ascii_ranges` to avoid circularity.
     fn matches_slow(&self, ch: char, ascii_range: bool, ignore_case: bool) -> bool {
         let test_ch = if ignore_case {
-            ch.case_fold().next().unwrap_or(ch)
+            // For range comparisons we need the *simple* (single-codepoint) case
+            // fold of `ch`.  Characters with a multi-codepoint full fold (e.g.
+            // ß → "ss") must NOT be treated as matching a range via their fold's
+            // first character; they should only match a range if `ch` itself falls
+            // within it.  Therefore we use the single-char fold when the fold
+            // sequence has exactly one codepoint, and fall back to `ch` otherwise.
+            let mut fold = ch.case_fold();
+            let first = fold.next().unwrap_or(ch);
+            if fold.next().is_none() { first } else { ch }
         } else {
             ch
         };
@@ -309,6 +321,9 @@ impl State {
 pub(crate) struct Ctx<'t> {
     pub(crate) prog: &'t [Inst],
     pub(crate) charsets: &'t [CharSet],
+    /// Parallel to `prog`: precomputed ByteTrie for FoldSeq/FoldSeqBack/Class(ic=true)
+    /// instructions.  `None` for all other instruction types.
+    pub(crate) match_tries: &'t [Option<ByteTrie>],
     pub(crate) text: &'t str,
     pub(crate) search_start: usize,
     pub(crate) use_memo: bool,
@@ -596,13 +611,25 @@ pub(crate) fn exec(
                 _ => fail!(),
             },
 
-            Inst::Class(idx, ignore_case) => match ctx.char_at(pos) {
-                Some((c, len)) if ctx.charsets[*idx].matches(c, false, *ignore_case) => {
-                    pos += len;
-                    pc += 1;
+            Inst::Class(idx, ignore_case) => {
+                if let Some(trie) = ctx.match_tries.get(pc).and_then(|o| o.as_ref()) {
+                    match trie.advance(ctx.text.as_bytes(), pos) {
+                        Some(new_pos) => {
+                            pos = new_pos;
+                            pc += 1;
+                        }
+                        None => fail!(),
+                    }
+                } else {
+                    match ctx.char_at(pos) {
+                        Some((c, len)) if ctx.charsets[*idx].matches(c, false, *ignore_case) => {
+                            pos += len;
+                            pc += 1;
+                        }
+                        _ => fail!(),
+                    }
                 }
-                _ => fail!(),
-            },
+            }
 
             Inst::Shorthand(sh, ascii_range) => match ctx.char_at(pos) {
                 Some((c, len)) if charset::matches_shorthand(*sh, c, *ascii_range) => {
@@ -640,13 +667,25 @@ pub(crate) fn exec(
                 _ => fail!(),
             },
 
-            Inst::ClassBack(idx, ignore_case) => match ctx.char_before(pos) {
-                Some((c, len)) if ctx.charsets[*idx].matches(c, false, *ignore_case) => {
-                    pos -= len;
-                    pc += 1;
+            Inst::ClassBack(idx, ignore_case) => {
+                if let Some(trie) = ctx.match_tries.get(pc).and_then(|o| o.as_ref()) {
+                    match trie.advance_back(ctx.text.as_bytes(), pos) {
+                        Some(new_pos) => {
+                            pos = new_pos;
+                            pc += 1;
+                        }
+                        None => fail!(),
+                    }
+                } else {
+                    match ctx.char_before(pos) {
+                        Some((c, len)) if ctx.charsets[*idx].matches(c, false, *ignore_case) => {
+                            pos -= len;
+                            pc += 1;
+                        }
+                        _ => fail!(),
+                    }
                 }
-                _ => fail!(),
-            },
+            }
 
             Inst::ShorthandBack(sh, ascii_range) => match ctx.char_before(pos) {
                 Some((c, len)) if charset::matches_shorthand(*sh, c, *ascii_range) => {
@@ -664,21 +703,35 @@ pub(crate) fn exec(
                 _ => fail!(),
             },
 
-            Inst::FoldSeq(folded) => match fold_advance(ctx.text, pos, folded) {
-                Some(new_pos) => {
-                    pos = new_pos;
-                    pc += 1;
+            Inst::FoldSeq(folded) => {
+                let new_pos = if let Some(trie) = ctx.match_tries.get(pc).and_then(|o| o.as_ref()) {
+                    trie.advance(ctx.text.as_bytes(), pos)
+                } else {
+                    fold_advance(ctx.text, pos, folded)
+                };
+                match new_pos {
+                    Some(new_pos) => {
+                        pos = new_pos;
+                        pc += 1;
+                    }
+                    None => fail!(),
                 }
-                None => fail!(),
-            },
+            }
 
-            Inst::FoldSeqBack(folded) => match fold_retreat(ctx.text, pos, folded) {
-                Some(new_pos) => {
-                    pos = new_pos;
-                    pc += 1;
+            Inst::FoldSeqBack(folded) => {
+                let new_pos = if let Some(trie) = ctx.match_tries.get(pc).and_then(|o| o.as_ref()) {
+                    trie.advance_back(ctx.text.as_bytes(), pos)
+                } else {
+                    fold_retreat(ctx.text, pos, folded)
+                };
+                match new_pos {
+                    Some(new_pos) => {
+                        pos = new_pos;
+                        pc += 1;
+                    }
+                    None => fail!(),
                 }
-                None => fail!(),
-            },
+            }
 
             Inst::Anchor(kind, flags) => {
                 if matches_anchor(ctx, pos, *kind, *flags) {
@@ -1161,11 +1214,17 @@ enum StartStrategy {
     /// Top-level alternation of case-sensitive literals (each ≥ 2 chars).
     /// Run `str::find` for each and take the leftmost candidate.
     LiteralSet(Vec<String>),
-    /// Pattern starts with a case-insensitive literal (FoldSeq with ≥ 2 chars).
-    /// Stores the full folded sequence; scan uses SIMD str::find for ASCII case
-    /// variants of folded[0] plus a correctness gap-scan for non-ASCII multi-fold
-    /// source chars (e.g. 'ß'→"ss" where folded[0]='s').
-    CaselessPrefix(Vec<char>),
+    /// Pattern starts with a case-insensitive literal (FoldSeq).
+    /// Stores the full folded sequence for pre-filtering; the scanner uses
+    /// SIMD str::find for ASCII first-byte variants and raw-byte scans for
+    /// `non_ascii_first_bytes` (derived from the ByteTrie root transitions) to
+    /// find non-ASCII candidates without calling `case_fold()` at scan time.
+    CaselessPrefix {
+        folded: Vec<char>,
+        /// Non-ASCII bytes that can start an accepted sequence (derived from
+        /// the precomputed ByteTrie for this fold sequence).
+        non_ascii_first_bytes: Vec<u8>,
+    },
     /// Pattern's first character must be one of these.
     /// Use `str::find(char)` per candidate and take the leftmost hit.
     FirstChars(Vec<char>),
@@ -1174,7 +1233,7 @@ enum StartStrategy {
 }
 
 impl StartStrategy {
-    fn compute(prog: &[Inst]) -> Self {
+    fn compute(prog: &[Inst], match_tries: &[Option<ByteTrie>]) -> Self {
         // Check for anchored start (skip over zero-width Save/KeepStart prefix)
         let first_real = prog
             .iter()
@@ -1190,8 +1249,19 @@ impl StartStrategy {
         }
 
         // Try to extract a case-insensitive literal prefix (FoldSeq)
-        if let Some(folded) = extract_caseless_prefix(prog) {
-            return StartStrategy::CaselessPrefix(folded);
+        if let Some((folded, foldseq_pc)) = extract_caseless_prefix(prog) {
+            // Extract non-ASCII first bytes from the precomputed ByteTrie so the
+            // scanner can scan for them with raw byte comparisons instead of calling
+            // `case_fold()` on every non-ASCII character.
+            let non_ascii_first_bytes: Vec<u8> = match_tries
+                .get(foldseq_pc)
+                .and_then(|o| o.as_ref())
+                .map(|trie| trie.first_bytes().filter(|&b| b >= 0x80).collect())
+                .unwrap_or_default();
+            return StartStrategy::CaselessPrefix {
+                folded,
+                non_ascii_first_bytes,
+            };
         }
 
         // Try to extract a set of literals from a top-level alternation
@@ -1231,15 +1301,17 @@ fn extract_literal_prefix(prog: &[Inst]) -> String {
     prefix
 }
 
-/// If the program starts with a multi-char `FoldSeq` (after zero-width prefix
+/// If the program starts with a `FoldSeq` (after zero-width prefix
 /// instructions), return its folded char sequence.  Returns `None` otherwise.
-fn extract_caseless_prefix(prog: &[Inst]) -> Option<Vec<char>> {
+/// Returns `(folded_chars, foldseq_pc)` when the program starts with a FoldSeq
+/// (possibly preceded by zero-width prefix instructions).
+fn extract_caseless_prefix(prog: &[Inst]) -> Option<(Vec<char>, usize)> {
     let mut pc = 0;
     while pc < prog.len() {
         match &prog[pc] {
             Inst::Save(_) | Inst::KeepStart => pc += 1,
             Inst::Anchor(AnchorKind::StringStart, _) => pc += 1,
-            Inst::FoldSeq(folded) if folded.len() >= 2 => return Some(folded.clone()),
+            Inst::FoldSeq(folded) if !folded.is_empty() => return Some((folded.clone(), pc)),
             _ => return None,
         }
     }
@@ -1307,7 +1379,11 @@ fn extract_literal_set(prog: &[Inst]) -> Option<Vec<String>> {
         }
     }
 
-    if literals.len() >= 2 { Some(literals) } else { None }
+    if literals.len() >= 2 {
+        Some(literals)
+    } else {
+        None
+    }
 }
 
 /// Walk the program from `pc` and collect all characters that could appear
@@ -1329,8 +1405,10 @@ fn collect_first_chars(
             out.extend(c.to_uppercase());
         }
         Inst::FoldSeq(folded) if folded.len() == 1 => {
-            out.push(folded[0]);
-            out.extend(folded[0].to_uppercase());
+            // Cannot enumerate all Unicode codepoints whose single-char case fold
+            // equals folded[0] (e.g. ſ, Kelvin sign K, …).  Return None so the
+            // caller falls back to Anywhere scanning.
+            return None;
         }
         Inst::FoldSeq(folded) if !folded.is_empty() => {
             // Multi-char fold: text could start with a single char that folds
@@ -1439,6 +1517,58 @@ pub(crate) fn compute_fork_pc_indices(prog: &[Inst]) -> Vec<Option<u32>> {
     indices
 }
 
+/// Build a `Vec<Option<ByteTrie>>` parallel to `prog`.
+///
+/// Each entry is `Some(trie)` for instructions that can benefit from byte-level
+/// matching:
+/// - `FoldSeq(folded)` → trie of all UTF-8 sequences that fold to `folded`
+/// - `FoldSeqBack(folded)` → reversed trie (for backward matching)
+/// - `Class(idx, true)` → trie of all matching codepoints (case-insensitive,
+///   only when the charset has exclusively `Char`/`Range` items to avoid
+///   expensive full Unicode enumeration for `\w`, `[[:alpha:]]`, etc.)
+/// - `ClassBack(idx, true)` → reversed trie of the above
+///
+/// All other instruction types get `None`.
+fn build_match_tries(prog: &[Inst], charsets: &[CharSet]) -> Vec<Option<ByteTrie>> {
+    prog.iter()
+        .map(|inst| match inst {
+            Inst::FoldSeq(folded) => Some(fold_seq_to_trie(folded)),
+            Inst::FoldSeqBack(folded) => Some(fold_seq_to_trie_back(folded)),
+            Inst::Class(idx, true) => {
+                let cs = &charsets[*idx];
+                if charset_is_simple(cs) {
+                    Some(charset_to_bytetrie(cs, true, false))
+                } else {
+                    None
+                }
+            }
+            Inst::ClassBack(idx, true) => {
+                let cs = &charsets[*idx];
+                if charset_is_simple(cs) {
+                    Some(charset_to_bytetrie_back(cs, true, false))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Returns `true` when a `CharSet` contains only `Char` and `Range` items (no
+/// `Shorthand`, `Posix`, or `Unicode` property items, and no nested charsets
+/// with complex items).  For such charsets, building a `ByteTrie` by scanning
+/// all Unicode codepoints is fast because the charset matching is O(items) per
+/// codepoint.  For charsets with Unicode property items the scan is still O(1.1M)
+/// but acceptable only for small result sets — we conservatively skip them to
+/// avoid large compile-time cost for `\w`, `[[:alpha:]]`, etc.
+fn charset_is_simple(cs: &CharSet) -> bool {
+    cs.items
+        .iter()
+        .all(|item| matches!(item, CharSetItem::Char(_) | CharSetItem::Range(_, _)))
+        && cs.intersections.iter().all(charset_is_simple)
+}
+
 pub struct CompiledRegex {
     prog: Vec<Inst>,
     charsets: Vec<CharSet>,
@@ -1454,6 +1584,11 @@ pub struct CompiledRegex {
     /// outcome of a Fork at `(pc, pos)` depends on the current capture-slot
     /// values and therefore cannot be memoized by position alone.
     use_memo: bool,
+    /// Parallel to `prog`: precomputed `ByteTrie` for `FoldSeq`, `FoldSeqBack`,
+    /// `Class(_, true)`, and `ClassBack(_, true)` instructions.  `None` for all
+    /// other instruction types.  Used by `exec()` to match raw bytes without
+    /// any `case_fold()` calls or UTF-8 decoding at match time.
+    match_tries: Vec<Option<ByteTrie>>,
     /// JIT-compiled executor (present when the `jit` feature is enabled and
     /// the program is eligible for JIT compilation).
     #[cfg(feature = "jit")]
@@ -1478,7 +1613,11 @@ impl CompiledRegex {
             .map(|(n, i)| (n, i as usize))
             .collect();
 
-        let start_strategy = StartStrategy::compute(&prog_data.prog);
+        // Build per-PC byte tries for FoldSeq/FoldSeqBack and case-insensitive
+        // Class/ClassBack.  `None` at all other PCs.
+        let match_tries = build_match_tries(&prog_data.prog, &prog_data.charsets);
+
+        let start_strategy = StartStrategy::compute(&prog_data.prog, &match_tries);
         let required_char = compute_required_char(&prog_data.prog);
         // Disable memoization for patterns where the fork/lookaround outcome
         // can depend on the current capture-slot state (not just on pc + pos):
@@ -1513,6 +1652,7 @@ impl CompiledRegex {
             start_strategy,
             required_char,
             use_memo,
+            match_tries,
             #[cfg(feature = "jit")]
             jit,
             #[cfg(feature = "jit")]
@@ -1552,6 +1692,7 @@ impl CompiledRegex {
         let ctx = Ctx {
             prog: &self.prog,
             charsets: &self.charsets,
+            match_tries: &self.match_tries,
             text,
             search_start: pos,
             use_memo: self.use_memo,
@@ -1646,10 +1787,13 @@ impl CompiledRegex {
             }
 
             // Case-insensitive literal prefix: use SIMD str::find for ASCII
-            // case variants of folded[0], plus a correctness gap-scan for
-            // non-ASCII multi-fold source chars.  fold_advance pre-filters
-            // candidates before launching the NFA.
-            StartStrategy::CaselessPrefix(folded) => {
+            // case variants of folded[0]; scan raw bytes for non-ASCII first
+            // bytes derived from the precomputed ByteTrie (avoids calling
+            // `case_fold()` on every non-ASCII char in the input).
+            StartStrategy::CaselessPrefix {
+                folded,
+                non_ascii_first_bytes,
+            } => {
                 let fc0 = folded[0];
                 // ASCII case variants of fc0 (computed once, amortised over the search).
                 let ascii_vars: Vec<char> = fc0
@@ -1665,32 +1809,36 @@ impl CompiledRegex {
                         .iter()
                         .filter_map(|&c| text[pos..].find(c).map(|off| pos + off))
                         .min();
-                    // Correctness: scan the gap [pos..simd_pos) for non-ASCII
-                    // multi-fold source chars (e.g. 'ß'→"ss" when fc0='s').
-                    // The is_ascii() fast-path skips this scan for ASCII-only segments.
-                    let gap_end = simd_pos.unwrap_or(text.len());
-                    let char_pos = if !text[pos..gap_end].is_ascii() {
-                        text[pos..gap_end]
-                            .char_indices()
-                            .find(|(_, c)| {
-                                !c.is_ascii() && c.case_fold().next() == Some(fc0)
-                            })
-                            .map(|(off, _)| pos + off)
-                    } else {
-                        None
-                    };
-                    let candidate = match (char_pos, simd_pos) {
+                    // Scan for non-ASCII first bytes from the ByteTrie without
+                    // calling case_fold().  Each byte is a possible start of an
+                    // encoding that folds to the required prefix.
+                    let non_ascii_pos: Option<usize> = non_ascii_first_bytes
+                        .iter()
+                        .filter_map(|&b| {
+                            let gap_end = simd_pos.unwrap_or(text.len());
+                            text.as_bytes()[pos..gap_end]
+                                .iter()
+                                .position(|&x| x == b)
+                                .map(|off| pos + off)
+                        })
+                        .min();
+                    let candidate = match (non_ascii_pos, simd_pos) {
                         (Some(a), Some(b)) => a.min(b),
                         (Some(a), None) | (None, Some(a)) => a,
                         (None, None) => return None,
                     };
                     // Pre-filter: verify the full fold sequence before the NFA.
                     if fold_advance(text, candidate, folded).is_some()
-                        && let Some(result) = self.try_at(text, candidate, &mut memo, scratch) {
-                            return Some(result);
-                        }
+                        && let Some(result) = self.try_at(text, candidate, &mut memo, scratch)
+                    {
+                        return Some(result);
+                    }
                     pos = candidate
-                        + text[candidate..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+                        + text[candidate..]
+                            .chars()
+                            .next()
+                            .map(|c| c.len_utf8())
+                            .unwrap_or(1);
                     if pos > text.len() {
                         return None;
                     }
@@ -1814,8 +1962,12 @@ impl CompiledRegex {
                     }
                 }
             }
-            StartStrategy::CaselessPrefix(folded) => {
+            StartStrategy::CaselessPrefix {
+                folded,
+                non_ascii_first_bytes,
+            } => {
                 let folded = folded.clone();
+                let non_ascii_first_bytes = non_ascii_first_bytes.clone();
                 let fc0 = folded[0];
                 let ascii_vars: Vec<char> = fc0
                     .to_lowercase()
@@ -1829,28 +1981,32 @@ impl CompiledRegex {
                         .iter()
                         .filter_map(|&c| text[pos..].find(c).map(|off| pos + off))
                         .min();
-                    let gap_end = simd_pos.unwrap_or(text.len());
-                    let char_pos = if !text[pos..gap_end].is_ascii() {
-                        text[pos..gap_end]
-                            .char_indices()
-                            .find(|(_, c)| {
-                                !c.is_ascii() && c.case_fold().next() == Some(fc0)
-                            })
-                            .map(|(off, _)| pos + off)
-                    } else {
-                        None
-                    };
-                    let candidate = match (char_pos, simd_pos) {
+                    let non_ascii_pos: Option<usize> = non_ascii_first_bytes
+                        .iter()
+                        .filter_map(|&b| {
+                            let gap_end = simd_pos.unwrap_or(text.len());
+                            text.as_bytes()[pos..gap_end]
+                                .iter()
+                                .position(|&x| x == b)
+                                .map(|off| pos + off)
+                        })
+                        .min();
+                    let candidate = match (non_ascii_pos, simd_pos) {
                         (Some(a), Some(b)) => a.min(b),
                         (Some(a), None) | (None, Some(a)) => a,
                         (None, None) => return None,
                     };
                     if fold_advance(text, candidate, &folded).is_some()
-                        && let Some(r) = self.exec_interp(text, candidate, &mut memo) {
-                            return Some(r);
-                        }
+                        && let Some(r) = self.exec_interp(text, candidate, &mut memo)
+                    {
+                        return Some(r);
+                    }
                     pos = candidate
-                        + text[candidate..].chars().next().map(|c| c.len_utf8()).unwrap_or(1);
+                        + text[candidate..]
+                            .chars()
+                            .next()
+                            .map(|c| c.len_utf8())
+                            .unwrap_or(1);
                     if pos > text.len() {
                         return None;
                     }
@@ -1908,6 +2064,7 @@ impl CompiledRegex {
         let ctx = Ctx {
             prog: &self.prog,
             charsets: &self.charsets,
+            match_tries: &self.match_tries,
             text,
             search_start: pos,
             use_memo: self.use_memo,
@@ -2158,51 +2315,43 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
     // a State (which heap-allocates a Vec for capture slots).  On a cache hit
     // this avoids an allocation entirely, making repeated lookaround evaluation
     // at already-visited (lk_pc, pos) pairs much cheaper.
-    if use_memo
-        && let Some(entry) = memo.look_results.get(&lk_key).cloned()
-    {
+    if use_memo && let Some(entry) = memo.look_results.get(&lk_key).cloned() {
         return match entry {
-                LookCacheEntry::BodyMatched {
-                    slot_delta,
-                    keep_pos_delta,
-                } => {
-                    // Apply the captured slot delta directly to jctx.slots_ptr
-                    // without constructing an intermediate State.
-                    if positive {
-                        let slots_out = unsafe {
-                            std::slice::from_raw_parts_mut(
-                                jctx.slots_ptr,
-                                jctx.slots_len as usize,
-                            )
-                        };
-                        if jctx.bt_retry_count > 0 {
-                            for &(idx, val) in &slot_delta {
-                                if idx < slots_out.len() {
-                                    let new_u64 = val.map(|v| v as u64).unwrap_or(u64::MAX);
-                                    if new_u64 != slots_out[idx] {
-                                        unsafe {
-                                            bt_push(
-                                                jctx,
-                                                BtJit::save_undo(idx as u32, slots_out[idx]),
-                                            );
-                                        }
+            LookCacheEntry::BodyMatched {
+                slot_delta,
+                keep_pos_delta,
+            } => {
+                // Apply the captured slot delta directly to jctx.slots_ptr
+                // without constructing an intermediate State.
+                if positive {
+                    let slots_out = unsafe {
+                        std::slice::from_raw_parts_mut(jctx.slots_ptr, jctx.slots_len as usize)
+                    };
+                    if jctx.bt_retry_count > 0 {
+                        for &(idx, val) in &slot_delta {
+                            if idx < slots_out.len() {
+                                let new_u64 = val.map(|v| v as u64).unwrap_or(u64::MAX);
+                                if new_u64 != slots_out[idx] {
+                                    unsafe {
+                                        bt_push(jctx, BtJit::save_undo(idx as u32, slots_out[idx]));
                                     }
                                 }
                             }
                         }
-                        for (idx, val) in slot_delta {
-                            if idx < slots_out.len() {
-                                slots_out[idx] = val.map(|v| v as u64).unwrap_or(u64::MAX);
-                            }
-                        }
-                        if let Some(kp) = keep_pos_delta {
-                            jctx.keep_pos = kp.map(|v| v as u64).unwrap_or(u64::MAX);
+                    }
+                    for (idx, val) in slot_delta {
+                        if idx < slots_out.len() {
+                            slots_out[idx] = val.map(|v| v as u64).unwrap_or(u64::MAX);
                         }
                     }
-                    true
+                    if let Some(kp) = keep_pos_delta {
+                        jctx.keep_pos = kp.map(|v| v as u64).unwrap_or(u64::MAX);
+                    }
                 }
-                LookCacheEntry::BodyNotMatched => false,
-            };
+                true
+            }
+            LookCacheEntry::BodyNotMatched => false,
+        };
     }
 
     // Slow path: cache miss (or memoization disabled).
@@ -2224,6 +2373,9 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
     let interp_ctx = Ctx {
         prog,
         charsets,
+        // JIT lookaround sub-exec: no match_tries available; fall back to
+        // fold_advance / CharSet::matches for any FoldSeq/Class instructions.
+        match_tries: &[],
         text,
         search_start: jctx.search_start as usize,
         use_memo,
@@ -2238,7 +2390,13 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
     let mut sub = State {
         slots: slots_slice
             .iter()
-            .map(|&v| if v == u64::MAX { None } else { Some(v as usize) })
+            .map(|&v| {
+                if v == u64::MAX {
+                    None
+                } else {
+                    Some(v as usize)
+                }
+            })
             .collect(),
         keep_pos: if jctx.keep_pos == u64::MAX {
             None

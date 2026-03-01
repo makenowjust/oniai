@@ -204,8 +204,12 @@ fn bench_captures(c: &mut Criterion) {
         o.captures_iter(black_box(haystack)).count(),
         o.find_iter_interp(black_box(haystack)).count(),
         s.captures_iter(black_box(haystack)).count(),
-        f.captures_iter(black_box(haystack)).map(|r| r.unwrap()).count(),
-        p.captures_iter(black_box(haystack.as_bytes())).map(|r| r.unwrap()).count()
+        f.captures_iter(black_box(haystack))
+            .map(|r| r.unwrap())
+            .count(),
+        p.captures_iter(black_box(haystack.as_bytes()))
+            .map(|r| r.unwrap())
+            .count()
     );
     g.finish();
 }
@@ -228,7 +232,9 @@ fn bench_email(c: &mut Criterion) {
         o.find_iter_interp(black_box(haystack)).count(),
         s.find_iter(black_box(haystack)).count(),
         f.find_iter(black_box(haystack)).map(|r| r.unwrap()).count(),
-        p.find_iter(black_box(haystack.as_bytes())).map(|r| r.unwrap()).count()
+        p.find_iter(black_box(haystack.as_bytes()))
+            .map(|r| r.unwrap())
+            .count()
     );
     g.finish();
 }
@@ -250,8 +256,12 @@ fn bench_charclass(c: &mut Criterion) {
         o1.find_iter(black_box(&haystack)).count(),
         o1.find_iter_interp(black_box(&haystack)).count(),
         s1.find_iter(black_box(&haystack)).count(),
-        f1.find_iter(black_box(&haystack)).map(|r| r.unwrap()).count(),
-        p1.find_iter(black_box(haystack.as_bytes())).map(|r| r.unwrap()).count()
+        f1.find_iter(black_box(&haystack))
+            .map(|r| r.unwrap())
+            .count(),
+        p1.find_iter(black_box(haystack.as_bytes()))
+            .map(|r| r.unwrap())
+            .count()
     );
     g.finish();
 
@@ -266,8 +276,12 @@ fn bench_charclass(c: &mut Criterion) {
         o2.find_iter(black_box(&haystack)).count(),
         o2.find_iter_interp(black_box(&haystack)).count(),
         s2.find_iter(black_box(&haystack)).count(),
-        f2.find_iter(black_box(&haystack)).map(|r| r.unwrap()).count(),
-        p2.find_iter(black_box(haystack.as_bytes())).map(|r| r.unwrap()).count()
+        f2.find_iter(black_box(&haystack))
+            .map(|r| r.unwrap())
+            .count(),
+        p2.find_iter(black_box(haystack.as_bytes()))
+            .map(|r| r.unwrap())
+            .count()
     );
     g.finish();
 }
@@ -312,7 +326,9 @@ fn bench_lookahead(c: &mut Criterion) {
         o.find_iter(black_box(text)).count(),
         o.find_iter_interp(black_box(text)).count(),
         f.find_iter(black_box(text)).map(|r| r.unwrap()).count(),
-        p.find_iter(black_box(text.as_bytes())).map(|r| r.unwrap()).count()
+        p.find_iter(black_box(text.as_bytes()))
+            .map(|r| r.unwrap())
+            .count()
     );
     g.finish();
 }
@@ -334,7 +350,9 @@ fn bench_lookbehind(c: &mut Criterion) {
         o.find_iter(black_box(text)).count(),
         o.find_iter_interp(black_box(text)).count(),
         f.find_iter(black_box(text)).map(|r| r.unwrap()).count(),
-        p.find_iter(black_box(text.as_bytes())).map(|r| r.unwrap()).count()
+        p.find_iter(black_box(text.as_bytes()))
+            .map(|r| r.unwrap())
+            .count()
     );
     g.finish();
 }
@@ -356,7 +374,9 @@ fn bench_backreference(c: &mut Criterion) {
         o.find_iter(black_box(text)).count(),
         o.find_iter_interp(black_box(text)).count(),
         f.find_iter(black_box(text)).map(|r| r.unwrap()).count(),
-        p.find_iter(black_box(text.as_bytes())).map(|r| r.unwrap()).count()
+        p.find_iter(black_box(text.as_bytes()))
+            .map(|r| r.unwrap())
+            .count()
     );
     g.finish();
 }
@@ -414,7 +434,11 @@ fn bench_find_iter_scale(c: &mut Criterion) {
             b.iter(|| f.find_iter(black_box(h)).map(|r| r.unwrap()).count())
         });
         group.bench_with_input(BenchmarkId::new("pcre2", size), haystack, |b, h| {
-            b.iter(|| p.find_iter(black_box(h.as_bytes())).map(|r| r.unwrap()).count())
+            b.iter(|| {
+                p.find_iter(black_box(h.as_bytes()))
+                    .map(|r| r.unwrap())
+                    .count()
+            })
         });
     }
     group.finish();
@@ -480,7 +504,11 @@ fn bench_pathological_iter(c: &mut Criterion) {
             b.iter(|| f.find_iter(black_box(h)).map(|r| r.unwrap()).count())
         });
         group.bench_with_input(BenchmarkId::new("pcre2", n), &haystack, |b, h| {
-            b.iter(|| p.find_iter(black_box(h.as_bytes())).map(|r| r.unwrap()).count())
+            b.iter(|| {
+                p.find_iter(black_box(h.as_bytes()))
+                    .map(|r| r.unwrap())
+                    .count()
+            })
         });
     }
     group.finish();
@@ -507,7 +535,9 @@ fn bench_real_world(c: &mut Criterion) {
                     o.find_iter_interp(black_box(text)).count(),
                     s.find_iter(black_box(text)).count(),
                     f.find_iter(black_box(text)).map(|r| r.unwrap()).count(),
-                    p.find_iter(black_box(text.as_bytes())).map(|r| r.unwrap()).count()
+                    p.find_iter(black_box(text.as_bytes()))
+                        .map(|r| r.unwrap())
+                        .count()
                 );
             } else {
                 bench_all!(
@@ -523,11 +553,11 @@ fn bench_real_world(c: &mut Criterion) {
         }};
     }
 
-    rw!(c, "literal_count",     "Holmes",              true);
-    rw!(c, "capitalized_words", r"[A-Z][a-z]+",        true);
-    rw!(c, "posix_digits",      r"[[:digit:]]+",        true);
-    rw!(c, "quoted_strings",    "\"[^\"]*\"",           true);
-    rw!(c, "title_name",        r"Mrs?\. [A-Z][a-z]+", true);
+    rw!(c, "literal_count", "Holmes", true);
+    rw!(c, "capitalized_words", r"[A-Z][a-z]+", true);
+    rw!(c, "posix_digits", r"[[:digit:]]+", true);
+    rw!(c, "quoted_strings", "\"[^\"]*\"", true);
+    rw!(c, "title_name", r"Mrs?\. [A-Z][a-z]+", true);
 }
 
 // ---------------------------------------------------------------------------
