@@ -593,6 +593,60 @@ fn bench_real_world(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// AsciiClassStart strategy — scanning efficiency for class-prefixed patterns
+// ---------------------------------------------------------------------------
+
+fn bench_class_start(c: &mut Criterion) {
+    // Haystack with 1 digit per 10 chars; AsciiClassStart skips 9/10 positions.
+    let haystack = rep("xxxxxxxxx1", 200); // 2000 chars, 200 digits
+
+    let o_digit = Regex::new(r"\d+").unwrap();
+    let s_digit = regex::Regex::new(r"\d+").unwrap();
+    let f_digit = fancy_regex::Regex::new(r"\d+").unwrap();
+    let p_digit = pcre2::bytes::Regex::new(r"\d+").unwrap();
+
+    let mut g = c.benchmark_group("class_start/digit_sparse");
+    bench_all!(
+        g,
+        o_digit.find_iter(black_box(&haystack)).count(),
+        o_digit.find_iter_interp(black_box(&haystack)).count(),
+        s_digit.find_iter(black_box(&haystack)).count(),
+        f_digit
+            .find_iter(black_box(&haystack))
+            .map(|r| r.unwrap())
+            .count(),
+        p_digit
+            .find_iter(black_box(haystack.as_bytes()))
+            .map(|r| r.unwrap())
+            .count()
+    );
+    g.finish();
+
+    // Haystack with 1 word-char per 10 chars.
+    let o_word = Regex::new(r"\w+").unwrap();
+    let s_word = regex::Regex::new(r"\w+").unwrap();
+    let f_word = fancy_regex::Regex::new(r"\w+").unwrap();
+    let p_word = pcre2::bytes::Regex::new(r"\w+").unwrap();
+
+    let mut g = c.benchmark_group("class_start/word_sparse");
+    bench_all!(
+        g,
+        o_word.find_iter(black_box(&haystack)).count(),
+        o_word.find_iter_interp(black_box(&haystack)).count(),
+        s_word.find_iter(black_box(&haystack)).count(),
+        f_word
+            .find_iter(black_box(&haystack))
+            .map(|r| r.unwrap())
+            .count(),
+        p_word
+            .find_iter(black_box(haystack.as_bytes()))
+            .map(|r| r.unwrap())
+            .count()
+    );
+    g.finish();
+}
+
+// ---------------------------------------------------------------------------
 
 criterion_group!(
     benches,
@@ -612,5 +666,6 @@ criterion_group!(
     bench_pathological,
     bench_pathological_iter,
     bench_real_world,
+    bench_class_start,
 );
 criterion_main!(benches);

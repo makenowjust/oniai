@@ -1154,12 +1154,29 @@ enum StartStrategy {
     /// Pattern's first character must be one of these.
     /// Use `str::find(char)` per candidate and take the leftmost hit.
     FirstChars(Vec<char>),
+    /// Pattern's first real instruction is a case-sensitive `Class`.
+    /// Use the precomputed ASCII bitmap to skip positions that cannot start
+    /// a match without invoking the full exec machinery.
+    AsciiClassStart {
+        /// 128-bit bitmap of ASCII codepoints accepted by the charset
+        /// (negation already applied): bit `b` set means byte `b` is a
+        /// valid match-start candidate.
+        ascii_bits: [u64; 2],
+        /// `true` if the charset (after negation) can match at least one
+        /// non-ASCII codepoint.  When `false`, non-ASCII bytes are skipped.
+        can_match_non_ascii: bool,
+    },
     /// No restriction; try every byte-aligned position.
     Anywhere,
 }
 
 impl StartStrategy {
-    fn compute(prog: &[Inst], match_tries: &[Option<ByteTrie>], alt_tries: &[ByteTrie]) -> Self {
+    fn compute(
+        prog: &[Inst],
+        charsets: &[CharSet],
+        match_tries: &[Option<ByteTrie>],
+        alt_tries: &[ByteTrie],
+    ) -> Self {
         // Check for anchored start (skip over zero-width Save/KeepStart prefix)
         let first_real = prog
             .iter()
@@ -1215,6 +1232,30 @@ impl StartStrategy {
             chars.sort_unstable();
             chars.dedup();
             return StartStrategy::FirstChars(chars);
+        }
+
+        // If the first real instruction is a case-sensitive Class, use its
+        // precomputed ASCII bitmap to skip non-matching ASCII positions.
+        if let Some(Inst::Class(idx, false)) = prog.get(pc) {
+            let cs = &charsets[*idx];
+            // Build an accept bitmap with negation already applied.
+            let accept_bits = if cs.negate {
+                [!cs.ascii_bits[0], !cs.ascii_bits[1]]
+            } else {
+                cs.ascii_bits
+            };
+            // The charset can match non-ASCII iff it (after negation) contains
+            // any codepoint >= 128.
+            let can_match_non_ascii = if cs.negate {
+                // Conservative: negated charsets almost always accept non-ASCII.
+                true
+            } else {
+                cs.ranges.last().is_some_and(|&(_, hi)| (hi as u32) >= 128)
+            };
+            return StartStrategy::AsciiClassStart {
+                ascii_bits: accept_bits,
+                can_match_non_ascii,
+            };
         }
 
         StartStrategy::Anywhere
@@ -1561,7 +1602,7 @@ impl CompiledRegex {
         let match_tries = build_match_tries(&prog_data.prog, &prog_data.charsets);
 
         let start_strategy =
-            StartStrategy::compute(&prog_data.prog, &match_tries, &prog_data.alt_tries);
+            StartStrategy::compute(&prog_data.prog, &prog_data.charsets, &match_tries, &prog_data.alt_tries);
         let required_char = compute_required_char(&prog_data.prog);
         // Disable memoization for patterns where the fork/lookaround outcome
         // can depend on the current capture-slot state (not just on pc + pos):
@@ -1825,6 +1866,42 @@ impl CompiledRegex {
                 }
             }
 
+            // Use the charset's precomputed ASCII bitmap to skip positions
+            // that cannot start a match, without invoking the full exec.
+            StartStrategy::AsciiClassStart {
+                ascii_bits,
+                can_match_non_ascii,
+            } => {
+                let bytes = text.as_bytes();
+                let mut pos = start_pos;
+                loop {
+                    if pos >= bytes.len() {
+                        return None;
+                    }
+                    let b = bytes[pos];
+                    if b < 0x80 {
+                        // ASCII byte: one bitmap lookup.
+                        if (ascii_bits[(b >> 6) as usize] >> (b & 63)) & 1 != 0
+                            && let Some(result) = self.try_at(text, pos, &mut memo, scratch) {
+                                return Some(result);
+                            }
+                        pos += 1;
+                    } else {
+                        // Non-ASCII: advance by full char length.
+                        let ch_len = text[pos..]
+                            .chars()
+                            .next()
+                            .map(|c| c.len_utf8())
+                            .unwrap_or(1);
+                        if *can_match_non_ascii
+                            && let Some(result) = self.try_at(text, pos, &mut memo, scratch) {
+                                return Some(result);
+                            }
+                        pos += ch_len;
+                    }
+                }
+            }
+
             // Original: try every byte-aligned position.
             StartStrategy::Anywhere => {
                 let mut pos = start_pos;
@@ -1985,6 +2062,39 @@ impl CompiledRegex {
                             .unwrap_or(1);
                     if pos > text.len() {
                         return None;
+                    }
+                }
+            }
+            StartStrategy::AsciiClassStart {
+                ascii_bits,
+                can_match_non_ascii,
+            } => {
+                let ascii_bits = *ascii_bits;
+                let can_match_non_ascii = *can_match_non_ascii;
+                let bytes = text.as_bytes();
+                let mut pos = start_pos;
+                loop {
+                    if pos >= bytes.len() {
+                        return None;
+                    }
+                    let b = bytes[pos];
+                    if b < 0x80 {
+                        if (ascii_bits[(b >> 6) as usize] >> (b & 63)) & 1 != 0
+                            && let Some(r) = self.exec_interp(text, pos, &mut memo) {
+                                return Some(r);
+                            }
+                        pos += 1;
+                    } else {
+                        let ch_len = text[pos..]
+                            .chars()
+                            .next()
+                            .map(|c| c.len_utf8())
+                            .unwrap_or(1);
+                        if can_match_non_ascii
+                            && let Some(r) = self.exec_interp(text, pos, &mut memo) {
+                                return Some(r);
+                            }
+                        pos += ch_len;
                     }
                 }
             }
