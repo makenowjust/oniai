@@ -1,0 +1,1 @@
+/Users/hiroya.fujinami/Projects/github.com/makenowjust/oniai/scripts/gen_unicode_tables/target/debug/gen_unicode_tables: /Users/hiroya.fujinami/Projects/github.com/makenowjust/oniai/scripts/gen_unicode_tables/src/main.rs

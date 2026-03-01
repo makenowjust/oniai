@@ -7,7 +7,7 @@
 // To update the Unicode data, run:
 //   sh scripts/fetch_unicode_data.sh [VERSION]
 
-include!(concat!(env!("OUT_DIR"), "/general_category_data.rs"));
+include!("general_category_data.rs");
 
 /// Unicode General Category (all 30 values).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
