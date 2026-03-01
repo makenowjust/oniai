@@ -7,9 +7,6 @@ use crate::casefold_trie::{
 use crate::compile::{CompileOptions, compile};
 use crate::error::Error;
 use crate::parser::parse;
-/// Virtual machine for Onigmo-compatible regular expression matching.
-///
-/// Uses backtracking search with an explicit save/restore state.
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -1738,9 +1735,10 @@ impl CompiledRegex {
 
             // Use str::find(prefix_str) to jump directly to each candidate.
             StartStrategy::LiteralPrefix(prefix) => {
+                let needle = prefix.as_bytes();
                 let mut pos = start_pos;
                 loop {
-                    let offset = text[pos..].find(prefix.as_str())?;
+                    let offset = memchr::memmem::find(&text.as_bytes()[pos..], needle)?;
                     let candidate = pos + offset;
                     if let Some(result) = self.try_at(text, candidate, &mut memo, scratch) {
                         return Some(result);
@@ -1845,12 +1843,30 @@ impl CompiledRegex {
             // enumerated in `chars` by `collect_first_chars`, so a plain
             // equality match suffices (no case-fold overhead per character).
             StartStrategy::FirstChars(chars) => {
+                // SIMD fast path for 1–3 pure-ASCII chars; fall back to str::find otherwise.
+                let text_bytes = text.as_bytes();
                 let mut pos = start_pos;
                 loop {
-                    let candidate = chars
-                        .iter()
-                        .filter_map(|&c| text[pos..].find(c).map(|o| pos + o))
-                        .min()?;
+                    let candidate = match chars.as_slice() {
+                        &[c1] if (c1 as u32) < 128 => {
+                            memchr::memchr(c1 as u8, &text_bytes[pos..]).map(|o| pos + o)
+                        }
+                        &[c1, c2] if (c1 as u32) < 128 && (c2 as u32) < 128 => {
+                            memchr::memchr2(c1 as u8, c2 as u8, &text_bytes[pos..])
+                                .map(|o| pos + o)
+                        }
+                        &[c1, c2, c3]
+                            if (c1 as u32) < 128 && (c2 as u32) < 128 && (c3 as u32) < 128 =>
+                        {
+                            memchr::memchr3(c1 as u8, c2 as u8, c3 as u8, &text_bytes[pos..])
+                                .map(|o| pos + o)
+                        }
+                        _ => chars
+                            .iter()
+                            .filter_map(|&c| text[pos..].find(c).map(|o| pos + o))
+                            .min(),
+                    };
+                    let candidate = candidate?;
                     if let Some(result) = self.try_at(text, candidate, &mut memo, scratch) {
                         return Some(result);
                     }
@@ -1952,10 +1968,10 @@ impl CompiledRegex {
         match &self.start_strategy {
             StartStrategy::Anchored => self.exec_interp(text, start_pos, &mut memo),
             StartStrategy::LiteralPrefix(prefix) => {
-                let prefix = prefix.clone();
+                let needle = prefix.as_bytes().to_vec();
                 let mut pos = start_pos;
                 loop {
-                    let offset = text[pos..].find(prefix.as_str())?;
+                    let offset = memchr::memmem::find(&text.as_bytes()[pos..], &needle)?;
                     let candidate = pos + offset;
                     if let Some(r) = self.exec_interp(text, candidate, &mut memo) {
                         return Some(r);
@@ -2044,13 +2060,29 @@ impl CompiledRegex {
                 }
             }
             StartStrategy::FirstChars(chars) => {
-                let chars = chars.clone();
+                let text_bytes = text.as_bytes();
                 let mut pos = start_pos;
                 loop {
-                    let candidate = chars
-                        .iter()
-                        .filter_map(|&c| text[pos..].find(c).map(|o| pos + o))
-                        .min()?;
+                    let candidate = match chars.as_slice() {
+                        &[c1] if (c1 as u32) < 128 => {
+                            memchr::memchr(c1 as u8, &text_bytes[pos..]).map(|o| pos + o)
+                        }
+                        &[c1, c2] if (c1 as u32) < 128 && (c2 as u32) < 128 => {
+                            memchr::memchr2(c1 as u8, c2 as u8, &text_bytes[pos..])
+                                .map(|o| pos + o)
+                        }
+                        &[c1, c2, c3]
+                            if (c1 as u32) < 128 && (c2 as u32) < 128 && (c3 as u32) < 128 =>
+                        {
+                            memchr::memchr3(c1 as u8, c2 as u8, c3 as u8, &text_bytes[pos..])
+                                .map(|o| pos + o)
+                        }
+                        _ => chars
+                            .iter()
+                            .filter_map(|&c| text[pos..].find(c).map(|o| pos + o))
+                            .min(),
+                    };
+                    let candidate = candidate?;
                     if let Some(r) = self.exec_interp(text, candidate, &mut memo) {
                         return Some(r);
                     }

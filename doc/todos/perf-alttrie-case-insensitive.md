@@ -1,6 +1,6 @@
 # TODO: AltTrie for case-insensitive alternation (`(?i)foo|bar|baz`)
 
-## Status: Planned (lower priority)
+## Status: Done (commit `oswwxqpp`)
 
 ## Problem
 

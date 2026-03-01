@@ -18,6 +18,7 @@ jit = [
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+memchr = "2"
 cranelift-codegen  = { version = "0.119", optional = true }
 cranelift-frontend = { version = "0.119", optional = true }
 cranelift-jit      = { version = "0.119", optional = true }

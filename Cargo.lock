@@ -659,6 +659,7 @@ dependencies = [
  "cranelift-native",
  "criterion",
  "fancy-regex",
+ "memchr",
  "pcre2",
  "regex",
 ]
