@@ -69,11 +69,7 @@ unsafe fn push_retry(ctx: &mut JitExecCtx, block_id: u32, pos: u64) {
 /// Match `ch` (optionally case-insensitive) at `text[pos..]`.
 /// Returns the new `pos` on success, -1 on failure.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn jit_match_char(
-    ctx: *const JitExecCtx,
-    pos: u64,
-    ch: u32,
-) -> i64 {
+pub unsafe extern "C" fn jit_match_char(ctx: *const JitExecCtx, pos: u64, ch: u32) -> i64 {
     unsafe {
         let ctx = &*ctx;
         let text = text_from_ctx(ctx);
@@ -154,11 +150,7 @@ pub unsafe extern "C" fn jit_match_class(
 // ---- backward variants (lookbehind) ----
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn jit_match_char_back(
-    ctx: *const JitExecCtx,
-    pos: u64,
-    ch: u32,
-) -> i64 {
+pub unsafe extern "C" fn jit_match_char_back(ctx: *const JitExecCtx, pos: u64, ch: u32) -> i64 {
     unsafe {
         let ctx = &*ctx;
         let text = text_from_ctx(ctx);
@@ -678,6 +670,52 @@ pub unsafe extern "C" fn jit_null_check_end(ctx: *mut JitExecCtx, slot: u32, pos
     }
 }
 
+/// Match `alt_tries[idx]` forward at `text[pos..]`.
+/// Returns new position (end of match) or -1 if no alternative matches.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn jit_match_alt_trie(ctx: *const JitExecCtx, pos: u64, idx: u32) -> i64 {
+    unsafe {
+        let ctx = &*ctx;
+        let text = text_from_ctx(ctx);
+        if ctx.alt_tries_len == 0 {
+            return -1;
+        }
+        let tries = std::slice::from_raw_parts(
+            ctx.alt_tries_ptr as *const ByteTrie,
+            ctx.alt_tries_len as usize,
+        );
+        match tries[idx as usize].advance(text.as_bytes(), pos as usize) {
+            Some(new_pos) => new_pos as i64,
+            None => -1,
+        }
+    }
+}
+
+/// Match `alt_tries[idx]` backward at `text[..pos]` (trie is pre-reversed).
+/// Returns new position (start of match) or -1 if no alternative matches.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn jit_match_alt_trie_back(
+    ctx: *const JitExecCtx,
+    pos: u64,
+    idx: u32,
+) -> i64 {
+    unsafe {
+        let ctx = &*ctx;
+        let text = text_from_ctx(ctx);
+        if ctx.alt_tries_len == 0 {
+            return -1;
+        }
+        let tries = std::slice::from_raw_parts(
+            ctx.alt_tries_ptr as *const ByteTrie,
+            ctx.alt_tries_len as usize,
+        );
+        match tries[idx as usize].advance_back(text.as_bytes(), pos as usize) {
+            Some(new_pos) => new_pos as i64,
+            None => -1,
+        }
+    }
+}
+
 /// Symbol table: maps helper name → raw function pointer.
 /// Used by `JITBuilder::symbol()` to resolve external calls in JIT code.
 pub(super) fn register_symbols(jit_builder: &mut cranelift_jit::JITBuilder) {
@@ -708,4 +746,6 @@ pub(super) fn register_symbols(jit_builder: &mut cranelift_jit::JITBuilder) {
     sym!(jit_fold_seq_back);
     sym!(jit_null_check_start);
     sym!(jit_null_check_end);
+    sym!(jit_match_alt_trie);
+    sym!(jit_match_alt_trie_back);
 }

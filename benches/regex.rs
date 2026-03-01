@@ -135,6 +135,38 @@ fn bench_alternation(c: &mut Criterion) {
         p.is_match(black_box(haystack2.as_bytes())).unwrap()
     );
     g.finish();
+
+    // Benchmark for many-string alternations — measures AltTrie benefit.
+    // Pattern has 10 alternatives that don't share a common prefix.
+    let pat10 = "alpha|bravo|charlie|delta|echo|foxtrot|golf|hotel|india|juliet";
+    let haystack3 = format!("{}juliet{}", rep("x", 200), rep("x", 200));
+    let haystack4 = rep("x", 500);
+    let o10 = Regex::new(pat10).unwrap();
+    let s10 = regex::Regex::new(pat10).unwrap();
+    let f10 = fancy_regex::Regex::new(pat10).unwrap();
+    let p10 = pcre2::bytes::Regex::new(pat10).unwrap();
+
+    let mut g = c.benchmark_group("alternation/10_alts_match");
+    bench_all!(
+        g,
+        o10.find(black_box(&haystack3)),
+        o10.find_iter_interp(black_box(&haystack3)).next(),
+        s10.find(black_box(&haystack3)),
+        f10.find(black_box(&haystack3)).unwrap(),
+        p10.find(black_box(haystack3.as_bytes())).unwrap()
+    );
+    g.finish();
+
+    let mut g = c.benchmark_group("alternation/10_alts_no_match");
+    bench_all!(
+        g,
+        o10.is_match(black_box(&haystack4)),
+        o10.find_iter_interp(black_box(&haystack4)).next().is_some(),
+        s10.is_match(black_box(&haystack4)),
+        f10.is_match(black_box(&haystack4)).unwrap(),
+        p10.is_match(black_box(haystack4.as_bytes())).unwrap()
+    );
+    g.finish();
 }
 
 // ---------------------------------------------------------------------------

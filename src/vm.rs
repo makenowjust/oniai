@@ -86,6 +86,15 @@ pub enum Inst {
     /// Backward version of `FoldSeq`.
     FoldSeqBack(Vec<char>),
 
+    /// Non-capturing string-alternation trie (forward).  Matches the longest
+    /// string in `alt_tries[idx]` at the current position.  Replaces a Fork
+    /// chain over plain-string alternatives for O(len) instead of O(len×k)
+    /// matching.  Only emitted when `!ignore_case` and all alternatives are
+    /// pure literal strings.
+    AltTrie(usize),
+    /// Backward version of `AltTrie` (uses a reversed trie).
+    AltTrieBack(usize),
+
     /// Anchor (`^`, `$`, `\b`, `\A`, etc.)
     Anchor(AnchorKind, Flags),
 
@@ -210,6 +219,8 @@ pub(crate) struct Ctx<'t> {
     /// Parallel to `prog`: precomputed ByteTrie for FoldSeq/FoldSeqBack/Class(ic=true)
     /// instructions.  `None` for all other instruction types.
     pub(crate) match_tries: &'t [Option<ByteTrie>],
+    /// Per-alternation ByteTrie for `AltTrie`/`AltTrieBack` instructions.
+    pub(crate) alt_tries: &'t [ByteTrie],
     pub(crate) text: &'t str,
     pub(crate) search_start: usize,
     pub(crate) use_memo: bool,
@@ -498,20 +509,20 @@ pub(crate) fn exec(
                 // For case-insensitive, check multi-char fold ByteTrie first.
                 // The ByteTrie contains fold sequences for chars in the charset
                 // that have multi-codepoint full case folds (e.g. ß → "ss").
-                if *ignore_case
-                    && let Some(trie) = ctx.match_tries.get(pc).and_then(|o| o.as_ref()) {
-                        if cs.negate {
-                            // Negated: if a multi-char fold of the inner charset matches
-                            // here, the inner charset would match → negation → fail.
-                            if trie.advance(ctx.text.as_bytes(), pos).is_some() {
-                                fail!();
-                            }
-                        } else if let Some(new_pos) = trie.advance(ctx.text.as_bytes(), pos) {
-                            pos = new_pos;
-                            pc += 1;
-                            continue 'vm;
+                if *ignore_case && let Some(trie) = ctx.match_tries.get(pc).and_then(|o| o.as_ref())
+                {
+                    if cs.negate {
+                        // Negated: if a multi-char fold of the inner charset matches
+                        // here, the inner charset would match → negation → fail.
+                        if trie.advance(ctx.text.as_bytes(), pos).is_some() {
+                            fail!();
                         }
+                    } else if let Some(new_pos) = trie.advance(ctx.text.as_bytes(), pos) {
+                        pos = new_pos;
+                        pc += 1;
+                        continue 'vm;
                     }
+                }
                 // Single-char check; cs.ranges already contains all single-char
                 // case-fold equivalents for ignore_case=true patterns.
                 match ctx.char_at(pos) {
@@ -541,18 +552,18 @@ pub(crate) fn exec(
 
             Inst::ClassBack(idx, ignore_case) => {
                 let cs = &ctx.charsets[*idx];
-                if *ignore_case
-                    && let Some(trie) = ctx.match_tries.get(pc).and_then(|o| o.as_ref()) {
-                        if cs.negate {
-                            if trie.advance_back(ctx.text.as_bytes(), pos).is_some() {
-                                fail!();
-                            }
-                        } else if let Some(new_pos) = trie.advance_back(ctx.text.as_bytes(), pos) {
-                            pos = new_pos;
-                            pc += 1;
-                            continue 'vm;
+                if *ignore_case && let Some(trie) = ctx.match_tries.get(pc).and_then(|o| o.as_ref())
+                {
+                    if cs.negate {
+                        if trie.advance_back(ctx.text.as_bytes(), pos).is_some() {
+                            fail!();
                         }
+                    } else if let Some(new_pos) = trie.advance_back(ctx.text.as_bytes(), pos) {
+                        pos = new_pos;
+                        pc += 1;
+                        continue 'vm;
                     }
+                }
                 match ctx.char_before(pos) {
                     Some((c, len)) if cs.matches(c) => {
                         pos -= len;
@@ -584,6 +595,24 @@ pub(crate) fn exec(
                     fold_retreat(ctx.text, pos, folded)
                 };
                 match new_pos {
+                    Some(new_pos) => {
+                        pos = new_pos;
+                        pc += 1;
+                    }
+                    None => fail!(),
+                }
+            }
+
+            Inst::AltTrie(idx) => match ctx.alt_tries[*idx].advance(ctx.text.as_bytes(), pos) {
+                Some(new_pos) => {
+                    pos = new_pos;
+                    pc += 1;
+                }
+                None => fail!(),
+            },
+
+            Inst::AltTrieBack(idx) => {
+                match ctx.alt_tries[*idx].advance_back(ctx.text.as_bytes(), pos) {
                     Some(new_pos) => {
                         pos = new_pos;
                         pc += 1;
@@ -1054,11 +1083,14 @@ pub(crate) fn fold_retreat(text: &str, mut pos: usize, folded: &[char]) -> Optio
 /// Returns the new position (end of the matched text slice) on success, or `None`.
 /// Handles multi-character Unicode case folds (e.g. `ß` ↔ `ss`, `ﬁ` ↔ `fi`).
 fn caseless_advance(text: &str, start: usize, pattern: &str) -> Option<usize> {
-    let folded: Vec<char> = pattern.chars().flat_map(|c| {
-        let f = case_fold(c);
-        // Collect into a small owned vec; Multi is &'static so cheap to iterate
-        f.chars().to_vec()
-    }).collect();
+    let folded: Vec<char> = pattern
+        .chars()
+        .flat_map(|c| {
+            let f = case_fold(c);
+            // Collect into a small owned vec; Multi is &'static so cheap to iterate
+            f.chars().to_vec()
+        })
+        .collect();
     fold_advance(text, start, &folded)
 }
 
@@ -1096,7 +1128,7 @@ enum StartStrategy {
 }
 
 impl StartStrategy {
-    fn compute(prog: &[Inst], match_tries: &[Option<ByteTrie>]) -> Self {
+    fn compute(prog: &[Inst], match_tries: &[Option<ByteTrie>], alt_tries: &[ByteTrie]) -> Self {
         // Check for anchored start (skip over zero-width Save/KeepStart prefix)
         let first_real = prog
             .iter()
@@ -1125,6 +1157,19 @@ impl StartStrategy {
                 folded,
                 non_ascii_first_bytes,
             };
+        }
+
+        // AltTrie at the start: use the trie's strings as a LiteralSet.
+        // Skip over zero-width instructions to find the first real instruction.
+        let mut pc = 0;
+        while pc < prog.len() && matches!(prog[pc], Inst::Save(_) | Inst::KeepStart) {
+            pc += 1;
+        }
+        if let Some(Inst::AltTrie(idx)) = prog.get(pc) {
+            let lits = alt_tries[*idx].all_strings();
+            if lits.iter().any(|s| s.len() >= 2) {
+                return StartStrategy::LiteralSet(lits);
+            }
         }
 
         // Try to extract a set of literals from a top-level alternation
@@ -1276,6 +1321,12 @@ fn collect_first_chars(
             return None;
         }
         Inst::FoldSeqBack(_) => return None,
+        // AltTrie: first chars are the first chars of each alternative string.
+        // Since all alternatives are plain ASCII-or-UTF-8 strings, their first
+        // codepoints can be enumerated from the trie root transitions.
+        // We can't directly decode the root bytes to chars here (no alt_tries
+        // reference), so fall back to Anywhere to be safe.
+        Inst::AltTrie(_) | Inst::AltTrieBack(_) => return None,
         // Classes / wildcards — first char is unbounded
         Inst::AnyChar(_) | Inst::Class(..) => return None,
         // Greedy fork: both branches may start a match
@@ -1443,6 +1494,8 @@ pub struct CompiledRegex {
     /// other instruction types.  Used by `exec()` to match raw bytes without
     /// any `case_fold()` calls or UTF-8 decoding at match time.
     match_tries: Vec<Option<ByteTrie>>,
+    /// Per-alternation ByteTrie for `AltTrie`/`AltTrieBack` instructions.
+    alt_tries: Vec<ByteTrie>,
     /// Per-charset ByteTrie for case-insensitive `Class` instructions, indexed
     /// by charset index (parallel to `charsets`).  Used by the JIT helper
     /// `jit_match_class` which cannot index by PC.
@@ -1476,7 +1529,8 @@ impl CompiledRegex {
         // Class/ClassBack.  `None` at all other PCs.
         let match_tries = build_match_tries(&prog_data.prog, &prog_data.charsets);
 
-        let start_strategy = StartStrategy::compute(&prog_data.prog, &match_tries);
+        let start_strategy =
+            StartStrategy::compute(&prog_data.prog, &match_tries, &prog_data.alt_tries);
         let required_char = compute_required_char(&prog_data.prog);
         // Disable memoization for patterns where the fork/lookaround outcome
         // can depend on the current capture-slot state (not just on pc + pos):
@@ -1501,6 +1555,7 @@ impl CompiledRegex {
         let jit = crate::jit::try_compile(
             &prog_data.prog,
             &prog_data.charsets,
+            &prog_data.alt_tries,
             use_memo,
             &fork_pc_indices,
         );
@@ -1508,6 +1563,7 @@ impl CompiledRegex {
         Ok(CompiledRegex {
             prog: prog_data.prog,
             charsets: prog_data.charsets,
+            alt_tries: prog_data.alt_tries,
             named_groups,
             num_groups: prog_data.num_groups,
             num_null_checks: prog_data.num_null_checks,
@@ -1541,6 +1597,7 @@ impl CompiledRegex {
                 &self.prog,
                 &self.charsets,
                 &self.class_tries,
+                &self.alt_tries,
                 text,
                 pos,
                 self.num_groups,
@@ -1558,6 +1615,7 @@ impl CompiledRegex {
             prog: &self.prog,
             charsets: &self.charsets,
             match_tries: &self.match_tries,
+            alt_tries: &self.alt_tries,
             text,
             search_start: pos,
             use_memo: self.use_memo,
@@ -1930,6 +1988,7 @@ impl CompiledRegex {
             prog: &self.prog,
             charsets: &self.charsets,
             match_tries: &self.match_tries,
+            alt_tries: &self.alt_tries,
             text,
             search_start: pos,
             use_memo: self.use_memo,
@@ -2126,6 +2185,11 @@ pub(crate) struct JitExecCtx {
     pub class_tries_ptr: *const (),
     /// Length of the class_tries slice (== number of charsets).
     pub class_tries_len: u64,
+    /// Pointer to the alternation ByteTrie slice (`*const ByteTrie`).
+    /// Indexed by trie index from `AltTrie`/`AltTrieBack` instructions.
+    pub alt_tries_ptr: *const (),
+    /// Length of the alt_tries slice.
+    pub alt_tries_len: u64,
 }
 
 /// Push one entry onto the raw JIT backtrack stack.  May reallocate.
@@ -2235,6 +2299,16 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
             jctx.charsets_len as usize,
         )
     };
+    let alt_tries_for_interp: &[ByteTrie] = if jctx.alt_tries_len > 0 {
+        unsafe {
+            std::slice::from_raw_parts(
+                jctx.alt_tries_ptr as *const ByteTrie,
+                jctx.alt_tries_len as usize,
+            )
+        }
+    } else {
+        &[]
+    };
     let text = unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(
             jctx.text_ptr,
@@ -2247,6 +2321,7 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
         // JIT lookaround sub-exec: no match_tries available; fall back to
         // fold_advance / CharSet::matches for any FoldSeq/Class instructions.
         match_tries: &[],
+        alt_tries: alt_tries_for_interp,
         text,
         search_start: jctx.search_start as usize,
         use_memo,
@@ -2331,5 +2406,3 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
 
     matched
 }
-
-

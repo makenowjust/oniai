@@ -157,6 +157,40 @@ impl ByteTrie {
         rev
     }
 
+    /// Collect all accepted byte sequences as UTF-8 strings.
+    pub fn all_strings(&self) -> Vec<String> {
+        let mut result = Vec::new();
+        let mut buf = Vec::new();
+        self.collect_strings(0, &mut buf, &mut result);
+        result
+    }
+
+    fn collect_strings(&self, node: u32, buf: &mut Vec<u8>, out: &mut Vec<String>) {
+        if self.nodes[node as usize].is_accept
+            && let Ok(s) = std::str::from_utf8(buf)
+        {
+            out.push(s.to_owned());
+        }
+        for &(b, child) in &self.nodes[node as usize].transitions {
+            buf.push(b);
+            self.collect_strings(child, buf, out);
+            buf.pop();
+        }
+    }
+
+    /// Returns `true` if the string set is prefix-free: no accepted string is
+    /// a proper prefix of another accepted string.  When prefix-free, the trie
+    /// can be used for deterministic alternation (no backtracking needed).
+    pub fn is_prefix_free(&self) -> bool {
+        // A trie is prefix-free iff no accept node has any outgoing transitions.
+        // If an accept node (string S) has a transition to child C, then the
+        // string S is a proper prefix of the string reaching C, so S's accepted
+        // path would be prefix of a longer accepted path.
+        self.nodes
+            .iter()
+            .all(|n| !n.is_accept || n.transitions.is_empty())
+    }
+
     fn collect_sequences_into(&self, node: u32, buf: &mut Vec<u8>, out: &mut ByteTrie) {
         if self.nodes[node as usize].is_accept {
             let rev: Vec<u8> = buf.iter().rev().copied().collect();

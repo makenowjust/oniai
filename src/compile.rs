@@ -1,4 +1,5 @@
 use crate::ast::*;
+use crate::bytetrie::ByteTrie;
 use crate::casefold::case_fold;
 use crate::charset;
 use crate::data::casefold_data::SIMPLE_CASE_FOLDS;
@@ -38,6 +39,27 @@ fn can_match_empty(node: &Node) -> bool {
     }
 }
 
+/// If `node` is a pure sequence of literal characters (no captures, no
+/// quantifiers, no case-folding), return the corresponding `String`.
+/// Used to detect alternations eligible for the `AltTrie` optimization.
+fn try_extract_plain_string(node: &Node) -> Option<String> {
+    match node {
+        Node::Literal(c) => Some(c.to_string()),
+        Node::Concat(nodes) => {
+            let mut s = String::new();
+            for n in nodes {
+                if let Node::Literal(c) = n {
+                    s.push(*c);
+                } else {
+                    return None;
+                }
+            }
+            Some(s)
+        }
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Options passed to the compiler
 // ---------------------------------------------------------------------------
@@ -57,6 +79,9 @@ pub struct CompileOptions {
 struct Compiler {
     prog: Vec<Inst>,
     charsets: Vec<CharSet>,
+    /// Tries for `AltTrie`/`AltTrieBack` instructions: each entry is the
+    /// pre-built ByteTrie for a pure-string alternation detected at compile time.
+    alt_tries: Vec<ByteTrie>,
     /// Maps 1-based group index → start PC (for subexpression calls)
     subexp_starts: HashMap<u32, usize>,
     /// Groups that need their start PCs backfilled after compilation.
@@ -80,6 +105,7 @@ impl Compiler {
         Compiler {
             prog: Vec::new(),
             charsets: Vec::new(),
+            alt_tries: Vec::new(),
             subexp_starts: HashMap::new(),
             pending_calls: Vec::new(),
             named_groups,
@@ -454,6 +480,32 @@ impl Compiler {
         }
         if alts.len() == 1 {
             return self.compile_node_inner(&alts[0], flags, backward);
+        }
+
+        // Optimization: if all alternatives are plain (non-folded) literal strings
+        // and the string set is prefix-free, emit a single AltTrie/AltTrieBack
+        // instruction instead of a Fork chain.  Prefix-free is required so that
+        // the deterministic (longest-match) trie produces the same result as the
+        // leftmost-wins backtracking Fork chain.
+        if !flags.ignore_case {
+            let strings: Option<Vec<String>> = alts.iter().map(try_extract_plain_string).collect();
+            if let Some(strings) = strings {
+                let mut trie = ByteTrie::new();
+                for s in &strings {
+                    trie.insert(s.as_bytes());
+                }
+                if trie.is_prefix_free() {
+                    let idx = self.alt_tries.len();
+                    if backward {
+                        self.alt_tries.push(trie.reversed());
+                        self.emit(Inst::AltTrieBack(idx));
+                    } else {
+                        self.alt_tries.push(trie);
+                        self.emit(Inst::AltTrie(idx));
+                    }
+                    return Ok(());
+                }
+            }
         }
 
         // For N alternatives: emit Fork chain
@@ -938,13 +990,15 @@ fn complement_ranges(ranges: &[(char, char)]) -> Vec<(char, char)> {
             }
         } else {
             if lo_u < SUR_LO
-                && let (Some(lo), Some(hi)) = (char::from_u32(lo_u), char::from_u32(SUR_LO - 1)) {
-                    out.push((lo, hi));
-                }
+                && let (Some(lo), Some(hi)) = (char::from_u32(lo_u), char::from_u32(SUR_LO - 1))
+            {
+                out.push((lo, hi));
+            }
             if hi_u > SUR_HI
-                && let (Some(lo), Some(hi)) = (char::from_u32(SUR_HI + 1), char::from_u32(hi_u)) {
-                    out.push((lo, hi));
-                }
+                && let (Some(lo), Some(hi)) = (char::from_u32(SUR_HI + 1), char::from_u32(hi_u))
+            {
+                out.push((lo, hi));
+            }
         }
     }
 
@@ -1237,6 +1291,7 @@ fn compute_fork_guards(prog: &mut [Inst]) {
 pub struct CompiledProgram {
     pub prog: Vec<Inst>,
     pub charsets: Vec<CharSet>,
+    pub alt_tries: Vec<ByteTrie>,
     pub named_groups: Vec<(String, u32)>,
     pub num_groups: usize,
     pub num_null_checks: usize,
@@ -1266,6 +1321,7 @@ pub fn compile(
     Ok(CompiledProgram {
         prog: compiler.prog,
         charsets: compiler.charsets,
+        alt_tries: compiler.alt_tries,
         named_groups,
         num_groups,
         num_null_checks,

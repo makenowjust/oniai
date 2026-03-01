@@ -306,7 +306,10 @@ mod tests {
         let cs = make_ranges_charset(vec![('\u{1E9E}', '\u{1E9E}')]);
         let t = charset_to_bytetrie(&cs, true);
         assert!(accepts(&t, "ẞ"), "ẞ itself (via enumerate_inputs)");
-        assert!(accepts(&t, "ß"), "ß (same fold class, via enumerate_inputs)");
+        assert!(
+            accepts(&t, "ß"),
+            "ß (same fold class, via enumerate_inputs)"
+        );
         assert!(accepts(&t, "ss"), "ss");
         assert!(accepts(&t, "SS"), "SS");
         assert!(!accepts(&t, "s"), "single s");

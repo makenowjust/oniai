@@ -67,9 +67,11 @@ pub(crate) fn is_eligible(prog: &[Inst]) -> bool {
 pub(crate) fn try_compile(
     prog: &[Inst],
     charsets: &[CharSet],
+    alt_tries: &[ByteTrie],
     use_memo: bool,
     fork_pc_indices: &[Option<u32>],
 ) -> Option<JitModule> {
+    let _ = alt_tries; // consumed at exec time, not compile time
     if !is_eligible(prog) {
         return None;
     }
@@ -143,6 +145,7 @@ pub(crate) fn exec_jit(
     prog: &[Inst],
     charsets: &[CharSet],
     class_tries: &[Option<ByteTrie>],
+    alt_tries: &[ByteTrie],
     text: &str,
     start_pos: usize,
     num_groups: usize,
@@ -220,6 +223,8 @@ pub(crate) fn exec_jit(
         null_check_len: num_null_checks as u64,
         class_tries_ptr: class_tries.as_ptr() as *const (),
         class_tries_len: class_tries.len() as u64,
+        alt_tries_ptr: alt_tries.as_ptr() as *const (),
+        alt_tries_len: alt_tries.len() as u64,
     };
 
     let result = unsafe { (jit.func_ptr)(&mut ctx as *mut JitExecCtx as i64, start_pos as i64) };

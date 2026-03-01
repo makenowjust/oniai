@@ -931,7 +931,7 @@ fn case_fold_class_char_sharp_s() {
     // ß has a multi-codepoint full fold "ss".  Under (?i), [ß] must match
     // ß itself, ẞ (U+1E9E), and every byte sequence that folds to "ss".
     assert_match!(r"(?i)\A[ß]\z", "ß");
-    assert_match!(r"(?i)\A[ß]\z", "ẞ");   // capital sharp s — same fold class
+    assert_match!(r"(?i)\A[ß]\z", "ẞ"); // capital sharp s — same fold class
     assert_match!(r"(?i)\A[ß]\z", "ss");
     assert_match!(r"(?i)\A[ß]\z", "SS");
     assert_match!(r"(?i)\A[ß]\z", "Ss");

@@ -263,6 +263,10 @@ fn emit_function(
         [types::I64, types::I32, types::I64] => []);
     let h_null_check_end = decl_helper!(module, builder, "jit_null_check_end",
         [types::I64, types::I32, types::I64] => [types::I32]);
+    let h_match_alt_trie = decl_helper!(module, builder, "jit_match_alt_trie",
+        [types::I64, types::I64, types::I32] => [types::I64]);
+    let h_match_alt_trie_back = decl_helper!(module, builder, "jit_match_alt_trie_back",
+        [types::I64, types::I64, types::I32] => [types::I64]);
 
     // ---- per-instruction IR emission ----
     for (pc, inst) in prog.iter().enumerate() {
@@ -376,9 +380,7 @@ fn emit_function(
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
                 let c = builder.ins().iconst(types::I32, *ch as i64);
-                let call = builder
-                    .ins()
-                    .call(h_match_char_back, &[ctx_v, pos_v, c]);
+                let call = builder.ins().call(h_match_char_back, &[ctx_v, pos_v, c]);
                 emit_match_call!(call, pc + 1);
             }
             Inst::AnyCharBack(dotall) => {
@@ -716,6 +718,22 @@ fn emit_function(
                 let call = builder
                     .ins()
                     .call(h_fold_seq_back, &[ctx_v, pos_v, ptr_v, len_v]);
+                emit_match_call!(call, pc + 1);
+            }
+            Inst::AltTrie(idx) => {
+                let ctx_v = builder.use_var(var_ctx);
+                let pos_v = builder.use_var(var_pos);
+                let i = builder.ins().iconst(types::I32, *idx as i64);
+                let call = builder.ins().call(h_match_alt_trie, &[ctx_v, pos_v, i]);
+                emit_match_call!(call, pc + 1);
+            }
+            Inst::AltTrieBack(idx) => {
+                let ctx_v = builder.use_var(var_ctx);
+                let pos_v = builder.use_var(var_pos);
+                let i = builder.ins().iconst(types::I32, *idx as i64);
+                let call = builder
+                    .ins()
+                    .call(h_match_alt_trie_back, &[ctx_v, pos_v, i]);
                 emit_match_call!(call, pc + 1);
             }
         }

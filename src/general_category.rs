@@ -13,17 +13,17 @@ use crate::data::general_category_data::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeneralCategory {
     // C* — Other
-    Control,      // Cc
-    Format,       // Cf
-    Unassigned,   // Cn
-    PrivateUse,   // Co
-    Surrogate,    // Cs
+    Control,    // Cc
+    Format,     // Cf
+    Unassigned, // Cn
+    PrivateUse, // Co
+    Surrogate,  // Cs
     // L* — Letter
-    LowercaseLetter,  // Ll
-    ModifierLetter,   // Lm
-    OtherLetter,      // Lo
-    TitlecaseLetter,  // Lt
-    UppercaseLetter,  // Lu
+    LowercaseLetter, // Ll
+    ModifierLetter,  // Lm
+    OtherLetter,     // Lo
+    TitlecaseLetter, // Lt
+    UppercaseLetter, // Lu
     // M* — Mark
     SpacingMark,    // Mc
     EnclosingMark,  // Me
@@ -46,9 +46,9 @@ pub enum GeneralCategory {
     MathSymbol,     // Sm
     OtherSymbol,    // So
     // Z* — Separator
-    LineSeparator,       // Zl
-    ParagraphSeparator,  // Zp
-    SpaceSeparator,      // Zs
+    LineSeparator,      // Zl
+    ParagraphSeparator, // Zp
+    SpaceSeparator,     // Zs
 }
 
 impl GeneralCategory {
