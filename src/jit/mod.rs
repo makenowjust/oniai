@@ -10,6 +10,7 @@ pub(crate) mod helpers;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_jit::{JITBuilder, JITModule};
 
+use crate::bytetrie::ByteTrie;
 use crate::vm::{CharSet, ExecScratch, Inst, JitExecCtx, MemoState};
 
 // ---------------------------------------------------------------------------
@@ -141,6 +142,7 @@ pub(crate) fn exec_jit(
     jit: &JitModule,
     prog: &[Inst],
     charsets: &[CharSet],
+    class_tries: &[Option<ByteTrie>],
     text: &str,
     start_pos: usize,
     num_groups: usize,
@@ -216,6 +218,8 @@ pub(crate) fn exec_jit(
         fork_memo_cap: fork_memo_raw_cap as u64,
         null_check_ptr,
         null_check_len: num_null_checks as u64,
+        class_tries_ptr: class_tries.as_ptr() as *const (),
+        class_tries_len: class_tries.len() as u64,
     };
 
     let result = unsafe { (jit.func_ptr)(&mut ctx as *mut JitExecCtx as i64, start_pos as i64) };

@@ -1571,6 +1571,23 @@ fn charset_is_simple(cs: &CharSet) -> bool {
             .all(|item| matches!(item, CharSetItem::Char(_) | CharSetItem::Range(_, _)))
 }
 
+/// Per-charset ByteTrie for case-insensitive `Class` instructions.  Indexed by
+/// charset index (parallel to `charsets`).  Used by the JIT helper which
+/// dispatches by charset index rather than PC.
+#[cfg(feature = "jit")]
+fn build_class_tries(charsets: &[CharSet]) -> Vec<Option<ByteTrie>> {
+    charsets
+        .iter()
+        .map(|cs| {
+            if charset_is_simple(cs) {
+                Some(charset_to_bytetrie(cs, true, false))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 pub struct CompiledRegex {
     prog: Vec<Inst>,
     charsets: Vec<CharSet>,
@@ -1591,6 +1608,12 @@ pub struct CompiledRegex {
     /// other instruction types.  Used by `exec()` to match raw bytes without
     /// any `case_fold()` calls or UTF-8 decoding at match time.
     match_tries: Vec<Option<ByteTrie>>,
+    /// Per-charset ByteTrie for case-insensitive `Class` instructions, indexed
+    /// by charset index (parallel to `charsets`).  `None` for charsets that are
+    /// not "simple" (contain Shorthand/Posix/Unicode property items).  Used by
+    /// the JIT helper `jit_match_class` which cannot index by PC.
+    #[cfg(feature = "jit")]
+    class_tries: Vec<Option<ByteTrie>>,
     /// JIT-compiled executor (present when the `jit` feature is enabled and
     /// the program is eligible for JIT compilation).
     #[cfg(feature = "jit")]
@@ -1638,6 +1661,9 @@ impl CompiledRegex {
         let fork_pc_count = fork_pc_indices.iter().filter(|x| x.is_some()).count() as u32;
 
         #[cfg(feature = "jit")]
+        let class_tries = build_class_tries(&prog_data.charsets);
+
+        #[cfg(feature = "jit")]
         let jit = crate::jit::try_compile(
             &prog_data.prog,
             &prog_data.charsets,
@@ -1655,6 +1681,8 @@ impl CompiledRegex {
             required_char,
             use_memo,
             match_tries,
+            #[cfg(feature = "jit")]
+            class_tries,
             #[cfg(feature = "jit")]
             jit,
             #[cfg(feature = "jit")]
@@ -1678,6 +1706,7 @@ impl CompiledRegex {
                 jit,
                 &self.prog,
                 &self.charsets,
+                &self.class_tries,
                 text,
                 pos,
                 self.num_groups,
@@ -2257,6 +2286,12 @@ pub(crate) struct JitExecCtx {
     pub null_check_ptr: *mut u64,
     /// Length of the null-check slot array (== `num_null_checks` for the pattern).
     pub null_check_len: u64,
+    /// Pointer to the per-charset ByteTrie slice (`*const Option<ByteTrie>`).
+    /// Indexed by charset index.  Used by `jit_match_class` to handle
+    /// multi-codepoint case folds (e.g. ß → "ss") correctly.
+    pub class_tries_ptr: *const (),
+    /// Length of the class_tries slice (== number of charsets).
+    pub class_tries_len: u64,
 }
 
 /// Push one entry onto the raw JIT backtrack stack.  May reallocate.

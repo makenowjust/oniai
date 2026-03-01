@@ -928,11 +928,15 @@ fn case_fold_fi_ligature_matches_fi() {
 
 #[test]
 fn case_fold_class_char_sharp_s() {
-    // [ß] under (?i) uses chars_eq_ci('ß', ch).
-    // chars_eq_ci('ß', 'S') = ['s','s'].eq(['s']) = FALSE — single S does not match.
-    // chars_eq_ci('ß', 'ß') = ['s','s'].eq(['s','s']) = TRUE.
+    // ß has a multi-codepoint full fold "ss".  Under (?i), [ß] must match
+    // ß itself, ẞ (U+1E9E), and every byte sequence that folds to "ss".
     assert_match!(r"(?i)\A[ß]\z", "ß");
-    // SS: S folds to ['s'], not ['s','s'] — does NOT equal ß's fold ['s','s']
+    assert_match!(r"(?i)\A[ß]\z", "ẞ");   // capital sharp s — same fold class
+    assert_match!(r"(?i)\A[ß]\z", "ss");
+    assert_match!(r"(?i)\A[ß]\z", "SS");
+    assert_match!(r"(?i)\A[ß]\z", "Ss");
+    assert_match!(r"(?i)\A[ß]\z", "sS");
+    // Single 's'/'S' fold to "s", not "ss" → no match
     assert_no_match!(r"(?i)\A[ß]\z", "s");
     assert_no_match!(r"(?i)\A[ß]\z", "S");
 }

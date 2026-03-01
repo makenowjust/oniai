@@ -9,6 +9,7 @@
 //! likewise valid.
 
 use crate::ast::{AnchorKind, Flags, Shorthand};
+use crate::bytetrie::ByteTrie;
 use crate::charset;
 use crate::vm::{
     BtJit, CharSet, JitExecCtx, bt_pop, bt_push, exec_lookaround_for_jit, fold_advance,
@@ -112,6 +113,9 @@ pub unsafe extern "C" fn jit_match_any_char(ctx: *const JitExecCtx, pos: u64, do
 }
 
 /// Match `charsets[idx]` at `text[pos..]`.
+///
+/// For case-insensitive matching, prefers the ByteTrie from `class_tries[idx]`
+/// which correctly handles multi-codepoint folds (e.g. ß → "ss").
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn jit_match_class(
     ctx: *const JitExecCtx,
@@ -123,6 +127,20 @@ pub unsafe extern "C" fn jit_match_class(
         let ctx = &*ctx;
         let text = text_from_ctx(ctx);
         let ic = ignore_case != 0;
+        // Case-insensitive: use per-charset ByteTrie when available (handles
+        // multi-codepoint folds like ß → "ss").
+        if ic && ctx.class_tries_len > 0 {
+            let class_tries = std::slice::from_raw_parts(
+                ctx.class_tries_ptr as *const Option<ByteTrie>,
+                ctx.class_tries_len as usize,
+            );
+            if let Some(Some(trie)) = class_tries.get(idx as usize) {
+                return match trie.advance(text.as_bytes(), pos as usize) {
+                    Some(new_pos) => new_pos as i64,
+                    None => -1,
+                };
+            }
+        }
         let charsets = std::slice::from_raw_parts(
             ctx.charsets_ptr as *const CharSet,
             ctx.charsets_len as usize,
