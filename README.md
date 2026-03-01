@@ -6,8 +6,9 @@ A pure-Rust regular expression engine compatible with
 Oniai implements the full Onigmo syntax including look-around (lookahead and
 variable-length lookbehind), atomic groups, backreferences, named captures,
 subexpression calls (`\g<name>`), the absence operator `(?~...)`, and more.
-Case-insensitive matching uses full Unicode case folding (via the
-`unicode-casefold` crate), including multi-codepoint folds such as `ß` ↔ `ss`.
+Case-insensitive matching uses full Unicode case folding (via static tables
+generated from the official Unicode data files), including multi-codepoint folds
+such as `ß` ↔ `ss`.
 It is backed by a memoizing backtracking VM that provides near-linear time
 behaviour on a broad class of patterns (see [Performance](#performance)).
 
@@ -280,15 +281,28 @@ src/
   compile.rs    AST → VM bytecode compiler
   vm.rs         Memoizing backtracking VM executor
   charset.rs    Character property helpers (Unicode, POSIX)
+  casefold.rs   Unicode full case folding (binary search on static tables)
+  casefold_trie.rs  Compile-time case-fold → ByteTrie expansion
+  general_category.rs  Unicode General Category lookup (binary search on static ranges)
+  bytetrie.rs   Immutable UTF-8 byte trie for case-fold matching
   error.rs      Error type
+  data/
+    casefold_data.rs          Pre-generated case fold tables (from data/CaseFolding.txt)
+    general_category_data.rs  Pre-generated GC range table (from data/DerivedGeneralCategory.txt)
   bin/
     oniai.rs   grep-like CLI binary
+data/
+  CaseFolding.txt                        Unicode 17.0.0 case folding data
+  extracted/DerivedGeneralCategory.txt   Unicode 17.0.0 general category data
 doc/
   RE            Onigmo v6.1.0 syntax reference
   DESIGN.md     Architecture and implementation notes
   BENCHMARKS.md Benchmark methodology and results
+scripts/
+  fetch_unicode_data.sh     Download Unicode data files from unicode.org
+  gen_unicode_tables/       Standalone Rust binary: regenerates src/data/*.rs
 tests/
-  integration_test.rs  77 integration tests
+  integration_test.rs  Integration tests
 benches/
   regex.rs      Criterion benchmarks
 ```
@@ -320,6 +334,21 @@ cargo test
 cargo fmt
 cargo clippy --tests
 ```
+
+### Unicode data tables
+
+The files `src/data/casefold_data.rs` and `src/data/general_category_data.rs`
+are pre-generated from the Unicode Character Database and committed to the
+repository so that builds require no network access or extra tooling.
+
+To update to a new Unicode version:
+
+```sh
+sh scripts/fetch_unicode_data.sh 17.0.0   # downloads data/ files
+cargo run --manifest-path scripts/gen_unicode_tables/Cargo.toml
+```
+
+Then commit the updated `data/` and `src/data/` files together.
 
 ### Benchmarks
 
