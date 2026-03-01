@@ -1,10 +1,10 @@
 #!/bin/sh
-# Download Unicode CaseFolding.txt for use by build.rs.
+# Download Unicode data files used by build.rs.
 #
 # Usage:
 #   sh scripts/fetch_unicode_data.sh [UNICODE_VERSION]
 #
-# The file is saved to data/CaseFolding.txt and committed to the repository
+# Files saved to the data/ directory and committed to the repository
 # so that builds are reproducible without network access.
 #
 # The default Unicode version is 17.0.0.  Pass a version string as the first
@@ -14,11 +14,16 @@
 set -eu
 
 UNICODE_VERSION="${1:-17.0.0}"
-URL="https://www.unicode.org/Public/${UNICODE_VERSION}/ucd/CaseFolding.txt"
-DEST="data/CaseFolding.txt"
+BASE="https://www.unicode.org/Public/${UNICODE_VERSION}/ucd"
 
-mkdir -p data
+fetch() {
+    local url="$1"
+    local dest="$2"
+    mkdir -p "$(dirname "$dest")"
+    echo "Downloading $url ..."
+    curl -fsSL "$url" -o "$dest"
+    echo "Saved to ${dest}"
+}
 
-echo "Downloading Unicode ${UNICODE_VERSION} CaseFolding.txt ..."
-curl -fsSL "$URL" -o "$DEST"
-echo "Saved to ${DEST}"
+fetch "${BASE}/CaseFolding.txt"                        "data/CaseFolding.txt"
+fetch "${BASE}/extracted/DerivedGeneralCategory.txt"   "data/extracted/DerivedGeneralCategory.txt"

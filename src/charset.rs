@@ -1,6 +1,6 @@
 /// Character set matching utilities.
 use crate::ast::{PosixClass, Shorthand};
-use unicode_general_category::{GeneralCategory, get_general_category};
+use crate::general_category::{GeneralCategory, get_general_category};
 
 /// Test whether a character matches a POSIX class.
 /// `ascii_range`: if true, only ASCII characters can match non-ASCII classes.
