@@ -1,8 +1,9 @@
 use crate::ast::*;
 use crate::casefold::case_fold;
 use crate::charset;
+use crate::data::casefold_data::SIMPLE_CASE_FOLDS;
 use crate::error::Error;
-use crate::vm::{CharSet, CharSetItem, Inst};
+use crate::vm::{CharSet, Inst};
 /// Compiler: transforms a parsed AST into a VM instruction sequence.
 use std::collections::HashMap;
 
@@ -173,10 +174,12 @@ impl Compiler {
             }
 
             Node::Shorthand(sh) => {
+                let cs = shorthand_charset(*sh, flags.ascii_range, ic);
+                let idx = self.add_charset(cs);
                 if backward {
-                    self.emit(Inst::ShorthandBack(*sh, flags.ascii_range));
+                    self.emit(Inst::ClassBack(idx, ic));
                 } else {
-                    self.emit(Inst::Shorthand(*sh, flags.ascii_range));
+                    self.emit(Inst::Class(idx, ic));
                 }
             }
 
@@ -186,10 +189,12 @@ impl Compiler {
                         "unknown Unicode property: {name:?}"
                     )));
                 }
+                let cs = unicode_prop_charset(name, *negate, ic);
+                let idx = self.add_charset(cs);
                 if backward {
-                    self.emit(Inst::PropBack(name.clone(), *negate));
+                    self.emit(Inst::ClassBack(idx, ic));
                 } else {
-                    self.emit(Inst::Prop(name.clone(), *negate));
+                    self.emit(Inst::Class(idx, ic));
                 }
             }
 
@@ -851,57 +856,271 @@ impl Compiler {
 // CharSet construction from AST CharClass
 // ---------------------------------------------------------------------------
 
+/// Sort and merge overlapping or adjacent `(char, char)` ranges.
+pub fn merge_ranges(mut v: Vec<(char, char)>) -> Vec<(char, char)> {
+    if v.is_empty() {
+        return v;
+    }
+    v.sort_unstable_by_key(|&(lo, _)| lo as u32);
+    let mut merged: Vec<(char, char)> = Vec::with_capacity(v.len());
+    for (lo, hi) in v {
+        if let Some(last) = merged.last_mut() {
+            // Merge if overlapping or adjacent.
+            let next = char::from_u32(last.1 as u32 + 1);
+            if lo <= last.1 || next == Some(lo) {
+                if hi > last.1 {
+                    last.1 = hi;
+                }
+                continue;
+            }
+        }
+        merged.push((lo, hi));
+    }
+    merged
+}
+
+/// Return `true` when `ch` is covered by a sorted, merged range list.
+fn char_in_ranges(ch: char, ranges: &[(char, char)]) -> bool {
+    ranges
+        .binary_search_by(|&(lo, hi)| {
+            if ch < lo {
+                std::cmp::Ordering::Greater
+            } else if ch > hi {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
+}
+
+/// Expand `ranges` to include all single-codepoint simple-case-fold equivalents.
+///
+/// Uses `SIMPLE_CASE_FOLDS` to find every codepoint whose fold target is already
+/// "touched" by `ranges`, then merges everything together.  Multi-codepoint full
+/// case folds (e.g. ß → "ss") are NOT added here; they are handled at match time
+/// via the ByteTrie.
+pub fn expand_case_folds(ranges: Vec<(char, char)>) -> Vec<(char, char)> {
+    // Collect the canonical (fold-target) values that are "touched" by ranges:
+    // either the src char is in ranges, or the dst (canonical) char is in ranges.
+    let mut touched: Vec<char> = Vec::new();
+    for &(src, dst) in SIMPLE_CASE_FOLDS {
+        if char_in_ranges(src, &ranges) || char_in_ranges(dst, &ranges) {
+            let pos = touched.partition_point(|&d| d < dst);
+            if touched.get(pos) != Some(&dst) {
+                touched.insert(pos, dst);
+            }
+        }
+    }
+    // Add all members of every touched fold group.
+    let mut extra = ranges;
+    for &(src, dst) in SIMPLE_CASE_FOLDS {
+        if touched.binary_search(&dst).is_ok() {
+            extra.push((src, src));
+            extra.push((dst, dst));
+        }
+    }
+    merge_ranges(extra)
+}
+
+/// Complement of `ranges` within `['\0', '\u{10FFFF}']`, skipping surrogates.
+fn complement_ranges(ranges: &[(char, char)]) -> Vec<(char, char)> {
+    const SUR_LO: u32 = 0xD800;
+    const SUR_HI: u32 = 0xDFFF;
+
+    fn push_valid(out: &mut Vec<(char, char)>, lo_u: u32, hi_u: u32) {
+        if hi_u < lo_u {
+            return;
+        }
+        if hi_u < SUR_LO || lo_u > SUR_HI {
+            if let (Some(lo), Some(hi)) = (char::from_u32(lo_u), char::from_u32(hi_u)) {
+                out.push((lo, hi));
+            }
+        } else {
+            if lo_u < SUR_LO
+                && let (Some(lo), Some(hi)) = (char::from_u32(lo_u), char::from_u32(SUR_LO - 1)) {
+                    out.push((lo, hi));
+                }
+            if hi_u > SUR_HI
+                && let (Some(lo), Some(hi)) = (char::from_u32(SUR_HI + 1), char::from_u32(hi_u)) {
+                    out.push((lo, hi));
+                }
+        }
+    }
+
+    let mut result = Vec::new();
+    let mut pos: u32 = 0;
+    for &(lo, hi) in ranges {
+        let lo_u = lo as u32;
+        if pos < lo_u {
+            push_valid(&mut result, pos, lo_u - 1);
+        }
+        pos = (hi as u32).saturating_add(1);
+        if pos > 0x10FFFF {
+            return result;
+        }
+    }
+    push_valid(&mut result, pos, 0x10FFFF);
+    result
+}
+
+/// O(n+m) merge-based intersection of two sorted, merged range lists.
+fn intersect_ranges(a: &[(char, char)], b: &[(char, char)]) -> Vec<(char, char)> {
+    let mut result = Vec::new();
+    let mut ai = 0;
+    let mut bi = 0;
+    while ai < a.len() && bi < b.len() {
+        let (alo, ahi) = a[ai];
+        let (blo, bhi) = b[bi];
+        let lo = alo.max(blo);
+        let hi = ahi.min(bhi);
+        if lo <= hi {
+            result.push((lo, hi));
+        }
+        if ahi <= bhi {
+            ai += 1;
+        }
+        if bhi <= ahi {
+            bi += 1;
+        }
+    }
+    result
+}
+
+/// Collect all valid Unicode codepoints satisfying `pred` into compact ranges.
+fn codepoints_matching(pred: impl Fn(char) -> bool) -> Vec<(char, char)> {
+    let mut ranges: Vec<(char, char)> = Vec::new();
+    let mut run_start: Option<char> = None;
+    let mut run_end: char = '\0';
+    for cp in 0u32..=0x10FFFF {
+        match char::from_u32(cp) {
+            None => {} // surrogate gap — leave run open
+            Some(c) if pred(c) => {
+                run_end = c;
+                run_start.get_or_insert(c);
+            }
+            Some(_) => {
+                if let Some(s) = run_start.take() {
+                    ranges.push((s, run_end));
+                }
+            }
+        }
+    }
+    if let Some(s) = run_start {
+        ranges.push((s, run_end));
+    }
+    ranges
+}
+
+/// Build a `CharSet` for a shorthand (`\w`, `\d`, etc.) at compile time.
+fn shorthand_charset(sh: Shorthand, ascii_range: bool, ignore_case: bool) -> CharSet {
+    let raw = codepoints_matching(|c| charset::matches_shorthand(sh, c, ascii_range));
+    let ranges = merge_ranges(raw);
+    let ranges = if ignore_case {
+        expand_case_folds(ranges)
+    } else {
+        ranges
+    };
+    // Shorthands are never negated — \W etc. compile as NonWord which already
+    // produces the positive (non-negated) complemented ranges.
+    CharSet {
+        negate: false,
+        ranges,
+    }
+}
+
+/// Build a `CharSet` for a Unicode property (`\p{...}`) at compile time.
+fn unicode_prop_charset(name: &str, negate: bool, ignore_case: bool) -> CharSet {
+    let raw = codepoints_matching(|c| charset::matches_unicode_prop(name, c, false));
+    let ranges = merge_ranges(raw);
+    let ranges = if ignore_case {
+        expand_case_folds(ranges)
+    } else {
+        ranges
+    };
+    CharSet { negate, ranges }
+}
+
 pub fn compile_charset(
     cc: &CharClass,
     ignore_case: bool,
     ascii_range: bool,
 ) -> Result<CharSet, Error> {
-    let items = cc
-        .items
-        .iter()
-        .map(|item| compile_class_item(item, ascii_range, ignore_case))
-        .collect::<Result<Vec<_>, _>>()?;
-    let intersections = cc
-        .intersections
-        .iter()
-        .map(|ic| compile_charset(ic, ignore_case, ascii_range))
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut cs = CharSet {
+    // Step 1: expand all items into raw (lo, hi) codepoint pairs.
+    let mut raw: Vec<(char, char)> = Vec::new();
+    for item in &cc.items {
+        expand_class_item(item, ascii_range, ignore_case, &mut raw)?;
+    }
+
+    // Step 2: sort and merge.
+    let mut ranges = merge_ranges(raw);
+
+    // Step 3: case-fold expansion (single-codepoint equivalents only).
+    if ignore_case {
+        ranges = expand_case_folds(ranges);
+    }
+
+    // Step 4: pre-compute intersections (each intersection is a CharClass with
+    // its own negate and items; apply negate before intersecting).
+    for inner_cc in &cc.intersections {
+        let inner_cs = compile_charset(inner_cc, ignore_case, ascii_range)?;
+        let inner_eff = if inner_cs.negate {
+            complement_ranges(&inner_cs.ranges)
+        } else {
+            inner_cs.ranges
+        };
+        ranges = intersect_ranges(&ranges, &inner_eff);
+    }
+
+    Ok(CharSet {
         negate: cc.negate,
-        items,
-        intersections,
-        ascii_ranges: None,
-    };
-    // Precompute sorted/merged ASCII ranges for fast matching and JIT inlining.
-    // Nested charsets already have their own ascii_ranges set (recursive calls
-    // above finished first), so the slow-path sampling here uses those fast paths
-    // for inner charsets automatically.
-    cs.compute_ascii_ranges();
-    Ok(cs)
+        ranges,
+    })
 }
 
-fn compile_class_item(
+fn expand_class_item(
     item: &ClassItem,
     ascii_range: bool,
     ignore_case: bool,
-) -> Result<CharSetItem, Error> {
-    Ok(match item {
-        ClassItem::Char(c) => CharSetItem::Char(*c),
-        ClassItem::Range(lo, hi) => CharSetItem::Range(*lo, *hi),
-        ClassItem::Shorthand(sh) => CharSetItem::Shorthand(*sh, ascii_range),
-        ClassItem::Posix(cls, neg) => CharSetItem::Posix(*cls, *neg),
+    out: &mut Vec<(char, char)>,
+) -> Result<(), Error> {
+    match item {
+        ClassItem::Char(c) => out.push((*c, *c)),
+        ClassItem::Range(lo, hi) => out.push((*lo, *hi)),
+        ClassItem::Shorthand(sh) => {
+            let raw = codepoints_matching(|c| charset::matches_shorthand(*sh, c, ascii_range));
+            out.extend(raw);
+        }
+        ClassItem::Posix(cls, neg) => {
+            let raw = codepoints_matching(|c| {
+                let m = charset::matches_posix(*cls, c, ascii_range);
+                if *neg { !m } else { m }
+            });
+            out.extend(raw);
+        }
         ClassItem::Unicode(name, neg) => {
             if !charset::is_known_unicode_prop(name) {
                 return Err(Error::Compile(format!(
                     "unknown Unicode property: {name:?}"
                 )));
             }
-            CharSetItem::Unicode(name.clone(), *neg)
+            let raw = codepoints_matching(|c| {
+                let m = charset::matches_unicode_prop(name, c, false);
+                if *neg { !m } else { m }
+            });
+            out.extend(raw);
         }
-        ClassItem::Nested(inner) => {
-            CharSetItem::Nested(compile_charset(inner, ignore_case, ascii_range)?)
+        ClassItem::Nested(inner_cc) => {
+            let inner_cs = compile_charset(inner_cc, ignore_case, ascii_range)?;
+            let eff = if inner_cs.negate {
+                complement_ranges(&inner_cs.ranges)
+            } else {
+                inner_cs.ranges
+            };
+            out.extend(eff);
         }
-    })
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

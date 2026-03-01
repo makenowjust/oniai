@@ -5,9 +5,11 @@
 /// At match time the engine just walks the trie over raw bytes — no
 /// `case_fold()` calls, no UTF-8 decoding.
 ///
-/// `charset_to_bytetrie` builds a [`ByteTrie`] from a `CharSet` by
-/// enumerating all matching Unicode codepoints and inserting their UTF-8
-/// encodings.
+/// `charset_to_bytetrie` builds a [`ByteTrie`] from a `CharSet` by enumerating
+/// the charset's compiled inversion-list ranges and inserting multi-codepoint
+/// case-fold sequences.  Single-codepoint case equivalents are already in
+/// `cs.ranges` and are handled by `CharSet::matches`; the ByteTrie only needs
+/// to cover multi-codepoint folds (e.g. ß → "ss").
 ///
 /// # Algorithm
 ///
@@ -22,7 +24,6 @@
 /// (empty target) inserts the accumulated byte sequence into the output trie.
 use crate::bytetrie::ByteTrie;
 use crate::vm::CharSet;
-use crate::vm::CharSetItem;
 
 use crate::data::casefold_data::{MULTI_CASE_FOLDS, SIMPLE_CASE_FOLDS};
 
@@ -123,97 +124,25 @@ fn codepoints_with_fold(target: &[char]) -> Vec<char> {
 // CharSet → ByteTrie
 // ---------------------------------------------------------------------------
 
-/// Build a `ByteTrie` from a simple (Char/Range-only, non-negated,
-/// non-intersecting) `CharSet`.
+/// Build a `ByteTrie` for a case-insensitive `Class` instruction.
 ///
-/// With `ignore_case = true` the trie also accepts codepoints that
-/// simple-case-fold to a value within the charset, **and** any multi-
-/// codepoint byte sequence whose full Unicode case fold matches a codepoint
-/// in the charset.  For example, `[ß]` case-insensitively also accepts
-/// `"ss"`, `"Ss"`, `"SS"`, `"ẞ"`, etc.
+/// For each codepoint in `cs.ranges` that has a multi-codepoint full case fold
+/// (e.g. ß → "ss"), all UTF-8 byte sequences that Unicode-case-fold to that
+/// same fold sequence are inserted into the trie.  Single-codepoint case
+/// equivalents are already in `cs.ranges` and do not need to appear in the
+/// trie; `CharSet::matches` handles them via binary search.
 ///
-/// **Requires** that `charset_is_simple` returns `true` for `cs` (see
-/// `vm.rs`).  The caller guarantees `!cs.negate` and `cs.intersections.is_empty()`.
-pub fn charset_to_bytetrie(cs: &CharSet, ignore_case: bool, _ascii_range: bool) -> ByteTrie {
+/// The trie is built from the **non-negated inner ranges** (`cs.ranges`), so
+/// it can be used both as a positive advancer (non-negated charset) and as a
+/// rejection guard (negated charset).
+pub fn charset_to_bytetrie(cs: &CharSet, _ignore_case: bool) -> ByteTrie {
     let mut trie = ByteTrie::new();
-    let mut buf = [0u8; 4];
-
-    for item in &cs.items {
-        match item {
-            CharSetItem::Char(c) => {
-                if ignore_case {
-                    // The effective "folded" value this char contributes.
-                    let f = simple_fold(*c);
-                    insert_with_reverse_folds(&mut trie, &mut buf, f);
-                    // If f has a multi-codepoint full fold (e.g. ß → "ss"),
-                    // also accept every byte sequence that folds to that same
-                    // sequence (e.g. "ss", "Ss", "SS", "ẞ", …).
-                    insert_multi_fold_seqs(&mut trie, f);
-                } else {
-                    trie.insert(c.encode_utf8(&mut buf).as_bytes());
-                }
-            }
-            CharSetItem::Range(lo, hi) => {
-                if ignore_case {
-                    let lo_f = simple_fold(*lo);
-                    let hi_f = simple_fold(*hi);
-                    // Fixed-point chars in [lo_f, hi_f]: their fold is themselves,
-                    // so they are accepted.
-                    for cp in lo_f as u32..=hi_f as u32 {
-                        if let Some(c) = char::from_u32(cp)
-                            && simple_fold(c) == c
-                        {
-                            trie.insert(c.encode_utf8(&mut buf).as_bytes());
-                        }
-                    }
-                    // Source chars whose simple fold lands in [lo_f, hi_f].
-                    for &(src, dst) in SIMPLE_CASE_FOLDS {
-                        if dst >= lo_f && dst <= hi_f {
-                            trie.insert(src.encode_utf8(&mut buf).as_bytes());
-                        }
-                    }
-                    // Chars in [lo_f, hi_f] that have multi-codepoint full folds.
-                    // (They are fixed-points for simple_fold so they appear in the
-                    // range above, but their fold sequences must also be accepted.)
-                    for &(src, fold_seq) in MULTI_CASE_FOLDS {
-                        if src >= lo_f && src <= hi_f {
-                            insert_multi_fold_seqs_raw(&mut trie, fold_seq);
-                        }
-                    }
-                } else {
-                    for cp in *lo as u32..=*hi as u32 {
-                        if let Some(c) = char::from_u32(cp) {
-                            trie.insert(c.encode_utf8(&mut buf).as_bytes());
-                        }
-                    }
-                }
-            }
-            _ => unreachable!("charset_is_simple guarantees only Char/Range items"),
+    for &(src, fold_seq) in MULTI_CASE_FOLDS {
+        if char_in_cs_ranges(src, &cs.ranges) {
+            insert_multi_fold_seqs_raw(&mut trie, fold_seq);
         }
     }
-
     trie
-}
-
-/// Insert `f` (if it is a fold fixed-point) and every source codepoint that
-/// simple-folds to `f` into `trie`.
-fn insert_with_reverse_folds(trie: &mut ByteTrie, buf: &mut [u8; 4], f: char) {
-    if simple_fold(f) == f {
-        trie.insert(f.encode_utf8(buf).as_bytes());
-    }
-    for &(src, dst) in SIMPLE_CASE_FOLDS {
-        if dst == f {
-            trie.insert(src.encode_utf8(buf).as_bytes());
-        }
-    }
-}
-
-/// If `f` has a multi-codepoint full case fold, insert all byte sequences
-/// that Unicode-case-fold to that same sequence into `trie`.
-fn insert_multi_fold_seqs(trie: &mut ByteTrie, f: char) {
-    if let Ok(i) = MULTI_CASE_FOLDS.binary_search_by_key(&f, |&(s, _)| s) {
-        insert_multi_fold_seqs_raw(trie, MULTI_CASE_FOLDS[i].1);
-    }
 }
 
 /// Insert all byte sequences that Unicode-case-fold to `fold_seq` into `trie`.
@@ -223,8 +152,22 @@ fn insert_multi_fold_seqs_raw(trie: &mut ByteTrie, fold_seq: &[char]) {
 }
 
 /// Build a reversed `ByteTrie` from a `CharSet` (for backward `ClassBack`).
-pub fn charset_to_bytetrie_back(cs: &CharSet, ignore_case: bool, ascii_range: bool) -> ByteTrie {
-    charset_to_bytetrie(cs, ignore_case, ascii_range).reversed()
+pub fn charset_to_bytetrie_back(cs: &CharSet, ignore_case: bool) -> ByteTrie {
+    charset_to_bytetrie(cs, ignore_case).reversed()
+}
+
+fn char_in_cs_ranges(ch: char, ranges: &[(char, char)]) -> bool {
+    ranges
+        .binary_search_by(|&(lo, hi)| {
+            if ch < lo {
+                std::cmp::Ordering::Greater
+            } else if ch > hi {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+        .is_ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -328,107 +271,69 @@ mod tests {
     }
 
     // --- CharSet → ByteTrie ---
+    //
+    // In the new design, charset_to_bytetrie only inserts multi-codepoint fold
+    // sequences (e.g. ß → "ss").  Single-char case equivalents are handled by
+    // CharSet::matches via binary search and do NOT appear in the ByteTrie.
 
-    fn make_range_charset(lo: char, hi: char) -> CharSet {
-        use crate::vm::CharSetItem;
-        let mut cs = CharSet {
+    fn make_ranges_charset(ranges: Vec<(char, char)>) -> CharSet {
+        CharSet {
             negate: false,
-            items: vec![CharSetItem::Range(lo, hi)],
-            intersections: vec![],
-            ascii_ranges: None,
-        };
-        cs.compute_ascii_ranges();
-        cs
+            ranges,
+        }
     }
 
-    #[test]
-    fn charset_trie_az_case_insensitive() {
-        let cs = make_range_charset('a', 'z');
-        let t = charset_to_bytetrie(&cs, true, false);
-        // ASCII uppercase matched
-        assert!(accepts(&t, "A"), "A");
-        assert!(accepts(&t, "Z"), "Z");
-        assert!(accepts(&t, "a"), "a");
-        assert!(accepts(&t, "z"), "z");
-        // ſ (U+017F) simple-folds to 's' → should be in class
-        assert!(accepts(&t, "ſ"), "ſ U+017F");
-        // ß has no simple fold (multi-codepoint) → should NOT be in class
-        assert!(
-            !accepts(&t, "ß"),
-            "ß should not match [a-z] case-insensitive"
-        );
-        // Kelvin sign (U+212A) folds to 'k'
-        assert!(accepts(&t, "\u{212A}"), "Kelvin sign U+212A");
-        // digit outside range
-        assert!(!accepts(&t, "1"), "digit");
-    }
-
-    #[test]
-    fn charset_trie_az_case_sensitive() {
-        let cs = make_range_charset('a', 'z');
-        let t = charset_to_bytetrie(&cs, false, false);
-        assert!(accepts(&t, "a"), "a");
-        assert!(accepts(&t, "z"), "z");
-        assert!(!accepts(&t, "A"), "A case-sensitive");
-        assert!(!accepts(&t, "ſ"), "ſ case-sensitive");
-    }
-
-    fn make_char_charset(c: char) -> CharSet {
-        use crate::vm::CharSetItem;
-        let mut cs = CharSet {
-            negate: false,
-            items: vec![CharSetItem::Char(c)],
-            intersections: vec![],
-            ascii_ranges: None,
-        };
-        cs.compute_ascii_ranges();
-        cs
-    }
-
-    /// `/(?i)[ß]/` must match `ss`, `Ss`, `SS`, `ẞ`, and `ß` itself.
+    /// A charset containing only ß must have the multi-fold sequences in its trie.
     #[test]
     fn charset_trie_sharp_s_multi_fold() {
-        let cs = make_char_charset('ß');
-        let t = charset_to_bytetrie(&cs, true, false);
-        assert!(accepts(&t, "ß"), "ß itself");
-        assert!(accepts(&t, "ẞ"), "ẞ U+1E9E (capital sharp s)");
+        let cs = make_ranges_charset(vec![('ß', 'ß')]);
+        let t = charset_to_bytetrie(&cs, true);
+        // ß and ẞ are inserted by enumerate_inputs(['s','s'])
+        assert!(accepts(&t, "ß"), "ß itself (via enumerate_inputs)");
+        assert!(accepts(&t, "ẞ"), "ẞ U+1E9E (via enumerate_inputs)");
         assert!(accepts(&t, "ss"), "ss");
         assert!(accepts(&t, "sS"), "sS");
         assert!(accepts(&t, "Ss"), "Ss");
         assert!(accepts(&t, "SS"), "SS");
-        assert!(accepts(&t, "ſs"), "ſs (long s + s)");
-        assert!(accepts(&t, "ſS"), "ſS");
-        // Single 's'/'S' are NOT fold-equivalent to ß
-        assert!(!accepts(&t, "s"), "single s");
-        assert!(!accepts(&t, "S"), "single S");
+        // Single 's'/'S' are not fold-sequences of ß — only multi-char "ss"
+        assert!(!accepts(&t, "s"), "single s not a multi-char fold");
+        assert!(!accepts(&t, "S"), "single S not a multi-char fold");
     }
 
-    /// `/(?i)[ẞ]/` (capital sharp s) must also match `ss` and `ß`.
+    /// Capital sharp S (ẞ) has the same multi-fold as ß.
     #[test]
     fn charset_trie_capital_sharp_s_multi_fold() {
-        let cs = make_char_charset('\u{1E9E}');
-        let t = charset_to_bytetrie(&cs, true, false);
-        assert!(accepts(&t, "ẞ"), "ẞ itself");
-        assert!(accepts(&t, "ß"), "ß (same fold class)");
+        let cs = make_ranges_charset(vec![('\u{1E9E}', '\u{1E9E}')]);
+        let t = charset_to_bytetrie(&cs, true);
+        assert!(accepts(&t, "ẞ"), "ẞ itself (via enumerate_inputs)");
+        assert!(accepts(&t, "ß"), "ß (same fold class, via enumerate_inputs)");
         assert!(accepts(&t, "ss"), "ss");
         assert!(accepts(&t, "SS"), "SS");
         assert!(!accepts(&t, "s"), "single s");
     }
 
-    /// A range that includes ß must also accept multi-fold sequences.
+    /// A range that includes ß must include its multi-fold sequences.
     #[test]
     fn charset_trie_range_includes_sharp_s() {
-        // Range ß..=à (U+00DF..=U+00E0): both bounds are fixed-points for
-        // simple_fold, so lo_f=ß, hi_f=à. ß is in the folded range and has
-        // a multi-char fold "ss" → the trie must also accept "ss" variants.
-        let cs = make_range_charset('\u{00DF}', '\u{00E0}');
-        let t = charset_to_bytetrie(&cs, true, false);
-        assert!(accepts(&t, "ß"), "ß in range");
+        // Range ß..=à (U+00DF..=U+00E0)
+        let cs = make_ranges_charset(vec![('\u{00DF}', '\u{00E0}')]);
+        let t = charset_to_bytetrie(&cs, true);
+        assert!(accepts(&t, "ß"), "ß via enumerate_inputs");
         assert!(accepts(&t, "ss"), "ss via ß multi-fold");
         assert!(accepts(&t, "SS"), "SS via ß multi-fold");
-        // à is also in the range (simple_fold(à)=à)
-        assert!(accepts(&t, "à"), "à in range");
-        // À folds to à → also in trie
-        assert!(accepts(&t, "À"), "À simple-folds to à");
+        // à (U+00E0) has no multi-char fold → not in ByteTrie
+        assert!(!accepts(&t, "à"), "à is a single char, not in ByteTrie");
+        assert!(!accepts(&t, "À"), "À is a single char, not in ByteTrie");
+    }
+
+    /// A charset with no multi-char fold codepoints produces an empty ByteTrie.
+    #[test]
+    fn charset_trie_az_no_multi_fold() {
+        let cs = make_ranges_charset(vec![('a', 'z')]);
+        let t = charset_to_bytetrie(&cs, true);
+        // No chars in [a-z] have multi-char folds → trie is empty
+        assert!(!accepts(&t, "a"), "a not in multi-fold trie");
+        assert!(!accepts(&t, "A"), "A not in multi-fold trie");
+        assert!(!accepts(&t, "ſ"), "ſ not in multi-fold trie");
     }
 }

@@ -43,7 +43,7 @@ use cranelift_codegen::ir::{FuncRef, Value, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{FuncId, Linkage, Module};
 
-use crate::ast::{AnchorKind, Shorthand};
+use crate::ast::AnchorKind;
 use crate::vm::{CharSet, Inst};
 
 // ---------------------------------------------------------------------------
@@ -225,20 +225,12 @@ fn emit_function(
         [types::I64, types::I64, types::I32] => [types::I64]);
     let h_match_class = decl_helper!(module, builder, "jit_match_class",
         [types::I64, types::I64, types::I32, types::I32] => [types::I64]);
-    let h_match_shorthand = decl_helper!(module, builder, "jit_match_shorthand",
-        [types::I64, types::I64, types::I32, types::I32] => [types::I64]);
-    let h_match_prop = decl_helper!(module, builder, "jit_match_prop",
-        [types::I64, types::I64, types::I64, types::I64, types::I32] => [types::I64]);
     let h_match_char_back = decl_helper!(module, builder, "jit_match_char_back",
         [types::I64, types::I64, types::I32, types::I32] => [types::I64]);
     let h_match_any_char_back = decl_helper!(module, builder, "jit_match_any_char_back",
         [types::I64, types::I64, types::I32] => [types::I64]);
     let h_match_class_back = decl_helper!(module, builder, "jit_match_class_back",
         [types::I64, types::I64, types::I32, types::I32] => [types::I64]);
-    let h_match_shorthand_back = decl_helper!(module, builder, "jit_match_shorthand_back",
-        [types::I64, types::I64, types::I32, types::I32] => [types::I64]);
-    let h_match_prop_back = decl_helper!(module, builder, "jit_match_prop_back",
-        [types::I64, types::I64, types::I64, types::I64, types::I32] => [types::I64]);
     let h_check_anchor = decl_helper!(module, builder, "jit_check_anchor",
         [types::I64, types::I64, types::I32, types::I32] => [types::I32]);
     let _h_save = decl_helper!(module, builder, "jit_save",
@@ -378,34 +370,6 @@ fn emit_function(
                     emit_match_call!(call, pc + 1);
                 }
             }
-            Inst::Shorthand(sh, ar) => {
-                let ctx_v = builder.use_var(var_ctx);
-                let pos_v = builder.use_var(var_pos);
-                inline_shorthand_fwd(
-                    builder,
-                    &inst_blocks,
-                    bt_resume_block,
-                    h_match_shorthand,
-                    var_pos,
-                    var_ctx,
-                    ctx_v,
-                    pos_v,
-                    pc,
-                    *sh,
-                    *ar,
-                );
-            }
-            Inst::Prop(name, neg) => {
-                let ctx_v = builder.use_var(var_ctx);
-                let pos_v = builder.use_var(var_pos);
-                let (ptr, len) = string_const(builder, name);
-                let neg_v = builder.ins().iconst(types::I32, *neg as i64);
-                let call = builder
-                    .ins()
-                    .call(h_match_prop, &[ctx_v, pos_v, ptr, len, neg_v]);
-                emit_match_call!(call, pc + 1);
-            }
-
             // ----------------------------------------------------------------
             // Backward character matching (lookbehind) — helper calls
             // ----------------------------------------------------------------
@@ -455,30 +419,6 @@ fn emit_function(
                     emit_match_call!(call, pc + 1);
                 }
             }
-            Inst::ShorthandBack(sh, ar) => {
-                inline_shorthand_back(
-                    builder,
-                    &inst_blocks,
-                    bt_resume_block,
-                    h_match_shorthand_back,
-                    var_pos,
-                    var_ctx,
-                    pc,
-                    *sh,
-                    *ar,
-                );
-            }
-            Inst::PropBack(name, neg) => {
-                let ctx_v = builder.use_var(var_ctx);
-                let pos_v = builder.use_var(var_pos);
-                let (ptr, len) = string_const(builder, name);
-                let neg_v = builder.ins().iconst(types::I32, *neg as i64);
-                let call = builder
-                    .ins()
-                    .call(h_match_prop_back, &[ctx_v, pos_v, ptr, len, neg_v]);
-                emit_match_call!(call, pc + 1);
-            }
-
             // ----------------------------------------------------------------
             // Anchor — inline for StringStart/StringEnd; helper for others
             // ----------------------------------------------------------------
@@ -1237,310 +1177,32 @@ fn utf8_char_len(builder: &mut FunctionBuilder<'_>, b0: Value) -> Value {
     builder.ins().select(lt_80, v1, s234)
 }
 
-/// Inline forward shorthand match.
-///
-/// ASCII bytes: evaluated with inline range checks.
-/// Non-ASCII bytes (when `ar=false`): fall back to the `jit_match_shorthand` helper.
-/// Creates 2 sub-blocks (read_block + ascii_check_block) plus optionally a
-/// unicode_block for the non-ASCII fallback path.
-#[allow(clippy::too_many_arguments)]
-fn inline_shorthand_fwd(
-    builder: &mut FunctionBuilder<'_>,
-    inst_blocks: &[Block],
-    bt_resume: Block,
-    h_shorthand: FuncRef,
-    var_pos: Variable,
-    var_ctx: Variable,
-    ctx_v: Value,
-    pos_v: Value,
-    pc: usize,
-    sh: Shorthand,
-    ar: bool,
-) {
-    // --- bounds check ---
-    let text_len = builder
-        .ins()
-        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_LEN);
-    let in_bounds = builder.ins().icmp(IntCC::UnsignedLessThan, pos_v, text_len);
-    let read_block = builder.create_block();
-    builder
-        .ins()
-        .brif(in_bounds, read_block, &[], bt_resume, &[]);
-
-    // --- read_block: load byte, branch ASCII vs non-ASCII ---
-    builder.switch_to_block(read_block);
-    let ctx_v = builder.use_var(var_ctx);
-    let pos_v = builder.use_var(var_pos);
-    let text_ptr = builder
-        .ins()
-        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_PTR);
-    let byte_ptr = builder.ins().iadd(text_ptr, pos_v);
-    let byte = builder
-        .ins()
-        .uload8(types::I32, MemFlags::trusted(), byte_ptr, 0);
-
-    let ascii_check_block = builder.create_block();
-
-    if ar {
-        // ASCII-only mode: non-ASCII bytes simply don't match.
-        let c80 = builder.ins().iconst(types::I32, 0x80);
-        let is_ascii = builder.ins().icmp(IntCC::UnsignedLessThan, byte, c80);
-        builder
-            .ins()
-            .brif(is_ascii, ascii_check_block, &[], bt_resume, &[]);
-    } else {
-        // Unicode mode: non-ASCII → call helper for correctness.
-        let unicode_block = builder.create_block();
-        let c80 = builder.ins().iconst(types::I32, 0x80);
-        let is_ascii = builder.ins().icmp(IntCC::UnsignedLessThan, byte, c80);
-        builder
-            .ins()
-            .brif(is_ascii, ascii_check_block, &[], unicode_block, &[]);
-
-        // unicode_block: call jit_match_shorthand
-        builder.switch_to_block(unicode_block);
-        let ctx_v = builder.use_var(var_ctx);
-        let pos_v = builder.use_var(var_pos);
-        let sh_code = builder.ins().iconst(types::I32, shorthand_code(sh) as i64);
-        let ar_v = builder.ins().iconst(types::I32, ar as i64);
-        let call = builder
-            .ins()
-            .call(h_shorthand, &[ctx_v, pos_v, sh_code, ar_v]);
-        let result = builder.inst_results(call)[0];
-        let neg1 = builder.ins().iconst(types::I64, -1_i64);
-        let is_fail = builder.ins().icmp(IntCC::Equal, result, neg1);
-        builder.def_var(var_pos, result);
-        builder
-            .ins()
-            .brif(is_fail, bt_resume, &[], inst_blocks[pc + 1], &[]);
-    }
-
-    // --- ascii_check_block: inline range test, advance pos by 1 ---
-    builder.switch_to_block(ascii_check_block);
-    let pos_v = builder.use_var(var_pos);
-    let ctx_v = builder.use_var(var_ctx);
-    let text_ptr = builder
-        .ins()
-        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_PTR);
-    let byte_ptr = builder.ins().iadd(text_ptr, pos_v);
-    let byte = builder
-        .ins()
-        .uload8(types::I32, MemFlags::trusted(), byte_ptr, 0);
-
-    let ok = shorthand_ascii_check(builder, sh, byte);
-    let new_pos = builder.ins().iadd_imm(pos_v, 1);
-    builder.def_var(var_pos, new_pos);
-    builder
-        .ins()
-        .brif(ok, inst_blocks[pc + 1], &[], bt_resume, &[]);
-}
-
-/// Inline backward shorthand match — mirrors `inline_shorthand_fwd` but reads
-/// the byte at `pos - 1` and advances backward.
-#[allow(clippy::too_many_arguments)]
-fn inline_shorthand_back(
-    builder: &mut FunctionBuilder<'_>,
-    inst_blocks: &[Block],
-    bt_resume: Block,
-    h_shorthand_back: FuncRef,
-    var_pos: Variable,
-    var_ctx: Variable,
-    pc: usize,
-    sh: Shorthand,
-    ar: bool,
-) {
-    // --- pos > 0 check ---
-    let pos_v = builder.use_var(var_pos);
-    let zero = builder.ins().iconst(types::I64, 0);
-    let not_at_start = builder.ins().icmp(IntCC::UnsignedGreaterThan, pos_v, zero);
-    let read_block = builder.create_block();
-    builder
-        .ins()
-        .brif(not_at_start, read_block, &[], bt_resume, &[]);
-
-    // --- read_block: load byte at pos-1, ASCII / non-ASCII branch ---
-    builder.switch_to_block(read_block);
-    let ctx_v = builder.use_var(var_ctx);
-    let pos_v = builder.use_var(var_pos);
-    let text_ptr = builder
-        .ins()
-        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_PTR);
-    let prev_idx = builder.ins().iadd_imm(pos_v, -1_i64);
-    let byte_ptr = builder.ins().iadd(text_ptr, prev_idx);
-    let byte = builder
-        .ins()
-        .uload8(types::I32, MemFlags::trusted(), byte_ptr, 0);
-
-    let ascii_check_block = builder.create_block();
-
-    if ar {
-        let c80 = builder.ins().iconst(types::I32, 0x80);
-        let is_ascii = builder.ins().icmp(IntCC::UnsignedLessThan, byte, c80);
-        builder
-            .ins()
-            .brif(is_ascii, ascii_check_block, &[], bt_resume, &[]);
-    } else {
-        let unicode_block = builder.create_block();
-        let c80 = builder.ins().iconst(types::I32, 0x80);
-        let is_ascii = builder.ins().icmp(IntCC::UnsignedLessThan, byte, c80);
-        builder
-            .ins()
-            .brif(is_ascii, ascii_check_block, &[], unicode_block, &[]);
-
-        // unicode_block: call jit_match_shorthand_back
-        builder.switch_to_block(unicode_block);
-        let ctx_v = builder.use_var(var_ctx);
-        let pos_v = builder.use_var(var_pos);
-        let sh_code = builder.ins().iconst(types::I32, shorthand_code(sh) as i64);
-        let ar_v = builder.ins().iconst(types::I32, ar as i64);
-        let call = builder
-            .ins()
-            .call(h_shorthand_back, &[ctx_v, pos_v, sh_code, ar_v]);
-        let result = builder.inst_results(call)[0];
-        let neg1 = builder.ins().iconst(types::I64, -1_i64);
-        let is_fail = builder.ins().icmp(IntCC::Equal, result, neg1);
-        builder.def_var(var_pos, result);
-        builder
-            .ins()
-            .brif(is_fail, bt_resume, &[], inst_blocks[pc + 1], &[]);
-    }
-
-    // --- ascii_check_block: inline range test, advance pos by -1 ---
-    builder.switch_to_block(ascii_check_block);
-    let pos_v = builder.use_var(var_pos);
-    let ctx_v = builder.use_var(var_ctx);
-    let text_ptr = builder
-        .ins()
-        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_PTR);
-    let prev_idx = builder.ins().iadd_imm(pos_v, -1_i64);
-    let byte_ptr = builder.ins().iadd(text_ptr, prev_idx);
-    let byte = builder
-        .ins()
-        .uload8(types::I32, MemFlags::trusted(), byte_ptr, 0);
-
-    let ok = shorthand_ascii_check(builder, sh, byte);
-    let new_pos = builder.ins().iadd_imm(pos_v, -1_i64);
-    builder.def_var(var_pos, new_pos);
-    builder
-        .ins()
-        .brif(ok, inst_blocks[pc + 1], &[], bt_resume, &[]);
-}
-
-/// Emit an inline ASCII range check for a shorthand class.
-/// `byte` is an I32 (zero-extended u8).  Returns an I8 boolean value.
-fn shorthand_ascii_check(builder: &mut FunctionBuilder<'_>, sh: Shorthand, byte: Value) -> Value {
-    // Build constants up-front to avoid double-borrow in arg position.
-    macro_rules! range_check {
-        ($lo:expr, $span:expr) => {{
-            let lo_v = builder.ins().iconst(types::I32, $lo as i64);
-            let adj = builder.ins().isub(byte, lo_v);
-            let sp_v = builder.ins().iconst(types::I32, $span as i64);
-            builder
-                .ins()
-                .icmp(IntCC::UnsignedLessThanOrEqual, adj, sp_v)
-        }};
-    }
-    macro_rules! eq_check {
-        ($ch:expr) => {{
-            let cv = builder.ins().iconst(types::I32, $ch as i64);
-            builder.ins().icmp(IntCC::Equal, byte, cv)
-        }};
-    }
-    macro_rules! bool_not {
-        ($a:expr) => {{
-            let val = $a; // evaluate fully before any new borrow
-            let zero = builder.ins().iconst(types::I8, 0);
-            builder.ins().icmp(IntCC::Equal, val, zero)
-        }};
-    }
-
-    match sh {
-        Shorthand::Digit => range_check!(b'0', 9u8),
-        Shorthand::NonDigit => bool_not!(range_check!(b'0', 9u8)),
-        Shorthand::Word => {
-            let lo = range_check!(b'a', 25u8);
-            let up = range_check!(b'A', 25u8);
-            let di = range_check!(b'0', 9u8);
-            let us = eq_check!(b'_');
-            let t1 = builder.ins().bor(lo, up);
-            let t2 = builder.ins().bor(t1, di);
-            builder.ins().bor(t2, us)
-        }
-        Shorthand::NonWord => {
-            let lo = range_check!(b'a', 25u8);
-            let up = range_check!(b'A', 25u8);
-            let di = range_check!(b'0', 9u8);
-            let us = eq_check!(b'_');
-            let t1 = builder.ins().bor(lo, up);
-            let t2 = builder.ins().bor(t1, di);
-            let w = builder.ins().bor(t2, us);
-            bool_not!(w)
-        }
-        Shorthand::Space => {
-            // '\t'=9 .. '\r'=13  plus ' '=32
-            let ctrl = range_check!(b'\t', 4u8);
-            let sp = eq_check!(b' ');
-            builder.ins().bor(ctrl, sp)
-        }
-        Shorthand::NonSpace => {
-            let ctrl = range_check!(b'\t', 4u8);
-            let sp = eq_check!(b' ');
-            let s = builder.ins().bor(ctrl, sp);
-            bool_not!(s)
-        }
-        Shorthand::HexDigit => {
-            let di = range_check!(b'0', 9u8);
-            let up = range_check!(b'A', 5u8);
-            let lo = range_check!(b'a', 5u8);
-            let t1 = builder.ins().bor(di, up);
-            builder.ins().bor(t1, lo)
-        }
-        Shorthand::NonHexDigit => {
-            let di = range_check!(b'0', 9u8);
-            let up = range_check!(b'A', 5u8);
-            let lo = range_check!(b'a', 5u8);
-            let t1 = builder.ins().bor(di, up);
-            let h = builder.ins().bor(t1, lo);
-            bool_not!(h)
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
-// CharClass inlining helpers — precomputed ascii_ranges based
+// CharClass inlining helpers — inversion list based
 // ---------------------------------------------------------------------------
 
 /// Returns `true` when no non-ASCII char can ever match `cs`
 /// (so non-ASCII bytes can be rejected inline without calling the helper).
 fn is_ascii_only_charset(cs: &CharSet) -> bool {
-    use crate::ast::PosixClass;
-    use crate::vm::CharSetItem;
     if cs.negate {
         return false; // negation of ASCII-only items matches all non-ASCII chars
     }
-    cs.intersections.iter().all(is_ascii_only_charset)
-        && cs.items.iter().all(|item| match item {
-            CharSetItem::Char(c) => c.is_ascii(),
-            CharSetItem::Range(lo, hi) => lo.is_ascii() && hi.is_ascii(),
-            CharSetItem::Shorthand(sh, ar) => {
-                matches!(
-                    sh,
-                    Shorthand::Digit | Shorthand::Space | Shorthand::HexDigit
-                ) || (matches!(sh, Shorthand::Word) && *ar)
+    cs.ranges.iter().all(|&(_, hi)| (hi as u32) < 128)
+}
+
+/// Extract ASCII sub-ranges from a `CharSet`'s inversion list.
+fn charset_ascii_ranges(cs: &CharSet) -> Vec<(u8, u8)> {
+    cs.ranges
+        .iter()
+        .filter_map(|&(lo, hi)| {
+            let lo_u = lo as u32;
+            if lo_u >= 128 {
+                return None;
             }
-            CharSetItem::Posix(cls, false) => matches!(
-                cls,
-                PosixClass::Digit
-                    | PosixClass::Space
-                    | PosixClass::Blank
-                    | PosixClass::XDigit
-                    | PosixClass::Ascii
-                    | PosixClass::Cntrl
-                    | PosixClass::Punct
-            ),
-            CharSetItem::Nested(inner) => is_ascii_only_charset(inner),
-            _ => false,
+            let hi_u = (hi as u32).min(127) as u8;
+            Some((lo_u as u8, hi_u))
         })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1607,10 +1269,8 @@ fn inline_charclass_fwd(
     cs: &CharSet,
     idx: usize,
 ) {
-    let ascii_ranges = cs
-        .ascii_ranges
-        .as_deref()
-        .expect("ascii_ranges must be precomputed");
+    let ascii_ranges = charset_ascii_ranges(cs);
+    let ascii_ranges = ascii_ranges.as_slice();
 
     // --- bounds check ---
     let text_len = builder
@@ -1670,7 +1330,14 @@ fn inline_charclass_fwd(
     builder.switch_to_block(ascii_check_block);
     let byte_p = builder.block_params(ascii_check_block)[0];
     let pos_v = builder.use_var(var_pos);
-    let ok = emit_ascii_ranges_check(builder, ascii_ranges, byte_p);
+    let raw_ok = emit_ascii_ranges_check(builder, ascii_ranges, byte_p);
+    // For negated charsets the ASCII match is: byte is NOT in ascii_ranges.
+    let ok = if cs.negate {
+        let one = builder.ins().iconst(types::I8, 1);
+        builder.ins().bxor(raw_ok, one)
+    } else {
+        raw_ok
+    };
     let new_pos = builder.ins().iadd_imm(pos_v, 1);
     builder.def_var(var_pos, new_pos);
     builder
@@ -1696,10 +1363,8 @@ fn inline_charclass_back(
     cs: &CharSet,
     idx: usize,
 ) {
-    let ascii_ranges = cs
-        .ascii_ranges
-        .as_deref()
-        .expect("ascii_ranges must be precomputed");
+    let ascii_ranges = charset_ascii_ranges(cs);
+    let ascii_ranges = ascii_ranges.as_slice();
 
     // --- pos > 0 check ---
     let zero = builder.ins().iconst(types::I64, 0);
@@ -1758,7 +1423,14 @@ fn inline_charclass_back(
     builder.switch_to_block(ascii_check_block);
     let byte_p = builder.block_params(ascii_check_block)[0];
     let pos_v = builder.use_var(var_pos);
-    let ok = emit_ascii_ranges_check(builder, ascii_ranges, byte_p);
+    let raw_ok = emit_ascii_ranges_check(builder, ascii_ranges, byte_p);
+    // For negated charsets the ASCII match is: byte is NOT in ascii_ranges.
+    let ok = if cs.negate {
+        let one = builder.ins().iconst(types::I8, 1);
+        builder.ins().bxor(raw_ok, one)
+    } else {
+        raw_ok
+    };
     let new_pos = builder.ins().iadd_imm(pos_v, -1_i64);
     builder.def_var(var_pos, new_pos);
     builder
@@ -2087,21 +1759,8 @@ fn inline_fork(
 }
 
 // ---------------------------------------------------------------------------
-// Codec helpers (original section, renamed)
+// Codec helpers
 // ---------------------------------------------------------------------------
-
-fn shorthand_code(sh: Shorthand) -> u32 {
-    match sh {
-        Shorthand::Word => 0,
-        Shorthand::NonWord => 1,
-        Shorthand::Digit => 2,
-        Shorthand::NonDigit => 3,
-        Shorthand::Space => 4,
-        Shorthand::NonSpace => 5,
-        Shorthand::HexDigit => 6,
-        Shorthand::NonHexDigit => 7,
-    }
-}
 
 fn anchor_code(k: AnchorKind) -> u32 {
     match k {
