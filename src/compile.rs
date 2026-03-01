@@ -159,9 +159,9 @@ impl Compiler {
                         self.emit(Inst::FoldSeq(folded));
                     }
                 } else if backward {
-                    self.emit(Inst::CharBack(*c, false));
+                    self.emit(Inst::CharBack(*c));
                 } else {
-                    self.emit(Inst::Char(*c, false));
+                    self.emit(Inst::Char(*c));
                 }
             }
 
@@ -1171,7 +1171,7 @@ fn first_literal_of_node(node: &Node, ic: bool) -> Option<char> {
 fn fork_guard_char(prog: &[Inst], mut pc: usize) -> Option<char> {
     loop {
         match prog.get(pc)? {
-            Inst::Char(c, false) => return Some(*c),
+            Inst::Char(c) => return Some(*c),
             // Zero-width; keep looking
             Inst::Save(_) | Inst::KeepStart | Inst::NullCheckStart(_) => pc += 1,
             _ => return None,
@@ -1187,7 +1187,7 @@ fn promote_to_char_fast(prog: &mut [Inst], mut pc: usize, gc: char) {
     loop {
         match prog.get(pc) {
             Some(Inst::Save(_) | Inst::KeepStart | Inst::NullCheckStart(_)) => pc += 1,
-            Some(Inst::Char(c, false)) if *c == gc => {
+            Some(Inst::Char(c)) if *c == gc => {
                 prog[pc] = Inst::CharFast(gc);
                 return;
             }

@@ -10,7 +10,6 @@
 
 use crate::ast::{AnchorKind, Flags};
 use crate::bytetrie::ByteTrie;
-use crate::casefold::case_fold;
 use crate::vm::{
     BtJit, CharSet, JitExecCtx, bt_pop, bt_push, exec_lookaround_for_jit, fold_advance,
     fold_retreat,
@@ -53,14 +52,6 @@ fn char_before(text: &str, pos: usize) -> Option<(char, usize)> {
     Some((c, pos - start))
 }
 
-#[inline]
-fn chars_eq_ci(a: char, b: char) -> bool {
-    if a == b {
-        return true;
-    }
-    case_fold(a).chars() == case_fold(b).chars()
-}
-
 /// Push a `BtJit::Retry` entry.  Slots are **not** snapshotted here; instead
 /// each `Save` instruction pushes a `SaveUndo` entry before modifying a slot,
 /// so backtracking naturally reverses every slot write since the last fork.
@@ -82,16 +73,13 @@ pub unsafe extern "C" fn jit_match_char(
     ctx: *const JitExecCtx,
     pos: u64,
     ch: u32,
-    ignore_case: u32,
 ) -> i64 {
     unsafe {
         let ctx = &*ctx;
         let text = text_from_ctx(ctx);
         let ch = char::from_u32(ch).unwrap_or('\0');
-        let ic = ignore_case != 0;
         match char_at(text, pos as usize) {
-            Some((c, len)) if ic && chars_eq_ci(ch, c) => (pos as usize + len) as i64,
-            Some((c, len)) if !ic && ch == c => (pos as usize + len) as i64,
+            Some((c, len)) if ch == c => (pos as usize + len) as i64,
             _ => -1,
         }
     }
@@ -170,16 +158,13 @@ pub unsafe extern "C" fn jit_match_char_back(
     ctx: *const JitExecCtx,
     pos: u64,
     ch: u32,
-    ignore_case: u32,
 ) -> i64 {
     unsafe {
         let ctx = &*ctx;
         let text = text_from_ctx(ctx);
         let ch = char::from_u32(ch).unwrap_or('\0');
-        let ic = ignore_case != 0;
         match char_before(text, pos as usize) {
-            Some((c, len)) if ic && chars_eq_ci(ch, c) => (pos as usize - len) as i64,
-            Some((c, len)) if !ic && ch == c => (pos as usize - len) as i64,
+            Some((c, len)) if ch == c => (pos as usize - len) as i64,
             _ => -1,
         }
     }

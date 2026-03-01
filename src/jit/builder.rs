@@ -220,13 +220,13 @@ fn emit_function(
 
     // ---- declare helpers (all needed regardless of inlining) ----
     let h_match_char = decl_helper!(module, builder, "jit_match_char",
-        [types::I64, types::I64, types::I32, types::I32] => [types::I64]);
+        [types::I64, types::I64, types::I32] => [types::I64]);
     let _h_match_any_char = decl_helper!(module, builder, "jit_match_any_char",
         [types::I64, types::I64, types::I32] => [types::I64]);
     let h_match_class = decl_helper!(module, builder, "jit_match_class",
         [types::I64, types::I64, types::I32, types::I32] => [types::I64]);
     let h_match_char_back = decl_helper!(module, builder, "jit_match_char_back",
-        [types::I64, types::I64, types::I32, types::I32] => [types::I64]);
+        [types::I64, types::I64, types::I32] => [types::I64]);
     let h_match_any_char_back = decl_helper!(module, builder, "jit_match_any_char_back",
         [types::I64, types::I64, types::I32] => [types::I64]);
     let h_match_class_back = decl_helper!(module, builder, "jit_match_class_back",
@@ -307,7 +307,7 @@ fn emit_function(
             // ----------------------------------------------------------------
             // Forward character matching — INLINED for ASCII / common cases
             // ----------------------------------------------------------------
-            Inst::Char(ch, false) if ch.is_ascii() => {
+            Inst::Char(ch) if ch.is_ascii() => {
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
                 inline_char_fwd(
@@ -322,12 +322,11 @@ fn emit_function(
                     *ch as u8,
                 );
             }
-            Inst::Char(ch, ic) => {
+            Inst::Char(ch) => {
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
                 let c = builder.ins().iconst(types::I32, *ch as i64);
-                let ic_v = builder.ins().iconst(types::I32, *ic as i64);
-                let call = builder.ins().call(h_match_char, &[ctx_v, pos_v, c, ic_v]);
+                let call = builder.ins().call(h_match_char, &[ctx_v, pos_v, c]);
                 emit_match_call!(call, pc + 1);
             }
             Inst::AnyChar(dotall) => {
@@ -373,14 +372,13 @@ fn emit_function(
             // ----------------------------------------------------------------
             // Backward character matching (lookbehind) — helper calls
             // ----------------------------------------------------------------
-            Inst::CharBack(ch, ic) => {
+            Inst::CharBack(ch) => {
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
                 let c = builder.ins().iconst(types::I32, *ch as i64);
-                let ic_v = builder.ins().iconst(types::I32, *ic as i64);
                 let call = builder
                     .ins()
-                    .call(h_match_char_back, &[ctx_v, pos_v, c, ic_v]);
+                    .call(h_match_char_back, &[ctx_v, pos_v, c]);
                 emit_match_call!(call, pc + 1);
             }
             Inst::AnyCharBack(dotall) => {

@@ -55,13 +55,6 @@ impl CharSet {
     }
 }
 
-fn chars_eq_ci(a: char, b: char) -> bool {
-    if a == b {
-        return true;
-    }
-    case_fold(a).chars() == case_fold(b).chars()
-}
-
 // ---------------------------------------------------------------------------
 // Instructions
 // ---------------------------------------------------------------------------
@@ -71,8 +64,8 @@ pub enum Inst {
     /// Successful match
     Match,
 
-    /// Match a single character (optionally case-insensitive)
-    Char(char, bool),
+    /// Match a single character (exact match only; case-insensitive literals use FoldSeq)
+    Char(char),
 
     /// `.` — match any character; bool = dotall (matches \n)
     AnyChar(bool),
@@ -81,7 +74,7 @@ pub enum Inst {
     Class(usize, bool),
 
     /// Match a single character ending at `pos`; decrement pos by char len.
-    CharBack(char, bool),
+    CharBack(char),
     /// `.` backward — match any char ending at `pos`; decrement pos.
     AnyCharBack(bool),
     /// Character class backward.
@@ -484,12 +477,8 @@ pub(crate) fn exec(
             // Terminators for sub-executions (lookaround / absence inner program)
             Inst::LookEnd | Inst::AbsenceEnd => return Some(pos),
 
-            Inst::Char(ch, ignore_case) => match ctx.char_at(pos) {
-                Some((c, len)) if *ignore_case && chars_eq_ci(*ch, c) => {
-                    pos += len;
-                    pc += 1;
-                }
-                Some((c, len)) if !ignore_case && *ch == c => {
+            Inst::Char(ch) => match ctx.char_at(pos) {
+                Some((c, len)) if *ch == c => {
                     pos += len;
                     pc += 1;
                 }
@@ -534,12 +523,8 @@ pub(crate) fn exec(
                 }
             }
 
-            Inst::CharBack(ch, ignore_case) => match ctx.char_before(pos) {
-                Some((c, len)) if *ignore_case && chars_eq_ci(*ch, c) => {
-                    pos -= len;
-                    pc += 1;
-                }
-                Some((c, len)) if !ignore_case && *ch == c => {
+            Inst::CharBack(ch) => match ctx.char_before(pos) {
+                Some((c, len)) if *ch == c => {
                     pos -= len;
                     pc += 1;
                 }
@@ -1169,7 +1154,7 @@ fn extract_literal_prefix(prog: &[Inst]) -> String {
         match &prog[pc] {
             Inst::Save(_) | Inst::KeepStart => pc += 1,
             Inst::Anchor(AnchorKind::StringStart, _) => pc += 1,
-            Inst::Char(c, false) | Inst::CharFast(c) => {
+            Inst::Char(c) | Inst::CharFast(c) => {
                 prefix.push(*c);
                 pc += 1;
             }
@@ -1206,7 +1191,7 @@ fn extract_one_literal(prog: &[Inst], start_pc: usize) -> Option<String> {
     while let Some(inst) = prog.get(pc) {
         match inst {
             Inst::Save(_) | Inst::KeepStart => pc += 1,
-            Inst::Char(c, false) | Inst::CharFast(c) => {
+            Inst::Char(c) | Inst::CharFast(c) => {
                 s.push(*c);
                 pc += 1;
             }
@@ -1277,11 +1262,7 @@ fn collect_first_chars(
         return Some(());
     }
     match prog.get(pc)? {
-        Inst::Char(c, false) | Inst::CharFast(c) => out.push(*c),
-        Inst::Char(c, true) => {
-            out.extend(c.to_lowercase());
-            out.extend(c.to_uppercase());
-        }
+        Inst::Char(c) | Inst::CharFast(c) => out.push(*c),
         Inst::FoldSeq(folded) if folded.len() == 1 => {
             // Cannot enumerate all Unicode codepoints whose single-char case fold
             // equals folded[0] (e.g. ſ, Kelvin sign K, …).  Return None so the
@@ -1360,7 +1341,7 @@ fn compute_required_char(prog: &[Inst]) -> Option<char> {
             break;
         }
         match &prog[pc] {
-            Inst::Char(c, false) | Inst::CharFast(c) => return Some(*c),
+            Inst::Char(c) | Inst::CharFast(c) => return Some(*c),
             // Zero-width instructions: keep walking backwards
             Inst::Save(_) | Inst::KeepStart | Inst::RetIfCalled => {}
             // Any other instruction (branch, charset, etc.) — stop
