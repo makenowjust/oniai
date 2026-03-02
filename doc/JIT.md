@@ -1,10 +1,10 @@
 # Oniai — JIT Compilation Design
 
 This document describes the design and implementation of the JIT (Just-In-Time)
-compilation layer in Oniai.  The JIT is an optional acceleration layer
-(enabled with `--features jit`) that compiles a `Vec<Inst>` VM program to
-native machine code at regex construction time, replacing the interpreter loop
-in `vm.rs` for eligible patterns.
+compilation layer in Oniai.  The JIT is enabled by default (disable with
+`--no-default-features`) and compiles a `Vec<Inst>` VM program to native machine
+code at regex construction time, replacing the interpreter loop in `vm.rs` for
+eligible patterns.
 
 ---
 
@@ -40,7 +40,7 @@ patterns that are JIT-eligible.
 | # | Goal |
 |---|------|
 | G1 | Transparent fallback: patterns that are not JIT-eligible fall back to the interpreter without any API change. |
-| G2 | Feature-flag isolation: the JIT backend is behind a `jit` Cargo feature; the library core remains dependency-free. |
+| G2 | Feature-flag isolation: the JIT backend is behind a `jit` Cargo feature (on by default; disable with `--no-default-features`); the library core remains dependency-free without it. |
 | G3 | Correct memoization: the same algorithms (5–7 of Fujinami & Hasuo 2024) are preserved in JIT-compiled code. |
 | G4 | All public API behaviour is identical between interpreter and JIT paths. |
 | G5 | x86-64 and AArch64 support (the two primary CI targets). |
@@ -83,12 +83,16 @@ Alternatives considered:
 
 ```toml
 [features]
-jit = ["dep:cranelift-jit", "dep:cranelift-codegen", "dep:cranelift-frontend"]
+default = ["jit"]
+jit = ["dep:cranelift-jit", "dep:cranelift-codegen", "dep:cranelift-frontend",
+       "dep:cranelift-module", "dep:cranelift-native"]
 
 [dependencies]
-cranelift-jit      = { version = "0.113", optional = true }
-cranelift-codegen  = { version = "0.113", optional = true }
-cranelift-frontend = { version = "0.113", optional = true }
+cranelift-jit      = { version = "0.119", optional = true }
+cranelift-codegen  = { version = "0.119", optional = true }
+cranelift-frontend = { version = "0.119", optional = true }
+cranelift-module   = { version = "0.119", optional = true }
+cranelift-native   = { version = "0.119", optional = true }
 ```
 
 ---
