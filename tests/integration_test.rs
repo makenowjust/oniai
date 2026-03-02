@@ -1148,3 +1148,47 @@ fn span_class_not_applied_when_overlap() {
     assert_match!(r"\A[a-z]+[a-zA-Z]\z", "abcD");
     assert_match!(r"\A[a-z]+[a-zA-Z]\z", "abcd"); // backtrack: [a-z]+ takes "abc", [a-zA-Z] takes 'd'
 }
+
+// ---------------------------------------------------------------------------
+// Lookbehind/lookahead start-strategy tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn lookbehind_start_strategy_basic() {
+    // (?<=\. )[A-Z]\w+ — AsciiClassStart should be used for [A-Z]
+    let re = Regex::new(r"(?<=\. )[A-Z]\w+").unwrap();
+    let text = "hello world. Foo bar. Baz end";
+    let matches: Vec<&str> = re.find_iter(text).map(|m| m.as_str()).collect();
+    assert_eq!(matches, vec!["Foo", "Baz"]);
+}
+
+#[test]
+fn lookbehind_start_strategy_negative() {
+    // (?<!#)[a-z]+ — negative lookbehind; still scans for [a-z] first
+    let re = Regex::new(r"(?<!#)[a-z]+").unwrap();
+    // "#abc" should not match "abc" (preceded by #), but "def" should match
+    let text = "#abc def";
+    let matches: Vec<&str> = re.find_iter(text).map(|m| m.as_str()).collect();
+    // "abc" is preceded by '#' — negative lookbehind fails
+    // "def" is preceded by ' ' — negative lookbehind succeeds
+    assert!(matches.contains(&"def"));
+    assert!(!matches.contains(&"abc"));
+}
+
+#[test]
+fn lookahead_start_strategy_basic() {
+    // (?=\d)\d+ — positive lookahead prefix; should scan for digits
+    let re = Regex::new(r"(?=\d)\d+").unwrap();
+    let text = "abc 123 def 456";
+    let matches: Vec<&str> = re.find_iter(text).map(|m| m.as_str()).collect();
+    assert_eq!(matches, vec!["123", "456"]);
+}
+
+#[test]
+fn lookbehind_start_strategy_char_first() {
+    // (?<=@)\w+ — FirstChars strategy for specific char after lookbehind
+    let re = Regex::new(r"(?<=@)\w+").unwrap();
+    let text = "user@example.com admin@test.org";
+    let matches: Vec<&str> = re.find_iter(text).map(|m| m.as_str()).collect();
+    assert_eq!(matches, vec!["example", "test"]);
+}

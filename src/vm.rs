@@ -1187,6 +1187,19 @@ enum StartStrategy {
     /// Pattern's first character must be one of these.
     /// Use `str::find(char)` per candidate and take the leftmost hit.
     FirstChars(Vec<char>),
+    /// Pattern's first real instruction is a case-sensitive `Class` whose
+    /// accepted bytes form a single contiguous ASCII range `[lo, hi]`
+    /// (e.g. `[0-9]` → `lo=0x30, hi=0x39`, `[A-Z]` → `lo=0x41, hi=0x5A`).
+    ///
+    /// Scan uses `b.wrapping_sub(lo) <= hi.wrapping_sub(lo)`, which is a
+    /// simple arithmetic predicate that LLVM auto-vectorizes to a SIMD range
+    /// check (typically PCMPGTB / PCMPEQB on x86-64).
+    ///
+    /// Only emitted when the charset is ASCII-only (`can_match_non_ascii == false`).
+    RangeStart {
+        lo: u8,
+        hi: u8,
+    },
     /// Pattern's first real instruction is a case-sensitive `Class`.
     /// Use the precomputed ASCII bitmap to skip positions that cannot start
     /// a match without invoking the full exec machinery.
@@ -1201,6 +1214,33 @@ enum StartStrategy {
     },
     /// No restriction; try every byte-aligned position.
     Anywhere,
+}
+
+/// If `ascii_bits` has exactly one contiguous run of set bits in [0, 127],
+/// return `(lo, hi)` where `lo..=hi` is that range.  Returns `None` for
+/// multi-range bitmaps (e.g. `[a-zA-Z]`).
+fn detect_ascii_range(bits: [u64; 2]) -> Option<(u8, u8)> {
+    // Find lowest set bit
+    let lo: u8 = if bits[0] != 0 {
+        bits[0].trailing_zeros() as u8
+    } else if bits[1] != 0 {
+        64 + bits[1].trailing_zeros() as u8
+    } else {
+        return None; // empty bitmap
+    };
+    // Find highest set bit
+    let hi: u8 = if bits[1] != 0 {
+        127 - bits[1].leading_zeros() as u8
+    } else {
+        63 - bits[0].leading_zeros() as u8
+    };
+    // Build expected bitmap for the range [lo, hi] and verify it matches.
+    // This check ensures there are no gaps in the range.
+    let mut expected = [0u64; 2];
+    for b in lo..=hi {
+        expected[(b >> 6) as usize] |= 1u64 << (b & 63);
+    }
+    if bits == expected { Some((lo, hi)) } else { None }
 }
 
 impl StartStrategy {
@@ -1241,10 +1281,18 @@ impl StartStrategy {
         }
 
         // AltTrie at the start: use the trie's strings as a LiteralSet.
-        // Skip over zero-width instructions to find the first real instruction.
+        // Skip over zero-width instructions (and lookaround prefixes) to find
+        // the first real instruction that determines valid match-start positions.
+        // Skipping LookStart blocks is safe: if the continuation's first char
+        // can't match at position P, neither can the whole pattern (regardless
+        // of what the lookaround checks).
         let mut pc = 0;
-        while pc < prog.len() && matches!(prog[pc], Inst::Save(_) | Inst::KeepStart) {
-            pc += 1;
+        loop {
+            match prog.get(pc) {
+                Some(Inst::Save(_) | Inst::KeepStart) => pc += 1,
+                Some(Inst::LookStart { end_pc, .. }) => pc = end_pc + 1,
+                _ => break,
+            }
         }
         if let Some(Inst::AltTrie(idx)) = prog.get(pc) {
             let lits = alt_tries[*idx].all_strings();
@@ -1273,8 +1321,12 @@ impl StartStrategy {
 
         // If the first real instruction is a case-sensitive Class, use its
         // precomputed ASCII bitmap to skip non-matching ASCII positions.
-        if let Some(Inst::Class(idx, false)) = prog.get(pc) {
-            let cs = &charsets[*idx];
+        let class_idx = match prog.get(pc) {
+            Some(Inst::Class(idx, false)) => Some(*idx),
+            _ => None,
+        };
+        if let Some(idx) = class_idx {
+            let cs = &charsets[idx];
             // Build an accept bitmap with negation already applied.
             let accept_bits = if cs.negate {
                 [!cs.ascii_bits[0], !cs.ascii_bits[1]]
@@ -1289,6 +1341,13 @@ impl StartStrategy {
             } else {
                 cs.ranges.last().is_some_and(|&(_, hi)| (hi as u32) >= 128)
             };
+            // Prefer RangeStart for ASCII-only contiguous ranges: the range
+            // check `b.wrapping_sub(lo) <= span` is a simple arithmetic
+            // predicate that LLVM auto-vectorizes to SIMD.
+            if !can_match_non_ascii
+                && let Some((lo, hi)) = detect_ascii_range(accept_bits) {
+                    return StartStrategy::RangeStart { lo, hi };
+                }
             return StartStrategy::AsciiClassStart {
                 ascii_bits: accept_bits,
                 can_match_non_ascii,
@@ -1453,6 +1512,11 @@ fn collect_first_chars(
         Inst::Jump(t) => collect_first_chars(prog, *t, out, visited)?,
         // Zero-width instructions: skip and analyse the next instruction
         Inst::Save(_) | Inst::KeepStart => collect_first_chars(prog, pc + 1, out, visited)?,
+        // Lookaround prefix: the continuation starts at end_pc+1; the
+        // lookaround body does not contribute to first-char selection.
+        Inst::LookStart { end_pc, .. } => {
+            collect_first_chars(prog, end_pc + 1, out, visited)?;
+        }
         Inst::Anchor(AnchorKind::StringStart, _) | Inst::Anchor(AnchorKind::Start, _) => {
             collect_first_chars(prog, pc + 1, out, visited)?;
         }
@@ -1920,6 +1984,25 @@ impl CompiledRegex {
                 }
             }
 
+            // Contiguous ASCII range [lo, hi]: scan using wrapping subtraction,
+            // which LLVM auto-vectorizes to a SIMD range check.
+            StartStrategy::RangeStart { lo, hi } => {
+                let bytes = text.as_bytes();
+                let lo = *lo;
+                let span = hi.wrapping_sub(lo);
+                let mut pos = start_pos;
+                loop {
+                    let candidate = bytes[pos..]
+                        .iter()
+                        .position(|&b| b.wrapping_sub(lo) <= span)
+                        .map(|o| pos + o)?;
+                    if let Some(result) = self.try_at(text, candidate, &mut memo, scratch) {
+                        return Some(result);
+                    }
+                    pos = candidate + 1;
+                }
+            }
+
             // Use the charset's precomputed ASCII bitmap to skip positions
             // that cannot start a match, without invoking the full exec.
             StartStrategy::AsciiClassStart {
@@ -2130,6 +2213,22 @@ impl CompiledRegex {
                     if pos > text.len() {
                         return None;
                     }
+                }
+            }
+            StartStrategy::RangeStart { lo, hi } => {
+                let bytes = text.as_bytes();
+                let lo = *lo;
+                let span = hi.wrapping_sub(lo);
+                let mut pos = start_pos;
+                loop {
+                    let candidate = bytes[pos..]
+                        .iter()
+                        .position(|&b| b.wrapping_sub(lo) <= span)
+                        .map(|o| pos + o)?;
+                    if let Some(r) = self.exec_interp(text, candidate, &mut memo) {
+                        return Some(r);
+                    }
+                    pos = candidate + 1;
                 }
             }
             StartStrategy::AsciiClassStart {

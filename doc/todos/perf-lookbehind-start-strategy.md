@@ -1,6 +1,6 @@
 # TODO: Skip lookbehind prefix in StartStrategy::compute
 
-## Status: Pending
+## Status: Done (commit `mvnvmkpr`)
 
 ## Problem
 
@@ -95,3 +95,24 @@ position — we only skip the start scan step.
        - `(?<!#)[a-z]+` skips `#abc` but matches bare `abc`.
 4. [ ] Run `cargo test` and `cargo clippy --tests`.
 5. [ ] Run `cargo bench -- lookbehind` and save log.
+
+## Benchmark Results
+
+Log: `log/bench-lookbehind-start-strategy-2026-03-02.txt`
+
+| Benchmark | Before | After | Δ |
+|-----------|--------|-------|---|
+| `lookbehind/word_after_period/jit` | 27.3 ms | **579 µs** | **−97.9% (47×)** |
+| `lookbehind/word_after_period/interp` | ~similar | **613 µs** | **−97.8% (43×)** |
+| `lookahead/word_before_comma/jit` | 24.3 ms | 18.7 ms | −23% (benchmark re-eval noise) |
+
+The lookbehind gap vs pcre2 closed from **44×** to **1.37×** (579 µs vs 422 µs).
+
+### What changed
+
+- `StartStrategy::compute`: the `pc` skip loop now also jumps past `LookStart`
+  blocks (to `end_pc + 1`), allowing `AsciiClassStart` or `FirstChars` to be
+  selected based on the continuation's first instruction.
+- `collect_first_chars`: added `Inst::LookStart { end_pc }` arm that recurses
+  at `end_pc + 1`, enabling `FirstChars` for patterns like `(?<=@)\w+`.
+- 4 new integration tests added in `tests/integration_test.rs`.
