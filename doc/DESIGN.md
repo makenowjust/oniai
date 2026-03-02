@@ -198,6 +198,8 @@ not yet known are patched in a second pass via `patch_jump` / `patch_no_jump`.
 | `Call(pc)` | Push `pc+1` onto call stack, jump to `pc` |
 | `Ret` | Pop call stack and jump to saved address |
 | `RetIfCalled` | If call stack non-empty: pop and jump; else fall through |
+| `RepeatInit { slot }` | Zero `counters[slot]` — begins a counter-based exact-repetition loop |
+| `RepeatNext { slot, count, body_pc }` | Increment `counters[slot]`; if `< count` jump to `body_pc`; else fall through |
 | `AtomicStart(end)` | Push `AtomicBarrier` fence; body runs inline (no sub-exec) |
 | `AtomicEnd` | Drain backtrack stack to nearest `AtomicBarrier` (commit) |
 | `LookStart { … }` | Execute lookaround body; see below |
@@ -211,8 +213,18 @@ not yet known are patched in a second pass via `patch_jump` / `patch_no_jump`.
 - `*`, `+`, `?` and `{n,m}` in greedy / lazy / possessive flavours.
 - Greedy repetition uses `Fork`; lazy uses `ForkNext`; possessive uses
   `AtomicStart`.
-- For `{n,m}`: the mandatory `n` copies are emitted inline; the optional
-  `m-n` copies use a chain of `Fork` instructions.
+- For `{n,m}`: the mandatory `n` copies are emitted inline for small `n`; the
+  optional `m-n` copies use a chain of `Fork` instructions.
+- **Counter-based loop** (`{n}` or `{n,m}` with `n ≥ 4`): instead of
+  duplicating the body `n` times (O(n·|body|) program size), the compiler
+  allocates a counter slot and emits:
+  ```
+  RepeatInit { slot }          ← zeroes counter[slot]
+  <body>                       ← body_pc
+  RepeatNext { slot, count: n, body_pc }  ← loop until counter reaches n
+  ```
+  Counter slots are a `Vec<u32>` local to `exec()` (not part of `State`), so
+  lookaround sub-executions always start with zeroed counters.
 
 ### Subexpression calls
 
@@ -278,22 +290,24 @@ State {
 }
 
 Ctx<'t> {
-    prog:         &[Inst],
-    charsets:     &[CharSet],
-    match_tries:  &[Option<ByteTrie>],  // parallel to prog; precomputed for FoldSeq/Class(ic=true)
-    text:         &str,
-    search_start: usize,              // for \G anchor
-    use_memo:     bool,               // false when pattern has BackRef/CheckGroup
+    prog:                &[Inst],
+    charsets:            &[CharSet],
+    match_tries:         &[Option<ByteTrie>],  // parallel to prog; precomputed for FoldSeq/Class(ic=true)
+    text:                &str,
+    search_start:        usize,               // for \G anchor
+    use_memo:            bool,                // false when pattern has BackRef/CheckGroup
+    num_repeat_counters: usize,               // number of counter slots for {n} loops
 }
 
 Bt (backtrack stack entry, one of):
-    Retry    { pc, pos, slots, keep_pos, call_stack }  // saved state to restore on failure
-    AtomicBarrier                                       // atomic group fence (see below)
-    MemoMark { fork_pc, fork_pos }                     // memoization sentinel (see below)
+    Retry    { pc, pos, slots, keep_pos, call_stack }       // saved state to restore on failure
+    AtomicBarrier                                            // atomic group fence (see below)
+    MemoMark { fork_pc, fork_pos, counters_snapshot }       // memoization sentinel (see below)
 
 MemoState {                           // shared across all exec() calls in one find()
-    fork_failures: HashMap<u64, usize>,    // (pc,pos) → min atomic_depth of known failure
-    look_results:  HashMap<u64, LookCacheEntry>,  // (lk_pc,pos) → cached lookaround outcome
+    fork_failures:         HashMap<u64, u8>,             // (pc,pos) → depth bitmask (no-counter fast path)
+    fork_failures_counted: HashMap<(u64,Vec<u32>), u8>,  // (pc,pos,counters) → depth bitmask (counter path)
+    look_results:          HashMap<u64, LookCacheEntry>, // (lk_pc,pos) → cached lookaround outcome
 }
 
 LookCacheEntry (one of):
@@ -310,15 +324,23 @@ for ordinary backtracking.  An explicit `bt: Vec<Bt>` stack drives backtracking.
 A local `atomic_depth: usize` counter tracks how many atomic-group barriers are
 currently live on the backtrack stack:
 
-- **`Fork(alt)`** — if `use_memo`: check `fork_failures` at `(pc, pos)`; if a
-  failure entry exists with `stored_depth ≤ atomic_depth`, invoke `fail!()`.
-  Otherwise push `Bt::MemoMark` then `Bt::Retry { pc: alt, … }`, advance to `pc+1`.
+- **`Fork(alt)`** — if `use_memo`:
+  - *No-counter path* (`num_repeat_counters == 0`): check `fork_failures` at
+    `memo_key(pc, pos)`; on a hit, invoke `fail!()`.  Push `Bt::MemoMark {
+    counters_snapshot: [] }` then `Bt::Retry`.
+  - *Counter path* (`num_repeat_counters > 0`): check `fork_failures_counted`
+    at `(memo_key(pc, pos), counters.clone())`; on a hit, invoke `fail!()`.
+    Push `Bt::MemoMark { counters_snapshot: counters.clone() }` then `Bt::Retry`.
+  - If `!use_memo`: push only `Bt::Retry`.
 - **`ForkNext(alt)`** — symmetric lazy version.
+- **`RepeatInit { slot }`** — set `counters[slot] = 0`, advance.
+- **`RepeatNext { slot, count, body_pc }`** — increment `counters[slot]`; if
+  `counters[slot] < count` jump to `body_pc`; else fall through.
 - **`fail!()`** macro — call `do_backtrack`, which pops the top `Bt` entry:
   - `Bt::Retry`: restore state, continue.
-  - `Bt::MemoMark { fork_pc, fork_pos }`: if `use_memo`, record
-    `(fork_pc, fork_pos) → min(stored, atomic_depth)` in `fork_failures`,
-    then continue popping.
+  - `Bt::MemoMark { fork_pc, fork_pos, counters_snapshot }`: if `use_memo`,
+    record the failure keyed by `counters_snapshot` (empty → `fork_failures`,
+    non-empty → `fork_failures_counted`), then continue popping.
   - `Bt::AtomicBarrier`: decrement `atomic_depth`, skip (transparent), continue
     popping.
   - Empty stack: return `None`.
@@ -335,13 +357,26 @@ A single `MemoState` is created in `find()` and shared across every `exec()`
 invocation — including lookaround sub-executions and different search start
 positions.  The state has two tables:
 
-##### Algorithm 5 — Fork-state failure memo (`fork_failures`)
+##### Algorithm 5 — Fork-state failure memo (`fork_failures` / `fork_failures_counted`)
 
 When both alternatives of a `Fork`/`ForkNext` at `(pc, pos)` are exhausted,
-the `(pc, pos)` pair is recorded in `fork_failures`.  Future visits
-short-circuit immediately, bounding Fork-state work to
-**O(|prog| × |text|)**.  This reduces `(a?)^n a^n` from O(2^n) to O(n²)
-(~2,600× faster at n=20 in practice).
+the state is recorded so future visits can short-circuit immediately, bounding
+Fork-state work to **O(|prog| × |text|)**.  This reduces `(a?)^n a^n` from
+O(2^n) to O(n²) (~2,600× faster at n=20 in practice).
+
+The key includes the repeat-counter state when the program has counter-based
+`{n}` loops (`num_repeat_counters > 0`), because the same `(pc, pos)` pair
+visited under different counter values can have different outcomes.  A
+**two-map design** avoids overhead for the common case:
+
+- **`fork_failures: HashMap<u64, u8>`** — used when `num_repeat_counters == 0`.
+  Plain `memo_key(pc, pos)` key; no `Vec` allocation anywhere on the fast path.
+- **`fork_failures_counted: HashMap<(u64, Vec<u32>), u8>`** — used when
+  `num_repeat_counters > 0`.  Key includes a snapshot of the counter vector.
+
+`counters` are a `Vec<u32>` **local to `exec()`** (not part of `State`), so
+lookaround sub-executions always start with fresh zeroed counters; `(lk_pc, pos)`
+remains a valid cache key for `look_results` regardless of the outer counter state.
 
 ##### Algorithm 7 — Depth-tagged failures (atomic groups)
 
@@ -350,7 +385,9 @@ environment where at least `j` atomic barriers are live."  Failures under more
 constraints cannot be reused in less-constrained contexts:
 
 - Failure at depth `j` is reused when current `atomic_depth ≥ j`.
-- `fork_failures` stores the **minimum** depth seen for each `(pc, pos)`.
+- Both `fork_failures` and `fork_failures_counted` store a **bitmask** where
+  bit `d` is set when a failure was recorded at `atomic_depth = d` (capped at
+  bit 7); a hit fires when any bit `0..=atomic_depth` is set.
 - `AtomicStart` increments `atomic_depth`; `AtomicEnd` (success path) and
   `Bt::AtomicBarrier` skip (failure path) each decrement it.
 
