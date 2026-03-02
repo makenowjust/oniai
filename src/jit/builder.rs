@@ -563,11 +563,23 @@ fn emit_function(
             // ----------------------------------------------------------------
             // CharFast — guard-verified advance (no bounds/match check needed)
             // ----------------------------------------------------------------
-            Inst::CharFast(c) => {
+            Inst::CharFast(c) if c.is_ascii() => {
+                // ASCII: the preceding Fork guard (emit_fork_guard) already verified
+                // text[pos] == c, so just advance unconditionally.
                 let pos_v = builder.use_var(var_pos);
-                let new_pos = builder.ins().iadd_imm(pos_v, c.len_utf8() as i64);
+                let new_pos = builder.ins().iadd_imm(pos_v, 1i64);
                 builder.def_var(var_pos, new_pos);
                 builder.ins().jump(inst_blocks[pc + 1], &[]);
+            }
+            Inst::CharFast(c) => {
+                // Non-ASCII: the JIT only checks ASCII fork guards, so the guard
+                // may not have been verified.  Fall back to a full jit_match_char
+                // call (bounds + UTF-8 char comparison) to stay correct.
+                let ctx_v = builder.use_var(var_ctx);
+                let pos_v = builder.use_var(var_pos);
+                let c_v = builder.ins().iconst(types::I32, *c as i64);
+                let call = builder.ins().call(h_match_char, &[ctx_v, pos_v, c_v]);
+                emit_match_call!(call, pc + 1);
             }
 
             // ----------------------------------------------------------------
