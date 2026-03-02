@@ -1,6 +1,33 @@
 # TODO: StartStrategy — AsciiClassStart for Class-first patterns
 
-## Status: Planned
+## Status: Done (commit `qxvwrmsy`)
+
+## Problem
+
+Patterns whose first real instruction is a `Class` (e.g. `\d+`, `\w+@\w+\.\w+`,
+`[a-z]+`) previously fell back to `StartStrategy::Anywhere`, which tries every
+byte-aligned position in the haystack.
+
+## Solution Implemented
+
+- Added `StartStrategy::AsciiClassStart { ascii_bits: [u64; 2], can_match_non_ascii: bool }` variant.
+- Extended `StartStrategy::compute` to accept `charsets: &[CharSet]`.
+- Detection: after the `FirstChars` probe, check if the first non-Save/KeepStart
+  instruction is `Class(idx, false)` and build the accept bitmap.
+- Added `AsciiClassStart` scan arms in both `find_with_scratch` and `find_interp`.
+- Added `bench_class_start` benchmark (digit_sparse, word_sparse).
+
+## Benchmark Results
+
+| Benchmark | Change |
+|-----------|--------|
+| `charclass/posix_digit_iter/jit` | **-63%** |
+| `charclass/alpha_iter/jit` | **-41%** |
+| `captures/iter_all` | -11% |
+| `email/find_all/jit` | -10% |
+
+Log: `log/bench-start-strategy-class-2026-03-02.txt`
+
 
 ## Problem
 

@@ -1,6 +1,33 @@
 # TODO: JIT — inline bitmap check for `Class` instruction
 
-## Status: Planned
+## Status: Done (commit `ptvvwopv`)
+
+## Problem
+
+`inline_charclass_fwd` (and its backward counterpart) previously emitted a
+cascade of unsigned range checks for ASCII bytes, growing with the number of
+ASCII ranges in the charset.
+
+## Solution Implemented
+
+- Added `emit_ascii_bitmap_check()` using Cranelift `select` + shift + AND
+  (branch-free 3-op sequence).
+- Added `emit_ascii_check()` dispatcher: use bitmap for ≥3 ASCII ranges,
+  range cascade for ≤2 ranges (break-even threshold determined empirically).
+- Restored `emit_ascii_ranges_check` / `emit_range_check` / `emit_eq_check`
+  as fallbacks for simple charsets (`[0-9]`, `[a-zA-Z]`).
+- Updated both `inline_charclass_fwd` and `inline_charclass_back`.
+
+## Benchmark Results
+
+| Benchmark | Change |
+|-----------|--------|
+| `charclass/posix_digit_iter/jit` | -4% |
+| `captures/iter_all/jit` | -1.7% |
+| `[0-9]` / `[a-zA-Z]` patterns | no regression |
+
+Log: `log/bench-jit-inline-bitmap-v2-2026-03-02.txt`
+
 
 ## Problem
 

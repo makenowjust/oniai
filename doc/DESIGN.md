@@ -179,16 +179,14 @@ not yet known are patched in a second pass via `patch_jump` / `patch_no_jump`.
 | Instruction | Semantics |
 |-------------|-----------|
 | `Match` | Report success at current position |
-| `Char(c, ic)` | Match literal `c` at `pos`; advance `pos` |
+| `Char(c)` | Match literal `c` at `pos`; advance `pos` |
 | `AnyChar(dotall)` | Match any char at `pos`; if `!dotall` reject `\n` |
-| `Class(idx, ic)` | Match char against `charsets[idx]` at `pos` |
-| `Shorthand(sh, ar)` | Match `\w`/`\d`/`\s`/`\h`… at `pos` |
-| `Prop(name, neg)` | Match Unicode property at `pos` |
-| `CharBack(c, ic)` | Match `c` ending at `pos`; decrement `pos` (lookbehind) |
+| `Class(idx, ic)` | Match char against `charsets[idx]` at `pos`; if `ic`, fold char before lookup |
+| `AltTrie(idx)` | Match one of multiple literal strings via a ByteTrie at `tries[idx]`; advance `pos` |
+| `CharBack(c)` | Match `c` ending at `pos`; decrement `pos` (lookbehind) |
 | `AnyCharBack(dotall)` | Match any char ending at `pos`; decrement `pos` |
 | `ClassBack(idx, ic)` | Charset match ending at `pos`; decrement `pos` |
-| `ShorthandBack(sh, ar)` | Shorthand match ending at `pos`; decrement `pos` |
-| `PropBack(name, neg)` | Unicode property match ending at `pos`; decrement `pos` |
+| `AltTrieBack(idx)` | ByteTrie match ending at `pos`; decrement `pos` (lookbehind) |
 | `Anchor(kind, flags)` | Zero-width assertion (`^`, `$`, `\b`, `\A`, `\z`, …) |
 | `Jump(pc)` | Unconditional jump |
 | `Fork(alt)` | **Greedy** branch: try `pc+1` first, retry at `alt` on failure |
@@ -437,10 +435,10 @@ At `Regex::new()` time, `build_match_tries` constructs a `ByteTrie` for each
   some sequence of codepoints that together produce `chars`), then inserts their
   UTF-8 encodings.  For example, `FoldSeq(['s'])` produces a trie that accepts
   `"s"`, `"S"`, `"ſ"` (U+017F), `"K"` (Kelvin U+212A), etc.
-- **`Class(idx, true)`** (simple charsets only — no `\w`, `[[:alpha:]]` etc.) →
-  `charset_to_bytetrie`: scans all Unicode codepoints and inserts those that
-  match the charset.  Complex charsets (with `Shorthand`, `Posix`, or `Unicode`
-  property items) fall back to the slow path to avoid large tries.
+- **`Class(idx, true)`** → `charset_to_bytetrie`: scans `cs.ranges` (the
+  compiled inversion list) and inserts all matching codepoints' UTF-8 encodings.
+  Since all charsets are now pure inversion lists, there are no "complex" charsets;
+  every `Class` can get a ByteTrie for case-insensitive matching.
 - The resulting `Vec<Option<ByteTrie>>` is stored in `CompiledRegex::match_tries`
   and passed to `Ctx` as `match_tries: &[Option<ByteTrie>]`.
 
@@ -457,12 +455,11 @@ longest accepted prefix, or `None` to trigger backtracking.
 
 #### Scalar fallback
 
-When no ByteTrie is available (complex charsets, backreference patterns, or the
+When no ByteTrie is available (backreference patterns, or the
 JIT path), matching falls back to:
 
-- **`Char(c, true)`** / **`CharBack`**: `chars_eq_ci(a, b)` compares the full
-  Unicode case folds via `char.case_fold()`.  Handles edge cases like the
-  Kelvin sign `\u{212A}` matching `k`/`K`.
+- **`Char(c)`** (case-insensitive matching is now handled by `FoldSeq` at compile
+  time; `Char` no longer carries an `ic` flag).
 - **`FoldSeq(chars)`** (trie absent): `fold_advance(text, pos, chars)` advances
   char-by-char comparing fold outputs — zero allocation, O(match_len).
 - **`BackRef`** matching (strings): `caseless_advance(text, pos, pattern)` folds
@@ -491,13 +488,17 @@ before the main loop:
    immediately (O(n) `memchr` scan; skipped for `Anchored` patterns).
 2. **`StartStrategy`** — choose how to advance through candidate start positions:
    - `Anchored`: try only `start_pos` once.
-   - `LiteralPrefix(s)`: use `str::find(s)` to jump to each occurrence.
+   - `LiteralPrefix(s)`: use `memchr::memmem::find` to jump to each occurrence.
    - `CaselessPrefix { folded, non_ascii_first_bytes }`: use SIMD `str::find`
      for ASCII variants of `folded[0]`, plus raw byte scans for non-ASCII first
      bytes; pre-filter each candidate with `fold_advance`.
-   - `LiteralSet(lits)`: use `str::find` for each literal in a top-level
-     alternation; take the leftmost candidate.
-   - `FirstChars(set)`: use `str::find(char)` per possible first character.
+   - `LiteralSet(lits)`: use `memchr::memmem::find` for each literal; take the
+     leftmost candidate.
+   - `AsciiClassStart { ascii_bits, can_match_non_ascii }`: the first instruction
+     is `Class`; use the charset's precomputed 128-bit ASCII bitmap to skip
+     positions that can never start a match without calling `exec`.
+   - `FirstChars(set)`: use `memchr`/`memchr2`/`memchr3` for 1–3 pure-ASCII
+     chars, `str::find(char)` otherwise.
    - `Anywhere`: try every byte-aligned position.
 
 ---

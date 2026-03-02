@@ -1,6 +1,18 @@
 # TODO: Use `memchr` crate for `FirstChars` and `LiteralPrefix` scanning
 
-## Status: Planned
+## Status: Done (commit `pvvuxwun`)
+
+## Results
+
+- `literal/match_mid_1k/jit`: **-40%** (142 ns → 84 ns)
+- `literal/match_mid_1k/interp`: **-37%** (172 ns → 108 ns)
+- Many `find_iter_scale/interp/*` improvements
+- No regressions
+
+## Implementation Notes
+
+- `LiteralPrefix`: replaced `text[pos..].find(prefix.as_str())` with `memchr::memmem::find(...)` — always faster for multi-byte needles.
+- `FirstChars`: only uses `memchr`/`memchr2`/`memchr3` when the set has 1–3 pure-ASCII chars; falls back to `str::find(char)` for larger or mixed sets. Initial v1 using per-char `memchr` calls for 4+ chars caused regressions (e.g. `lookbehind` +7%) because 26 individual SIMD scans are slower than 26 `str::find` calls for large char sets with early matches.
 
 ## Problem
 
