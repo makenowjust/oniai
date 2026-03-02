@@ -1,6 +1,6 @@
 use crate::ast::*;
 use crate::bytetrie::ByteTrie;
-use crate::casefold::{case_fold, CaseFold};
+use crate::casefold::{CaseFold, case_fold};
 use crate::charset;
 use crate::data::casefold_data::SIMPLE_CASE_FOLDS;
 use crate::error::Error;
@@ -160,6 +160,8 @@ struct Compiler {
     current_group: u32,
     /// Number of null-check guard slots allocated so far (one per unbounded loop).
     num_null_checks: u32,
+    /// Number of repeat counter slots allocated so far (one per counter-based exact loop).
+    num_repeat_counters: u32,
 }
 
 impl Compiler {
@@ -175,6 +177,7 @@ impl Compiler {
             num_groups: 0,
             current_group: 0,
             num_null_checks: 0,
+            num_repeat_counters: 0,
         }
     }
 
@@ -192,6 +195,13 @@ impl Compiler {
     fn alloc_null_check(&mut self) -> usize {
         let slot = self.num_null_checks as usize;
         self.num_null_checks += 1;
+        slot
+    }
+
+    /// Allocate a fresh repeat-counter slot and return its index.
+    fn alloc_repeat_counter(&mut self) -> usize {
+        let slot = self.num_repeat_counters as usize;
+        self.num_repeat_counters += 1;
         slot
     }
     fn patch_jump(&mut self, pc: usize, target: usize) {
@@ -636,9 +646,25 @@ impl Compiler {
         let min = range.min;
         let max = range.max;
 
-        // Emit `min` mandatory copies
-        for _ in 0..min {
+        // Threshold above which we use a counter loop instead of duplicating the body.
+        // Below the threshold the overhead of RepeatInit/RepeatNext is not worth it.
+        const REPEAT_COUNTER_THRESHOLD: u32 = 4;
+
+        // Emit `min` mandatory copies (or a counter loop for large min).
+        if min >= REPEAT_COUNTER_THRESHOLD {
+            let slot = self.alloc_repeat_counter();
+            self.emit(Inst::RepeatInit { slot });
+            let body_pc = self.pc();
             self.compile_node_inner(node, flags, backward)?;
+            self.emit(Inst::RepeatNext {
+                slot,
+                count: min,
+                body_pc,
+            });
+        } else {
+            for _ in 0..min {
+                self.compile_node_inner(node, flags, backward)?;
+            }
         }
 
         match (max, kind) {
@@ -1475,6 +1501,7 @@ pub struct CompiledProgram {
     pub named_groups: Vec<(String, u32)>,
     pub num_groups: usize,
     pub num_null_checks: usize,
+    pub num_repeat_counters: usize,
     #[allow(dead_code)]
     pub subexp_starts: HashMap<u32, usize>,
 }
@@ -1499,6 +1526,7 @@ pub fn compile(
 
     let num_groups = compiler.num_groups as usize;
     let num_null_checks = compiler.num_null_checks as usize;
+    let num_repeat_counters = compiler.num_repeat_counters as usize;
     Ok(CompiledProgram {
         prog: compiler.prog,
         charsets: compiler.charsets,
@@ -1506,6 +1534,7 @@ pub fn compile(
         named_groups,
         num_groups,
         num_null_checks,
+        num_repeat_counters,
         subexp_starts: compiler.subexp_starts,
     })
 }

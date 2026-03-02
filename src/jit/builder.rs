@@ -585,17 +585,22 @@ fn emit_function(
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
                 let text_len =
-                    builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_LEN);
-                let in_bounds =
-                    builder.ins().icmp(IntCC::UnsignedLessThan, pos_v, text_len);
-                builder.ins().brif(in_bounds, check_block, &[], inst_blocks[*exit_pc], &[]);
+                    builder
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_LEN);
+                let in_bounds = builder.ins().icmp(IntCC::UnsignedLessThan, pos_v, text_len);
+                builder
+                    .ins()
+                    .brif(in_bounds, check_block, &[], inst_blocks[*exit_pc], &[]);
 
                 // check_block: load byte and compare
                 builder.switch_to_block(check_block);
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
                 let text_ptr =
-                    builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_PTR);
+                    builder
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_PTR);
                 let byte_ptr = builder.ins().iadd(text_ptr, pos_v);
                 let byte = builder
                     .ins()
@@ -604,7 +609,9 @@ fn emit_function(
                 if c.is_ascii() {
                     let ch_v = builder.ins().iconst(types::I32, *c as u8 as i64);
                     let ok = builder.ins().icmp(IntCC::Equal, byte, ch_v);
-                    builder.ins().brif(ok, advance_block, &[], inst_blocks[*exit_pc], &[]);
+                    builder
+                        .ins()
+                        .brif(ok, advance_block, &[], inst_blocks[*exit_pc], &[]);
 
                     builder.switch_to_block(advance_block);
                     let pos_v = builder.use_var(var_pos);
@@ -619,13 +626,9 @@ fn emit_function(
                     // Compare leading byte; if different, exit immediately (no helper call).
                     let maybe_match = builder.ins().icmp(IntCC::Equal, byte, leading_v);
                     let helper_block = builder.create_block();
-                    builder.ins().brif(
-                        maybe_match,
-                        helper_block,
-                        &[],
-                        inst_blocks[*exit_pc],
-                        &[],
-                    );
+                    builder
+                        .ins()
+                        .brif(maybe_match, helper_block, &[], inst_blocks[*exit_pc], &[]);
 
                     builder.switch_to_block(helper_block);
                     let ctx_v = builder.use_var(var_ctx);
@@ -638,13 +641,9 @@ fn emit_function(
                     // On success result == new_pos; on failure keep old pos.
                     let new_pos = builder.ins().select(is_fail, pos_v, result);
                     builder.def_var(var_pos, new_pos);
-                    builder.ins().brif(
-                        is_fail,
-                        inst_blocks[*exit_pc],
-                        &[],
-                        loop_header,
-                        &[],
-                    );
+                    builder
+                        .ins()
+                        .brif(is_fail, inst_blocks[*exit_pc], &[], loop_header, &[]);
                 }
             }
 
@@ -664,17 +663,22 @@ fn emit_function(
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
                 let text_len =
-                    builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_LEN);
-                let in_bounds =
-                    builder.ins().icmp(IntCC::UnsignedLessThan, pos_v, text_len);
-                builder.ins().brif(in_bounds, read_block, &[], inst_blocks[*exit_pc], &[]);
+                    builder
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_LEN);
+                let in_bounds = builder.ins().icmp(IntCC::UnsignedLessThan, pos_v, text_len);
+                builder
+                    .ins()
+                    .brif(in_bounds, read_block, &[], inst_blocks[*exit_pc], &[]);
 
                 // read_block: load leading byte and route ASCII vs non-ASCII
                 builder.switch_to_block(read_block);
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);
                 let text_ptr =
-                    builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_PTR);
+                    builder
+                        .ins()
+                        .load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_PTR);
                 let byte_ptr = builder.ins().iadd(text_ptr, pos_v);
                 let byte = builder
                     .ins()
@@ -713,7 +717,9 @@ fn emit_function(
                     let is_fail = builder.ins().icmp(IntCC::Equal, result, neg1);
                     let new_pos = builder.ins().select(is_fail, pos_v, result);
                     builder.def_var(var_pos, new_pos);
-                    builder.ins().brif(is_fail, inst_blocks[*exit_pc], &[], loop_header, &[]);
+                    builder
+                        .ins()
+                        .brif(is_fail, inst_blocks[*exit_pc], &[], loop_header, &[]);
                 }
 
                 // ascii_check_block: bitmap/range check (byte passed as block param)
@@ -727,7 +733,9 @@ fn emit_function(
                 } else {
                     raw_ok
                 };
-                builder.ins().brif(ok, advance_block, &[], inst_blocks[*exit_pc], &[]);
+                builder
+                    .ins()
+                    .brif(ok, advance_block, &[], inst_blocks[*exit_pc], &[]);
 
                 // advance_block: pos += 1, loop back
                 builder.switch_to_block(advance_block);
@@ -736,7 +744,6 @@ fn emit_function(
                 builder.def_var(var_pos, new_pos);
                 builder.ins().jump(loop_header, &[]);
             }
-
 
             Inst::Save(slot) => {
                 let ctx_v = builder.use_var(var_ctx);
@@ -849,7 +856,9 @@ fn emit_function(
             | Inst::RetIfCalled
             | Inst::AbsenceStart(_)
             | Inst::BackRef(..)
-            | Inst::BackRefRelBack(..) => {
+            | Inst::BackRefRelBack(..)
+            | Inst::RepeatInit { .. }
+            | Inst::RepeatNext { .. } => {
                 builder.ins().trap(TrapCode::INTEGER_OVERFLOW);
             }
 
@@ -1166,10 +1175,18 @@ fn emit_function(
         builder.def_var(var_pos, restored_pos);
         let mut table_entries: Vec<BlockCall> = Vec::with_capacity(n);
         for &b in &inst_blocks {
-            let bc = BlockCall::new(b, std::iter::empty::<BlockArg>(), &mut builder.func.dfg.value_lists);
+            let bc = BlockCall::new(
+                b,
+                std::iter::empty::<BlockArg>(),
+                &mut builder.func.dfg.value_lists,
+            );
             table_entries.push(bc);
         }
-        let default_bc = BlockCall::new(return_fail_block, std::iter::empty::<BlockArg>(), &mut builder.func.dfg.value_lists);
+        let default_bc = BlockCall::new(
+            return_fail_block,
+            std::iter::empty::<BlockArg>(),
+            &mut builder.func.dfg.value_lists,
+        );
         let jt_data = JumpTableData::new(default_bc, &table_entries);
         let jt = builder.create_jump_table(jt_data);
         builder.ins().br_table(restored_block_id, jt);
@@ -1498,7 +1515,6 @@ fn inline_charclass_fwd(
     cs: &CharSet,
     idx: usize,
 ) {
-
     let ascii_ranges = charset_ascii_ranges(cs);
 
     // --- bounds check ---
@@ -1529,15 +1545,23 @@ fn inline_charclass_fwd(
 
     if is_ascii_only_charset(cs) {
         // Non-ASCII bytes never match: fail immediately without helper.
-        builder
-            .ins()
-            .brif(is_ascii, ascii_check_block, &[BlockArg::Value(byte)], bt_resume, &[]);
+        builder.ins().brif(
+            is_ascii,
+            ascii_check_block,
+            &[BlockArg::Value(byte)],
+            bt_resume,
+            &[],
+        );
     } else {
         // Non-ASCII bytes may match: call jit_match_class for correct handling.
         let nonascii_block = builder.create_block();
-        builder
-            .ins()
-            .brif(is_ascii, ascii_check_block, &[BlockArg::Value(byte)], nonascii_block, &[]);
+        builder.ins().brif(
+            is_ascii,
+            ascii_check_block,
+            &[BlockArg::Value(byte)],
+            nonascii_block,
+            &[],
+        );
 
         builder.switch_to_block(nonascii_block);
         let ctx_v = builder.use_var(var_ctx);
@@ -1622,14 +1646,22 @@ fn inline_charclass_back(
     let is_ascii = builder.ins().icmp(IntCC::UnsignedLessThan, byte, c80);
 
     if is_ascii_only_charset(cs) {
-        builder
-            .ins()
-            .brif(is_ascii, ascii_check_block, &[BlockArg::Value(byte)], bt_resume, &[]);
+        builder.ins().brif(
+            is_ascii,
+            ascii_check_block,
+            &[BlockArg::Value(byte)],
+            bt_resume,
+            &[],
+        );
     } else {
         let nonascii_block = builder.create_block();
-        builder
-            .ins()
-            .brif(is_ascii, ascii_check_block, &[BlockArg::Value(byte)], nonascii_block, &[]);
+        builder.ins().brif(
+            is_ascii,
+            ascii_check_block,
+            &[BlockArg::Value(byte)],
+            nonascii_block,
+            &[],
+        );
 
         builder.switch_to_block(nonascii_block);
         let ctx_v = builder.use_var(var_ctx);
@@ -1853,9 +1885,13 @@ fn inline_fork(
                 .ins()
                 .icmp(IntCC::UnsignedLessThan, idx, fork_memo_len);
             // Out of bounds → no failure recorded; push normally
-            builder
-                .ins()
-                .brif(in_bounds, do_check_block, &[BlockArg::Value(idx)], fast_block, &[]);
+            builder.ins().brif(
+                in_bounds,
+                do_check_block,
+                &[BlockArg::Value(idx)],
+                fast_block,
+                &[],
+            );
         }
 
         // do_check_block(idx): idx is in bounds; read one byte and check mask.

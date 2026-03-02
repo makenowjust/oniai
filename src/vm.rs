@@ -35,7 +35,11 @@ impl CharSet {
     /// Construct a `CharSet` from a negation flag and a sorted, merged range list.
     pub fn new(negate: bool, ranges: Vec<(char, char)>) -> Self {
         let ascii_bits = Self::build_ascii_bits(&ranges);
-        CharSet { negate, ranges, ascii_bits }
+        CharSet {
+            negate,
+            ranges,
+            ascii_bits,
+        }
     }
 
     fn build_ascii_bits(ranges: &[(char, char)]) -> [u64; 2] {
@@ -222,6 +226,19 @@ pub enum Inst {
 
     /// Marks end of absence inner program
     AbsenceEnd,
+
+    /// Initialize repeat-counter slot to 0.
+    /// Emitted at the start of a counter-based exact-repetition loop (`x{n}` with n ≥ threshold).
+    RepeatInit { slot: usize },
+
+    /// Increment repeat-counter slot; if the new value is less than `count` jump to `body_pc`
+    /// (start of the loop body); otherwise fall through.
+    /// Emitted at the end of a counter-based exact-repetition loop body.
+    RepeatNext {
+        slot: usize,
+        count: u32,
+        body_pc: usize,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -244,7 +261,10 @@ const NO_SLOT: usize = usize::MAX;
 /// with no heap allocation, dramatically reducing fork overhead.
 #[derive(Clone)]
 pub(crate) enum SmallSlots {
-    Inline { len: u16, data: [usize; SLOTS_INLINE] },
+    Inline {
+        len: u16,
+        data: [usize; SLOTS_INLINE],
+    },
     Heap(Vec<usize>),
 }
 
@@ -420,6 +440,8 @@ pub(crate) struct Ctx<'t> {
     pub(crate) use_memo: bool,
     /// Number of null-check guard slots in the program; used to size `State::null_check_slots`.
     pub(crate) num_null_checks: usize,
+    /// Number of repeat-counter slots in the program; used to size the `counters` vec in `exec()`.
+    pub(crate) num_repeat_counters: usize,
 }
 
 impl<'t> Ctx<'t> {
@@ -465,10 +487,17 @@ enum Bt {
     AtomicBarrier,
     /// Memoization marker pushed alongside every `Fork`/`ForkNext` alternative.
     /// When popped during backtracking it means **both** paths of the fork have
-    /// been exhausted; we record `(fork_pc, fork_pos)` as a known-failure entry
-    /// so that any future visit to the same fork state at the same position can
-    /// short-circuit immediately (Algorithm 5 of Fujinami & Hasuo 2024).
-    MemoMark { fork_pc: usize, fork_pos: usize },
+    /// been exhausted; we record `(fork_pc, counters_snapshot, fork_pos)` as a
+    /// known-failure entry so that any future visit to the same fork state at the
+    /// same position and counter context can short-circuit immediately
+    /// (Algorithm 5 of Fujinami & Hasuo 2024).
+    MemoMark {
+        fork_pc: usize,
+        fork_pos: usize,
+        /// Snapshot of the repeat-counter vector at the time the Fork executed.
+        /// Empty when the program has no counter-based repetitions.
+        counters_snapshot: Vec<u32>,
+    },
 }
 
 /// Pack a `(pc, pos)` pair into a single `u64` key for the memo table.
@@ -512,14 +541,16 @@ pub(crate) enum LookCacheEntry {
 /// through the entire `exec` / `exec_lookaround` / `check_inner_in_range`
 /// call tree.
 pub(crate) struct MemoState {
-    /// Fork failure depth bitmasks (Algorithms 5 & 7).
-    /// Maps `memo_key(fork_pc, fork_pos)` → bitmask where bit `d` is set when
-    /// both alternatives of that fork were exhausted at atomic depth `d`.
-    /// Because `max_atomic_depth` is bounded at compile time (≤ 7 in practice),
-    /// a `u8` bitmask suffices.  A cached entry applies whenever
-    /// `(bitmask & depth_mask(current_depth)) != 0`, where
-    /// `depth_mask(d) = (1u8 << (d+1)) - 1` (bits 0..=d).
+    /// Fork failure depth bitmasks — fast path for patterns **without** counter-based
+    /// repetitions (`num_repeat_counters == 0`).
+    /// Maps `memo_key(fork_pc, fork_pos)` → depth bitmask (unchanged from the original design).
     pub(crate) fork_failures: HashMap<u64, u8>,
+    /// Fork failure depth bitmasks — slow path for patterns **with** counter-based
+    /// repetitions (`num_repeat_counters > 0`).
+    /// The counter snapshot is included in the key so that two visits to the same
+    /// Fork at the same position but under different counter contexts are not
+    /// conflated (see design notes in plan.md).
+    pub(crate) fork_failures_counted: HashMap<(u64, Vec<u32>), u8>,
     /// Lookaround result cache (Algorithm 6).
     /// Maps `memo_key(lk_pc, lk_pos)` → whether the lookaround body matched
     /// and, for positive lookaheads, the capture-slot changes it produced.
@@ -530,6 +561,7 @@ impl MemoState {
     fn new() -> Self {
         MemoState {
             fork_failures: HashMap::new(),
+            fork_failures_counted: HashMap::new(),
             look_results: HashMap::new(),
         }
     }
@@ -537,10 +569,7 @@ impl MemoState {
 
 /// Compute which capture slots changed between `pre` and `post`.
 /// Returns `(slot_index, new_value)` pairs for every slot that differs.
-fn compute_slot_delta(
-    pre: &SmallSlots,
-    post: &SmallSlots,
-) -> Vec<(usize, Option<usize>)> {
+fn compute_slot_delta(pre: &SmallSlots, post: &SmallSlots) -> Vec<(usize, Option<usize>)> {
     let len = pre.len().max(post.len());
     (0..len)
         .filter_map(|i| {
@@ -564,10 +593,10 @@ fn push_retry(bt: &mut Vec<Bt>, pc: usize, pos: usize, state: &State) {
 /// Pop the next usable retry point, restoring `pc`/`pos`/`state`.
 /// - `AtomicBarrier` entries decrement `atomic_depth` and are skipped
 ///   (atomic body failed entirely).
-/// - `MemoMark` entries record `(fork_pc, fork_pos)` as a failure tagged
-///   with the CURRENT `atomic_depth` (Algorithm 7: depth-tagged failures).
-///   Only entries recorded at depth ≤ current depth may be reused later,
-///   so we keep the minimum depth seen for each `(pc, pos)` key.
+/// - `MemoMark` entries record `(fork_pc, counters_snapshot, fork_pos)` as a
+///   failure tagged with the CURRENT `atomic_depth` (Algorithm 7: depth-tagged
+///   failures).  Only entries recorded at depth ≤ current depth may be reused
+///   later, so we keep the minimum depth seen for each key.
 fn do_backtrack(
     bt: &mut Vec<Bt>,
     pc: &mut usize,
@@ -584,18 +613,28 @@ fn do_backtrack(
                 *atomic_depth -= 1;
                 continue;
             }
-            Some(Bt::MemoMark { fork_pc, fork_pos }) => {
+            Some(Bt::MemoMark {
+                fork_pc,
+                fork_pos,
+                counters_snapshot,
+            }) => {
                 if use_memo {
-                    let key = memo_key(fork_pc, fork_pos);
-                    // Set the bit for the current atomic_depth.  A lower depth
-                    // is more general, so a failure at depth 0 covers depth 1+.
-                    // Using a bitmask lets us record all depths seen without a
-                    // min() operation and maps naturally to the JIT dense array.
                     let bit = 1u8 << (*atomic_depth).min(7);
-                    memo.fork_failures
-                        .entry(key)
-                        .and_modify(|b| *b |= bit)
-                        .or_insert(bit);
+                    if counters_snapshot.is_empty() {
+                        // Fast path: plain u64 key.
+                        let key = memo_key(fork_pc, fork_pos);
+                        memo.fork_failures
+                            .entry(key)
+                            .and_modify(|b| *b |= bit)
+                            .or_insert(bit);
+                    } else {
+                        // Slow path: counter-aware key.
+                        let key = (memo_key(fork_pc, fork_pos), counters_snapshot);
+                        memo.fork_failures_counted
+                            .entry(key)
+                            .and_modify(|b| *b |= bit)
+                            .or_insert(bit);
+                    }
                 }
                 continue;
             }
@@ -648,6 +687,10 @@ pub(crate) fn exec(
     let mut pc = start_pc;
     let mut pos = start_pos;
     let mut bt: Vec<Bt> = Vec::new();
+    // Repeat-counter slots for counter-based exact repetition loops.
+    // Each exec() call starts with all counters zeroed; exec_lookaround
+    // sub-calls also start fresh (counters are NOT part of State).
+    let mut counters = vec![0u32; ctx.num_repeat_counters];
     // Local atomic-group nesting counter (Algorithm 7).
     // Incremented by AtomicStart, decremented by AtomicEnd (success path) and
     // when AtomicBarrier is popped during backtracking (failure path).
@@ -835,20 +878,35 @@ pub(crate) fn exec(
                     continue 'vm;
                 }
                 if ctx.use_memo {
-                    let key = memo_key(pc, pos);
-                    // A cached failure applies when any bit 0..=atomic_depth is
-                    // set in the bitmask: depth_mask = (1 << (depth+1)) - 1.
                     let depth_mask = (1u16 << (atomic_depth + 1)).wrapping_sub(1) as u8;
-                    if let Some(&bitmask) = memo.fork_failures.get(&key)
-                        && bitmask & depth_mask != 0
-                    {
-                        fail!();
+                    if ctx.num_repeat_counters == 0 {
+                        // Fast path (no counter loops): plain u64 key, no Vec allocation.
+                        let key = memo_key(pc, pos);
+                        if let Some(&bitmask) = memo.fork_failures.get(&key)
+                            && bitmask & depth_mask != 0
+                        {
+                            fail!();
+                        }
+                        bt.push(Bt::MemoMark {
+                            fork_pc: pc,
+                            fork_pos: pos,
+                            counters_snapshot: Vec::new(),
+                        });
+                    } else {
+                        // Slow path (counter loops): include counter snapshot in key.
+                        let snapshot = counters.clone();
+                        let key = (memo_key(pc, pos), snapshot.clone());
+                        if let Some(&bitmask) = memo.fork_failures_counted.get(&key)
+                            && bitmask & depth_mask != 0
+                        {
+                            fail!();
+                        }
+                        bt.push(Bt::MemoMark {
+                            fork_pc: pc,
+                            fork_pos: pos,
+                            counters_snapshot: snapshot,
+                        });
                     }
-                    // MemoMark fires after both alternatives are exhausted.
-                    bt.push(Bt::MemoMark {
-                        fork_pc: pc,
-                        fork_pos: pos,
-                    });
                 }
                 push_retry(&mut bt, *alt, pos, state);
                 pc += 1;
@@ -864,17 +922,33 @@ pub(crate) fn exec(
                     continue 'vm;
                 }
                 if ctx.use_memo {
-                    let key = memo_key(pc, pos);
                     let depth_mask = (1u16 << (atomic_depth + 1)).wrapping_sub(1) as u8;
-                    if let Some(&bitmask) = memo.fork_failures.get(&key)
-                        && bitmask & depth_mask != 0
-                    {
-                        fail!();
+                    if ctx.num_repeat_counters == 0 {
+                        let key = memo_key(pc, pos);
+                        if let Some(&bitmask) = memo.fork_failures.get(&key)
+                            && bitmask & depth_mask != 0
+                        {
+                            fail!();
+                        }
+                        bt.push(Bt::MemoMark {
+                            fork_pc: pc,
+                            fork_pos: pos,
+                            counters_snapshot: Vec::new(),
+                        });
+                    } else {
+                        let snapshot = counters.clone();
+                        let key = (memo_key(pc, pos), snapshot.clone());
+                        if let Some(&bitmask) = memo.fork_failures_counted.get(&key)
+                            && bitmask & depth_mask != 0
+                        {
+                            fail!();
+                        }
+                        bt.push(Bt::MemoMark {
+                            fork_pc: pc,
+                            fork_pos: pos,
+                            counters_snapshot: snapshot,
+                        });
                     }
-                    bt.push(Bt::MemoMark {
-                        fork_pc: pc,
-                        fork_pos: pos,
-                    });
                 }
                 push_retry(&mut bt, pc + 1, pos, state);
                 pc = *alt;
@@ -1077,8 +1151,7 @@ pub(crate) fn exec(
                 yes_pc,
                 no_pc,
             } => {
-                let has = state.slots.get(*slot).is_some()
-                    && state.slots.get(*slot + 1).is_some();
+                let has = state.slots.get(*slot).is_some() && state.slots.get(*slot + 1).is_some();
                 pc = if has { *yes_pc } else { *no_pc };
             }
 
@@ -1108,6 +1181,24 @@ pub(crate) fn exec(
                 }
                 pos = valid_ends[0];
                 pc = continuation_pc;
+            }
+
+            Inst::RepeatInit { slot } => {
+                counters[*slot] = 0;
+                pc += 1;
+            }
+
+            Inst::RepeatNext {
+                slot,
+                count,
+                body_pc,
+            } => {
+                counters[*slot] += 1;
+                if counters[*slot] < *count {
+                    pc = *body_pc;
+                } else {
+                    pc += 1;
+                }
             }
         }
     }
@@ -1337,10 +1428,7 @@ enum StartStrategy {
     /// check (typically PCMPGTB / PCMPEQB on x86-64).
     ///
     /// Only emitted when the charset is ASCII-only (`can_match_non_ascii == false`).
-    RangeStart {
-        lo: u8,
-        hi: u8,
-    },
+    RangeStart { lo: u8, hi: u8 },
     /// Pattern's first real instruction is a case-sensitive `Class`.
     /// Use the precomputed ASCII bitmap to skip positions that cannot start
     /// a match without invoking the full exec machinery.
@@ -1381,7 +1469,11 @@ fn detect_ascii_range(bits: [u64; 2]) -> Option<(u8, u8)> {
     for b in lo..=hi {
         expected[(b >> 6) as usize] |= 1u64 << (b & 63);
     }
-    if bits == expected { Some((lo, hi)) } else { None }
+    if bits == expected {
+        Some((lo, hi))
+    } else {
+        None
+    }
 }
 
 impl StartStrategy {
@@ -1476,10 +1568,9 @@ impl StartStrategy {
                     first_chars.sort_unstable();
                     return StartStrategy::FirstChars(first_chars);
                 }
-                if !can_match_non_ascii
-                    && let Some((lo, hi)) = detect_ascii_range(ascii_bits) {
-                        return StartStrategy::RangeStart { lo, hi };
-                    }
+                if !can_match_non_ascii && let Some((lo, hi)) = detect_ascii_range(ascii_bits) {
+                    return StartStrategy::RangeStart { lo, hi };
+                }
                 return StartStrategy::AsciiClassStart {
                     ascii_bits,
                     can_match_non_ascii,
@@ -1489,8 +1580,8 @@ impl StartStrategy {
 
         // Try to extract a set of literals from a top-level alternation
         if let Some(lits) = extract_literal_set(prog) {
-            let ac = aho_corasick::AhoCorasick::new(&lits)
-                .expect("literal set strings are valid UTF-8");
+            let ac =
+                aho_corasick::AhoCorasick::new(&lits).expect("literal set strings are valid UTF-8");
             return StartStrategy::LiteralSet(ac);
         }
 
@@ -1528,10 +1619,9 @@ impl StartStrategy {
             // Prefer RangeStart for ASCII-only contiguous ranges: the range
             // check `b.wrapping_sub(lo) <= span` is a simple arithmetic
             // predicate that LLVM auto-vectorizes to SIMD.
-            if !can_match_non_ascii
-                && let Some((lo, hi)) = detect_ascii_range(accept_bits) {
-                    return StartStrategy::RangeStart { lo, hi };
-                }
+            if !can_match_non_ascii && let Some((lo, hi)) = detect_ascii_range(accept_bits) {
+                return StartStrategy::RangeStart { lo, hi };
+            }
             return StartStrategy::AsciiClassStart {
                 ascii_bits: accept_bits,
                 can_match_non_ascii,
@@ -1838,6 +1928,8 @@ pub struct CompiledRegex {
     num_groups: usize,
     /// Number of null-check guard slots emitted by the compiler.
     num_null_checks: usize,
+    /// Number of repeat-counter slots emitted by the compiler.
+    num_repeat_counters: usize,
     start_strategy: StartStrategy,
     /// A character that must appear in the text for any match to be possible.
     required_char: Option<char>,
@@ -1886,8 +1978,12 @@ impl CompiledRegex {
         // Class/ClassBack.  `None` at all other PCs.
         let match_tries = build_match_tries(&prog_data.prog, &prog_data.charsets);
 
-        let start_strategy =
-            StartStrategy::compute(&prog_data.prog, &prog_data.charsets, &match_tries, &prog_data.alt_tries);
+        let start_strategy = StartStrategy::compute(
+            &prog_data.prog,
+            &prog_data.charsets,
+            &match_tries,
+            &prog_data.alt_tries,
+        );
         let required_char = compute_required_char(&prog_data.prog);
         // Disable memoization for patterns where the fork/lookaround outcome
         // can depend on the current capture-slot state (not just on pc + pos):
@@ -1924,6 +2020,7 @@ impl CompiledRegex {
             named_groups,
             num_groups: prog_data.num_groups,
             num_null_checks: prog_data.num_null_checks,
+            num_repeat_counters: prog_data.num_repeat_counters,
             start_strategy,
             required_char,
             use_memo,
@@ -1977,6 +2074,7 @@ impl CompiledRegex {
             search_start: pos,
             use_memo: self.use_memo,
             num_null_checks: self.num_null_checks,
+            num_repeat_counters: self.num_repeat_counters,
         };
         let mut state = State::new(self.num_groups, self.num_null_checks);
         let end = exec(&ctx, 0, pos, &mut state, 0, memo)?;
@@ -2203,9 +2301,10 @@ impl CompiledRegex {
                     if b < 0x80 {
                         // ASCII byte: one bitmap lookup.
                         if (ascii_bits[(b >> 6) as usize] >> (b & 63)) & 1 != 0
-                            && let Some(result) = self.try_at(text, pos, &mut memo, scratch) {
-                                return Some(result);
-                            }
+                            && let Some(result) = self.try_at(text, pos, &mut memo, scratch)
+                        {
+                            return Some(result);
+                        }
                         pos += 1;
                     } else {
                         // Non-ASCII: advance by full char length.
@@ -2215,9 +2314,10 @@ impl CompiledRegex {
                             .map(|c| c.len_utf8())
                             .unwrap_or(1);
                         if *can_match_non_ascii
-                            && let Some(result) = self.try_at(text, pos, &mut memo, scratch) {
-                                return Some(result);
-                            }
+                            && let Some(result) = self.try_at(text, pos, &mut memo, scratch)
+                        {
+                            return Some(result);
+                        }
                         pos += ch_len;
                     }
                 }
@@ -2430,9 +2530,10 @@ impl CompiledRegex {
                     let b = bytes[pos];
                     if b < 0x80 {
                         if (ascii_bits[(b >> 6) as usize] >> (b & 63)) & 1 != 0
-                            && let Some(r) = self.exec_interp(text, pos, &mut memo) {
-                                return Some(r);
-                            }
+                            && let Some(r) = self.exec_interp(text, pos, &mut memo)
+                        {
+                            return Some(r);
+                        }
                         pos += 1;
                     } else {
                         let ch_len = text[pos..]
@@ -2441,9 +2542,10 @@ impl CompiledRegex {
                             .map(|c| c.len_utf8())
                             .unwrap_or(1);
                         if can_match_non_ascii
-                            && let Some(r) = self.exec_interp(text, pos, &mut memo) {
-                                return Some(r);
-                            }
+                            && let Some(r) = self.exec_interp(text, pos, &mut memo)
+                        {
+                            return Some(r);
+                        }
                         pos += ch_len;
                     }
                 }
@@ -2484,6 +2586,7 @@ impl CompiledRegex {
             search_start: pos,
             use_memo: self.use_memo,
             num_null_checks: self.num_null_checks,
+            num_repeat_counters: self.num_repeat_counters,
         };
         let mut state = State::new(self.num_groups, self.num_null_checks);
         let end = exec(&ctx, 0, pos, &mut state, 0, memo)?;
@@ -2817,6 +2920,8 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
         search_start: jctx.search_start as usize,
         use_memo,
         num_null_checks: jctx.null_check_len as usize,
+        // JIT-eligible programs never contain RepeatInit/RepeatNext, so 0 is safe.
+        num_repeat_counters: 0,
     };
 
     // Build the sub-execution state directly from jctx rather than going

@@ -54,6 +54,9 @@ pub(crate) fn is_eligible(prog: &[Inst]) -> bool {
             // Absence operator — Phase 3.
             | Inst::AbsenceStart(_)
             | Inst::AbsenceEnd
+            // Counter-based exact repetition — JIT support not yet implemented.
+            | Inst::RepeatInit { .. }
+            | Inst::RepeatNext { .. }
         )
     })
 }
