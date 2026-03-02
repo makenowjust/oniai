@@ -225,12 +225,163 @@ pub enum Inst {
 }
 
 // ---------------------------------------------------------------------------
+// Capture slot storage
+// ---------------------------------------------------------------------------
+
+/// Number of capture slots that fit inline (= 8 capture groups + group 0).
+const SLOTS_INLINE: usize = 18;
+
+/// Sentinel value encoding `None` in the slot array.
+const NO_SLOT: usize = usize::MAX;
+
+/// Compact capture slot storage.  For patterns with ≤ `SLOTS_INLINE` slots,
+/// the data lives in an inline fixed-size array — no heap allocation.
+/// Larger patterns fall back to a heap-backed `Vec`.
+///
+/// Slots are encoded as plain `usize` with `NO_SLOT` (`usize::MAX`) meaning
+/// `None`, saving half the memory compared to `Option<usize>` (which is 16
+/// bytes on 64-bit).  Clone of the inline variant is a simple 144-byte memcpy
+/// with no heap allocation, dramatically reducing fork overhead.
+#[derive(Clone)]
+pub(crate) enum SmallSlots {
+    Inline { len: u16, data: [usize; SLOTS_INLINE] },
+    Heap(Vec<usize>),
+}
+
+impl SmallSlots {
+    fn new(len: usize) -> Self {
+        if len <= SLOTS_INLINE {
+            SmallSlots::Inline {
+                len: len as u16,
+                data: [NO_SLOT; SLOTS_INLINE],
+            }
+        } else {
+            SmallSlots::Heap(vec![NO_SLOT; len])
+        }
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        match self {
+            SmallSlots::Inline { len, .. } => *len as usize,
+            SmallSlots::Heap(v) => v.len(),
+        }
+    }
+
+    /// Return the slot value at `idx`, or `None` if out-of-range or unset.
+    #[inline]
+    fn get(&self, idx: usize) -> Option<usize> {
+        let raw = match self {
+            SmallSlots::Inline { len, data } => {
+                if idx >= *len as usize {
+                    return None;
+                }
+                data[idx]
+            }
+            SmallSlots::Heap(v) => {
+                if idx >= v.len() {
+                    return None;
+                }
+                v[idx]
+            }
+        };
+        if raw == NO_SLOT { None } else { Some(raw) }
+    }
+
+    /// Set slot `idx` to `Some(pos)`, growing the storage if necessary.
+    #[inline]
+    fn set(&mut self, idx: usize, pos: usize) {
+        match self {
+            SmallSlots::Inline { len, data } => {
+                if idx < SLOTS_INLINE {
+                    if idx >= *len as usize {
+                        *len = (idx + 1) as u16;
+                    }
+                    data[idx] = pos;
+                    return;
+                }
+                // Spill to heap.
+                let mut v = vec![NO_SLOT; idx + 1];
+                v[..*len as usize].copy_from_slice(&data[..*len as usize]);
+                v[idx] = pos;
+                *self = SmallSlots::Heap(v);
+            }
+            SmallSlots::Heap(v) => {
+                if idx >= v.len() {
+                    v.resize(idx + 1, NO_SLOT);
+                }
+                v[idx] = pos;
+            }
+        }
+    }
+
+    /// Set slot `idx` to `None`, growing the storage if necessary.
+    #[inline]
+    fn clear(&mut self, idx: usize) {
+        match self {
+            SmallSlots::Inline { len, data } => {
+                if idx < SLOTS_INLINE {
+                    if idx >= *len as usize {
+                        *len = (idx + 1) as u16;
+                    }
+                    data[idx] = NO_SLOT;
+                } else {
+                    let mut v = vec![NO_SLOT; idx + 1];
+                    v[..*len as usize].copy_from_slice(&data[..*len as usize]);
+                    *self = SmallSlots::Heap(v);
+                }
+            }
+            SmallSlots::Heap(v) => {
+                if idx >= v.len() {
+                    v.resize(idx + 1, NO_SLOT);
+                }
+                v[idx] = NO_SLOT;
+            }
+        }
+    }
+
+    /// Set slot `idx` to `val` (either `Some` or `None`).
+    #[inline]
+    fn set_option(&mut self, idx: usize, val: Option<usize>) {
+        match val {
+            Some(pos) => self.set(idx, pos),
+            None => self.clear(idx),
+        }
+    }
+
+    /// Resize to exactly `new_len` slots (truncating or extending with `None`).
+    fn resize(&mut self, new_len: usize) {
+        match self {
+            SmallSlots::Inline { len, data } => {
+                if new_len <= SLOTS_INLINE {
+                    let old = *len as usize;
+                    *len = new_len as u16;
+                    if new_len > old {
+                        data[old..new_len].fill(NO_SLOT);
+                    }
+                } else {
+                    let mut v = vec![NO_SLOT; new_len];
+                    v[..*len as usize].copy_from_slice(&data[..*len as usize]);
+                    *self = SmallSlots::Heap(v);
+                }
+            }
+            SmallSlots::Heap(v) => v.resize(new_len, NO_SLOT),
+        }
+    }
+
+    /// Convert to `Vec<Option<usize>>` for the public API.
+    fn to_vec_options(&self) -> Vec<Option<usize>> {
+        (0..self.len()).map(|i| self.get(i)).collect()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // VM state
 // ---------------------------------------------------------------------------
 
 pub(crate) struct State {
     /// Flat capture slots: slots[2*(n-1)] = start, slots[2*(n-1)+1] = end (1-based groups)
-    pub(crate) slots: Vec<Option<usize>>,
+    pub(crate) slots: SmallSlots,
     /// Where `\K` reset the match start
     pub(crate) keep_pos: Option<usize>,
     /// Return address stack for subexpression calls
@@ -244,7 +395,7 @@ pub(crate) struct State {
 impl State {
     fn new(num_groups: usize, num_null_checks: usize) -> Self {
         State {
-            slots: vec![None; num_groups * 2],
+            slots: SmallSlots::new(num_groups * 2),
             keep_pos: None,
             call_stack: Vec::new(),
             null_check_slots: vec![(usize::MAX, 0); num_null_checks],
@@ -304,7 +455,7 @@ enum Bt {
     Retry {
         pc: usize,
         pos: usize,
-        slots: Vec<Option<usize>>,
+        slots: SmallSlots,
         keep_pos: Option<usize>,
         call_stack: Vec<usize>,
     },
@@ -387,19 +538,15 @@ impl MemoState {
 /// Compute which capture slots changed between `pre` and `post`.
 /// Returns `(slot_index, new_value)` pairs for every slot that differs.
 fn compute_slot_delta(
-    pre: &[Option<usize>],
-    post: &[Option<usize>],
+    pre: &SmallSlots,
+    post: &SmallSlots,
 ) -> Vec<(usize, Option<usize>)> {
     let len = pre.len().max(post.len());
     (0..len)
         .filter_map(|i| {
-            let old = pre.get(i).copied().flatten();
-            let new = post.get(i).copied().flatten();
-            if old != new {
-                Some((i, post.get(i).copied().flatten()))
-            } else {
-                None
-            }
+            let old = pre.get(i);
+            let new = post.get(i);
+            if old != new { Some((i, new)) } else { None }
         })
         .collect()
 }
@@ -782,10 +929,7 @@ pub(crate) fn exec(
 
             Inst::Save(slot) => {
                 let slot = *slot;
-                if slot >= state.slots.len() {
-                    state.slots.resize(slot + 1, None);
-                }
-                state.slots[slot] = Some(pos);
+                state.slots.set(slot, pos);
                 pc += 1;
             }
 
@@ -797,11 +941,11 @@ pub(crate) fn exec(
             Inst::BackRef(group, ignore_case, _level) => {
                 let slot_open = ((*group - 1) * 2) as usize;
                 let slot_close = slot_open + 1;
-                let start = match state.slots.get(slot_open).and_then(|x| *x) {
+                let start = match state.slots.get(slot_open) {
                     Some(s) => s,
                     None => fail!(),
                 };
-                let end = match state.slots.get(slot_close).and_then(|x| *x) {
+                let end = match state.slots.get(slot_close) {
                     Some(e) => e,
                     None => fail!(),
                 };
@@ -886,10 +1030,7 @@ pub(crate) fn exec(
                             } => {
                                 if positive {
                                     for (idx, val) in slot_delta {
-                                        if idx >= state.slots.len() {
-                                            state.slots.resize(idx + 1, None);
-                                        }
-                                        state.slots[idx] = val;
+                                        state.slots.set_option(idx, val);
                                     }
                                     if let Some(kp) = keep_pos_delta {
                                         state.keep_pos = kp;
@@ -936,8 +1077,8 @@ pub(crate) fn exec(
                 yes_pc,
                 no_pc,
             } => {
-                let has = state.slots.get(*slot).and_then(|x| *x).is_some()
-                    && state.slots.get(*slot + 1).and_then(|x| *x).is_some();
+                let has = state.slots.get(*slot).is_some()
+                    && state.slots.get(*slot + 1).is_some();
                 pc = if has { *yes_pc } else { *no_pc };
             }
 
@@ -1797,8 +1938,8 @@ impl CompiledRegex {
         let mut state = State::new(self.num_groups, self.num_null_checks);
         let end = exec(&ctx, 0, pos, &mut state, 0, memo)?;
         let match_start = state.keep_pos.unwrap_or(pos);
-        state.slots.resize(self.num_groups * 2, None);
-        Some((match_start, end, state.slots))
+        state.slots.resize(self.num_groups * 2);
+        Some((match_start, end, state.slots.to_vec_options()))
     }
 
     /// Find the leftmost match starting search from `start_pos`.
@@ -2304,8 +2445,8 @@ impl CompiledRegex {
         let mut state = State::new(self.num_groups, self.num_null_checks);
         let end = exec(&ctx, 0, pos, &mut state, 0, memo)?;
         let match_start = state.keep_pos.unwrap_or(pos);
-        state.slots.resize(self.num_groups * 2, None);
-        Some((match_start, end, state.slots))
+        state.slots.resize(self.num_groups * 2);
+        Some((match_start, end, state.slots.to_vec_options()))
     }
 }
 
@@ -2641,16 +2782,16 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
     let slots_slice =
         unsafe { std::slice::from_raw_parts(jctx.slots_ptr, jctx.slots_len as usize) };
     let mut sub = State {
-        slots: slots_slice
-            .iter()
-            .map(|&v| {
-                if v == u64::MAX {
-                    None
-                } else {
-                    Some(v as usize)
+        slots: {
+            let len = jctx.slots_len as usize;
+            let mut ss = SmallSlots::new(len);
+            for (i, &v) in slots_slice.iter().enumerate() {
+                if v != u64::MAX {
+                    ss.set(i, v as usize);
                 }
-            })
-            .collect(),
+            }
+            ss
+        },
         keep_pos: if jctx.keep_pos == u64::MAX {
             None
         } else {
@@ -2692,7 +2833,8 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
         let slots_out =
             unsafe { std::slice::from_raw_parts_mut(jctx.slots_ptr, jctx.slots_len as usize) };
         if jctx.bt_retry_count > 0 {
-            for (i, &s) in sub.slots.iter().enumerate() {
+            for i in 0..sub.slots.len() {
+                let s = sub.slots.get(i);
                 if i < slots_out.len() {
                     let new_val = s.map(|v| v as u64).unwrap_or(u64::MAX);
                     if new_val != slots_out[i] {
@@ -2703,7 +2845,8 @@ pub(crate) unsafe fn exec_lookaround_for_jit(
                 }
             }
         }
-        for (i, &s) in sub.slots.iter().enumerate() {
+        for i in 0..sub.slots.len() {
+            let s = sub.slots.get(i);
             if i < slots_out.len() {
                 slots_out[i] = s.map(|v| v as u64).unwrap_or(u64::MAX);
             }
