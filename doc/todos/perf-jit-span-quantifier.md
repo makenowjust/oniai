@@ -1,6 +1,19 @@
 # perf-jit-span-quantifier — JIT tight loop for simple greedy quantifiers
 
-**Status:** Planned
+**Status:** Done
+
+## Results (2026-03-02)
+
+| Benchmark | Before | After | Improvement |
+|-----------|-------:|------:|------------:|
+| `quantifier/greedy_match_500/oniai/jit` | 1.97 µs | **342 ns** | **5.8×** — matches pcre2 (376 ns) |
+| `quantifier/greedy_match_500/oniai/interp` | 8.66 µs | **423 ns** | **20×** |
+| `quantifier/greedy_no_match_500/oniai/jit` | 27 ns | 27 ns | unchanged (already fast) |
+
+The JIT now matches pcre2 on this benchmark.  The interpreter path improved 20×
+as a bonus (SpanChar/SpanClass are used by both paths).
+
+Log: `log/bench-span-quantifier-2026-03-02.txt`
 
 ## Problem
 
