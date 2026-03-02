@@ -1848,17 +1848,17 @@ impl CompiledRegex {
                 let mut pos = start_pos;
                 loop {
                     let candidate = match chars.as_slice() {
-                        &[c1] if (c1 as u32) < 128 => {
-                            memchr::memchr(c1 as u8, &text_bytes[pos..]).map(|o| pos + o)
+                        [c1] if (*c1 as u32) < 128 => {
+                            memchr::memchr(*c1 as u8, &text_bytes[pos..]).map(|o| pos + o)
                         }
-                        &[c1, c2] if (c1 as u32) < 128 && (c2 as u32) < 128 => {
-                            memchr::memchr2(c1 as u8, c2 as u8, &text_bytes[pos..])
+                        [c1, c2] if (*c1 as u32) < 128 && (*c2 as u32) < 128 => {
+                            memchr::memchr2(*c1 as u8, *c2 as u8, &text_bytes[pos..])
                                 .map(|o| pos + o)
                         }
-                        &[c1, c2, c3]
-                            if (c1 as u32) < 128 && (c2 as u32) < 128 && (c3 as u32) < 128 =>
+                        [c1, c2, c3]
+                            if (*c1 as u32) < 128 && (*c2 as u32) < 128 && (*c3 as u32) < 128 =>
                         {
-                            memchr::memchr3(c1 as u8, c2 as u8, c3 as u8, &text_bytes[pos..])
+                            memchr::memchr3(*c1 as u8, *c2 as u8, *c3 as u8, &text_bytes[pos..])
                                 .map(|o| pos + o)
                         }
                         _ => chars
@@ -2064,17 +2064,17 @@ impl CompiledRegex {
                 let mut pos = start_pos;
                 loop {
                     let candidate = match chars.as_slice() {
-                        &[c1] if (c1 as u32) < 128 => {
-                            memchr::memchr(c1 as u8, &text_bytes[pos..]).map(|o| pos + o)
+                        [c1] if (*c1 as u32) < 128 => {
+                            memchr::memchr(*c1 as u8, &text_bytes[pos..]).map(|o| pos + o)
                         }
-                        &[c1, c2] if (c1 as u32) < 128 && (c2 as u32) < 128 => {
-                            memchr::memchr2(c1 as u8, c2 as u8, &text_bytes[pos..])
+                        [c1, c2] if (*c1 as u32) < 128 && (*c2 as u32) < 128 => {
+                            memchr::memchr2(*c1 as u8, *c2 as u8, &text_bytes[pos..])
                                 .map(|o| pos + o)
                         }
-                        &[c1, c2, c3]
-                            if (c1 as u32) < 128 && (c2 as u32) < 128 && (c3 as u32) < 128 =>
+                        [c1, c2, c3]
+                            if (*c1 as u32) < 128 && (*c2 as u32) < 128 && (*c3 as u32) < 128 =>
                         {
-                            memchr::memchr3(c1 as u8, c2 as u8, c3 as u8, &text_bytes[pos..])
+                            memchr::memchr3(*c1 as u8, *c2 as u8, *c3 as u8, &text_bytes[pos..])
                                 .map(|o| pos + o)
                         }
                         _ => chars

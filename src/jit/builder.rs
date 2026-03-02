@@ -1847,6 +1847,7 @@ fn flags_bits(f: crate::ast::Flags) -> u32 {
 
 /// Embed a Rust string as `(ptr: i64, len: i64)` constant pair.
 /// The string data lives in the compiled `Vec<Inst>` which outlives all JIT calls.
+#[allow(dead_code)]
 fn string_const(
     builder: &mut FunctionBuilder<'_>,
     s: &str,

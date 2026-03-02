@@ -52,6 +52,7 @@ pub fn case_fold(ch: char) -> CaseFold {
 /// Iterator adapter: yields the full case-fold sequence of each character in a string.
 ///
 /// Equivalent to `s.chars().flat_map(case_fold_chars)` but works with `CaseFold`.
+#[allow(dead_code)]
 pub struct CaseFoldIter {
     inner: std::str::Chars<'static>,
     buf: Option<CaseFold>,
