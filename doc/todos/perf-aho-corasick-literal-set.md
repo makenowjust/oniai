@@ -1,6 +1,21 @@
 # perf-aho-corasick-literal-set — Aho-Corasick for LiteralSet strategy
 
-**Status:** Planned
+**Status:** Done
+
+## Results (2026-03-02)
+
+| Benchmark | Before | After | Improvement |
+|-----------|-------:|------:|------------:|
+| `alternation/4_alts_match/oniai/jit` | 665 ns | **54 ns** | 12× faster |
+| `alternation/4_alts_no_match/oniai/jit` | 816 ns | **31 ns** | 26× faster — **now beats regex (55 ns)** |
+| `alternation/10_alts_match/oniai/jit` | 1.26 µs | **379 ns** | 3.3× faster |
+| `alternation/10_alts_no_match/oniai/jit` | 1.53 µs | **778 ns** | 2.0× faster |
+| `case_insensitive_alt/find_all/oniai/jit` | 14.8 ms | **29 µs** | **510× faster** |
+
+`case_insensitive_alt` gap vs regex: was 1 500× → now 3× (29 µs vs 9.5 µs).
+`4_alts_no_match`: oniai now **faster than regex and fancy-regex**.
+
+Log: `log/bench-aho-corasick-2026-03-02.txt`
 
 ## Problem
 

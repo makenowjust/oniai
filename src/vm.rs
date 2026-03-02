@@ -1135,8 +1135,8 @@ enum StartStrategy {
     /// Use `str::find` to jump directly to each occurrence.
     LiteralPrefix(String),
     /// Top-level alternation of case-sensitive literals (each ≥ 2 chars).
-    /// Run `str::find` for each and take the leftmost candidate.
-    LiteralSet(Vec<String>),
+    /// Uses an Aho-Corasick automaton to find the leftmost candidate in O(n).
+    LiteralSet(aho_corasick::AhoCorasick),
     /// Pattern starts with a case-insensitive literal (FoldSeq).
     /// Stores the full folded sequence for pre-filtering; the scanner uses
     /// SIMD str::find for ASCII first-byte variants and raw-byte scans for
@@ -1213,13 +1213,17 @@ impl StartStrategy {
         if let Some(Inst::AltTrie(idx)) = prog.get(pc) {
             let lits = alt_tries[*idx].all_strings();
             if lits.iter().any(|s| s.len() >= 2) {
-                return StartStrategy::LiteralSet(lits);
+                let ac = aho_corasick::AhoCorasick::new(&lits)
+                    .expect("AltTrie strings are valid UTF-8");
+                return StartStrategy::LiteralSet(ac);
             }
         }
 
         // Try to extract a set of literals from a top-level alternation
         if let Some(lits) = extract_literal_set(prog) {
-            return StartStrategy::LiteralSet(lits);
+            let ac = aho_corasick::AhoCorasick::new(&lits)
+                .expect("literal set strings are valid UTF-8");
+            return StartStrategy::LiteralSet(ac);
         }
 
         // Collect the set of possible first characters
@@ -1756,14 +1760,12 @@ impl CompiledRegex {
                 }
             }
 
-            // Run str::find for each literal and jump to the leftmost hit.
-            StartStrategy::LiteralSet(lits) => {
+            // Use Aho-Corasick to find the leftmost literal candidate in O(n).
+            StartStrategy::LiteralSet(ac) => {
                 let mut pos = start_pos;
                 loop {
-                    let candidate = lits
-                        .iter()
-                        .filter_map(|lit| text[pos..].find(lit.as_str()).map(|o| pos + o))
-                        .min()?;
+                    let m = ac.find(&text.as_bytes()[pos..])?;
+                    let candidate = pos + m.start();
                     if let Some(result) = self.try_at(text, candidate, &mut memo, scratch) {
                         return Some(result);
                     }
@@ -1987,14 +1989,11 @@ impl CompiledRegex {
                     }
                 }
             }
-            StartStrategy::LiteralSet(lits) => {
-                let lits = lits.clone();
+            StartStrategy::LiteralSet(ac) => {
                 let mut pos = start_pos;
                 loop {
-                    let candidate = lits
-                        .iter()
-                        .filter_map(|lit| text[pos..].find(lit.as_str()).map(|o| pos + o))
-                        .min()?;
+                    let m = ac.find(&text.as_bytes()[pos..])?;
+                    let candidate = pos + m.start();
                     if let Some(r) = self.exec_interp(text, candidate, &mut memo) {
                         return Some(r);
                     }
