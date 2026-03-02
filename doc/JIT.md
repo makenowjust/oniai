@@ -117,7 +117,8 @@ implied by the `Inst` enum:
 | VM instruction | Cranelift CFG edge |
 |----------------|-------------------|
 | `Match` | Return success value |
-| `Char` / `AnyChar` / `Shorthand` / `Class` / `Prop` / `FoldSeq` | Fall-through on success; jump to `bt_resume_block` on fail |
+| `Char` / `AnyChar` / `Class` / `FoldSeq` | Fall-through on success; jump to `bt_resume_block` on fail |
+| `AltTrie` | Call `jit_match_alt_trie` helper; fall-through on success; jump to `bt_resume_block` on fail |
 | `Anchor` | Same as character match |
 | `Jump(t)` | Unconditional `jump` to `block[t]` |
 | `Fork(alt)` | Check dense memo; push `MemoMark + Retry` onto bt stack; `jump` to `block[pc+1]` |
@@ -140,9 +141,8 @@ call overhead:
 |-------------|-----------|
 | `Char(ch)` (ASCII) | `uload8` + `icmp` + conditional branch |
 | `AnyChar(dotall)` | bounds check + UTF-8 leading-byte length + optional newline test |
-| `Shorthand(sh)` (ASCII) | bounds check + ASCII range checks; non-ASCII falls back to helper |
-| `Class` / `ClassBack` (ASCII charsets) | inline range/char checks; POSIX always-ASCII classes inlined |
-| `ShorthandBack` (ASCII) | same as Shorthand |
+| `Class` / `ClassBack` (ASCII path) | for charsets with ≥3 ASCII ranges: branch-free bitmap check `(ascii_bits[byte>>6] >> (byte&63)) & 1`; for ≤2 ranges: inline range cascade; non-ASCII bytes call `jit_match_class` helper |
+| `AltTrie` / `AltTrieBack` | call `jit_match_alt_trie` / `jit_match_alt_trie_back` helper |
 | `Save(slot)` | `store pos → slots_ptr[slot]` (with prior `SaveUndo` push) |
 | `KeepStart` | `store pos → ctx.keep_pos` |
 | `Anchor(StringStart\|StringEnd)` | `icmp pos == 0` / `icmp pos == text_len` |
@@ -258,7 +258,8 @@ The following instructions call back into Rust `extern "C"` helpers:
 | `AtomicStart` | `jit_atomic_start` | Increments `atomic_depth`; pushes `AtomicBarrier` |
 | `AtomicEnd` | `jit_atomic_end` | Drains `SaveUndo` entries up to barrier; decrements depth |
 | `LookStart` / `LookEnd` | `jit_lookaround` | Runs sub-execution via interpreter; caches result in `look_results` |
-| `Prop` / `PropBack` | `jit_prop` / `jit_prop_back` | Unicode property check via `charset` module |
+| `Class` / `ClassBack` non-ASCII | `jit_match_class` / `jit_match_class_back` | Full charset match for non-ASCII chars |
+| `AltTrie` / `AltTrieBack` | `jit_match_alt_trie` / `jit_match_alt_trie_back` | ByteTrie walk for string alternation |
 | `FoldSeq` / `FoldSeqBack` | `jit_fold_seq` / `jit_fold_seq_back` | Multi-codepoint case-fold advance/retreat |
 | Fork slow path | `jit_fork` / `jit_fork_next` | Used when `memo_has_failures == 1` and dense array check misses |
 | Memo growth | `jit_fork_memo_record` | Grows the dense array and records a failure |
@@ -452,15 +453,20 @@ Inlined `Char` (ASCII), `AnyChar`, `Shorthand` (ASCII fast-path), `Save`,
 and `Anchor(StringStart|StringEnd)` as Cranelift IR, eliminating the
 corresponding `extern "C"` calls.
 
-### Phase 3 — `CharClass` inlining
+### Phase 3 — `Class` / `ClassBack` inlining
 
-Inlined `CharClass`/`ClassBack` for charsets whose items are all ASCII `Char`
-or `Range` values (no negation, no Unicode escapes).
+Inlined `Class`/`ClassBack` for charsets whose items are ASCII ranges or chars
+(no non-ASCII codepoints, no negation), using inline range/equality checks in
+Cranelift IR.  `Shorthand` / `Prop` instructions were consolidated into `Class`
+(as part of the CharSet inversion-list refactor), eliminating separate
+`Shorthand`/`ShorthandBack`/`Prop`/`PropBack` instructions.
 
-### Phase 4 — POSIX and `ShorthandBack` inlining
+### Phase 4 — POSIX and Unicode charset inlining
 
-Extended `CharClass`/`ClassBack` inline to POSIX always-ASCII classes and
-ASCII-safe `Shorthand` items; inlined `ShorthandBack`.
+Extended `Class`/`ClassBack` inline to all charsets whose ASCII bits can be
+expressed as a range cascade.  Non-ASCII bytes call the `jit_match_class`
+helper.  `Shorthand` / `Prop` helpers (`jit_prop`, `jit_prop_back`) were
+removed once the instruction set was unified.
 
 ### Phase 5 — Capture-delta undo log
 
@@ -495,26 +501,46 @@ list.  Case-insensitive patterns are now JIT-compiled.
 `ExecScratch` that survives across successive `find()` calls, amortising the
 fork-memo array allocation across the entire scan.
 
+### Phase 8 — Inline ASCII bitmap check for `Class`
+
+Replaced the ASCII range-cascade in `Class`/`ClassBack` with a branch-free
+**bitmap check** for charsets with ≥3 ASCII ranges:
+
+```
+word = ascii_bits[byte >> 6]     ; one of two precomputed u64 constants (select)
+ok   = (word >> (byte & 63)) & 1
+```
+
+Cranelift's `select` lowers to `cmov` on x86-64 — 3 operations vs. up to 16
+for `\w` (4 ranges).  A threshold dispatcher keeps the cheaper range cascade
+for simple charsets (`[0-9]`, `[a-zA-Z]` — ≤2 ASCII ranges) where the bitmap
+overhead is not justified.
+
+Impact: `charclass/posix_digit_iter/jit` −4% additional; no regressions.
+
 ---
 
 ## 10. Measured Performance
 
 The table below gives measured median times (x86-64, Apple Silicon M-series via
-Rosetta, Criterion 0.5).  See `doc/BENCHMARKS.md` for the full table and
-per-phase breakdown.
+Rosetta, Criterion 0.5) after all Phase 8 optimizations.  See `log/` for raw
+Criterion output.
 
-| Benchmark | Interpreter | JIT Phase 7 | Speedup |
-|-----------|-------------|-------------|---------|
+| Benchmark | Interpreter | JIT (Phase 8) | Speedup |
+|-----------|-------------|---------------|---------|
 | `quantifier/greedy_match_500` | 9.17 µs | 1.83 µs | **5.01×** |
 | `pathological/10` | 4.39 µs | 1.88 µs | **2.33×** |
 | `pathological/15` | 9.94 µs | 3.97 µs | **2.50×** |
 | `pathological/20` | 17.7 µs | 6.93 µs | **2.55×** |
-| `charclass/alpha_iter` | 31.2 µs | 6.96 µs | **4.48×** |
-| `charclass/posix_digit_iter` | 24.4 µs | 8.99 µs | **2.71×** |
+| `charclass/alpha_iter` | 31.2 µs | ~4.1 µs | **~7.6×** |
+| `charclass/posix_digit_iter` | 24.4 µs | ~3.3 µs | **~7.4×** |
 | `find_iter_scale/1000` | 26.7 µs | 16.5 µs | **1.62×** |
 | `email/find_all` | 3.25 µs | 1.79 µs | **1.82×** |
-| `real_world/title_name` | 139.5 µs | 135 µs | **1.03×** |
-| `case_insensitive/match` | 14.0 µs | 14.2 µs | ≈1.00× |
+| `literal/match_mid_1k` | ~25 µs | ~9.5 µs | **~2.6×** |
+
+`charclass` benchmarks benefit significantly from both `AsciiClassStart`
+(−41–63%) and the inline bitmap check (−4%).  `literal` benefits from
+`memchr::memmem` scanning (−40%).
 
 Patterns containing `BackRef` or subexpression calls are unaffected
 (interpreter used).
