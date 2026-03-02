@@ -135,6 +135,7 @@ implied by the `Inst` enum:
 | `AbsenceStart` / `AbsenceEnd` | Ineligible — interpreter fallback |
 | `BackRef` / `BackRefRelBack` | Ineligible — interpreter fallback |
 | `Call` / `Ret` / `RetIfCalled` | Ineligible — interpreter fallback |
+| `RepeatInit` / `RepeatNext` | Ineligible — interpreter fallback (JIT support not yet implemented) |
 
 ### 4.3 Inlining strategy
 
@@ -313,6 +314,7 @@ JIT-ineligible if any instruction is:
   • BackRef / BackRefRelBack     → memo disabled anyway; outcome depends on captured text
   • Call / Ret / RetIfCalled     → subexpression calls (recursive patterns)
   • AbsenceStart / AbsenceEnd    → absence operator
+  • RepeatInit / RepeatNext      → counter-based exact repetition (JIT support not yet implemented)
 ```
 
 All other instructions — including `LookStart`/`LookEnd`, `FoldSeq`/
