@@ -88,11 +88,11 @@ jit = ["dep:cranelift-jit", "dep:cranelift-codegen", "dep:cranelift-frontend",
        "dep:cranelift-module", "dep:cranelift-native"]
 
 [dependencies]
-cranelift-jit      = { version = "0.119", optional = true }
-cranelift-codegen  = { version = "0.119", optional = true }
-cranelift-frontend = { version = "0.119", optional = true }
-cranelift-module   = { version = "0.119", optional = true }
-cranelift-native   = { version = "0.119", optional = true }
+cranelift-jit      = { version = "0.129.1", optional = true }
+cranelift-codegen  = { version = "0.129.1", optional = true }
+cranelift-frontend = { version = "0.129.1", optional = true }
+cranelift-module   = { version = "0.129.1", optional = true }
+cranelift-native   = { version = "0.129.1", optional = true }
 ```
 
 ---

@@ -34,7 +34,7 @@
 //!   dispatches with `br_table`.
 
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::instructions::BlockCall;
+use cranelift_codegen::ir::instructions::{BlockArg, BlockCall};
 use cranelift_codegen::ir::{
     AbiParam, Block, InstBuilder, JumpTableData, MemFlags, StackSlotData, StackSlotKind, TrapCode,
     UserFuncName,
@@ -45,13 +45,6 @@ use cranelift_module::{FuncId, Linkage, Module};
 
 use crate::ast::AnchorKind;
 use crate::vm::{CharSet, Inst};
-
-// ---------------------------------------------------------------------------
-// Variable indices
-// ---------------------------------------------------------------------------
-
-const VAR_POS: u32 = 0;
-const VAR_CTX: u32 = 1;
 
 // ---------------------------------------------------------------------------
 // JitExecCtx field byte offsets (must match vm.rs JitExecCtx, #[repr(C)])
@@ -189,10 +182,8 @@ fn emit_function(
 ) -> Result<(), String> {
     let n = prog.len();
 
-    let var_pos = Variable::from_u32(VAR_POS);
-    let var_ctx = Variable::from_u32(VAR_CTX);
-    builder.declare_var(var_pos, types::I64);
-    builder.declare_var(var_ctx, types::I64);
+    let var_pos = builder.declare_var(types::I64);
+    let var_ctx = builder.declare_var(types::I64);
 
     let entry_block = builder.create_block();
     let inst_blocks: Vec<Block> = (0..n).map(|_| builder.create_block()).collect();
@@ -914,9 +905,9 @@ fn emit_function(
                 builder.ins().brif(
                     in_bounds,
                     memo_pop_after_block,
-                    &[idx],
+                    &[BlockArg::Value(idx)],
                     memo_pop_slow_block,
-                    &[fork_idx_u32, fork_pos],
+                    &[BlockArg::Value(fork_idx_u32), BlockArg::Value(fork_pos)],
                 );
             } else {
                 builder.ins().jump(bt_resume_block, &[]);
@@ -1010,10 +1001,10 @@ fn emit_function(
         builder.def_var(var_pos, restored_pos);
         let mut table_entries: Vec<BlockCall> = Vec::with_capacity(n);
         for &b in &inst_blocks {
-            let bc = BlockCall::new(b, &[], &mut builder.func.dfg.value_lists);
+            let bc = BlockCall::new(b, std::iter::empty::<BlockArg>(), &mut builder.func.dfg.value_lists);
             table_entries.push(bc);
         }
-        let default_bc = BlockCall::new(return_fail_block, &[], &mut builder.func.dfg.value_lists);
+        let default_bc = BlockCall::new(return_fail_block, std::iter::empty::<BlockArg>(), &mut builder.func.dfg.value_lists);
         let jt_data = JumpTableData::new(default_bc, &table_entries);
         let jt = builder.create_jump_table(jt_data);
         builder.ins().br_table(restored_block_id, jt);
@@ -1375,13 +1366,13 @@ fn inline_charclass_fwd(
         // Non-ASCII bytes never match: fail immediately without helper.
         builder
             .ins()
-            .brif(is_ascii, ascii_check_block, &[byte], bt_resume, &[]);
+            .brif(is_ascii, ascii_check_block, &[BlockArg::Value(byte)], bt_resume, &[]);
     } else {
         // Non-ASCII bytes may match: call jit_match_class for correct handling.
         let nonascii_block = builder.create_block();
         builder
             .ins()
-            .brif(is_ascii, ascii_check_block, &[byte], nonascii_block, &[]);
+            .brif(is_ascii, ascii_check_block, &[BlockArg::Value(byte)], nonascii_block, &[]);
 
         builder.switch_to_block(nonascii_block);
         let ctx_v = builder.use_var(var_ctx);
@@ -1468,12 +1459,12 @@ fn inline_charclass_back(
     if is_ascii_only_charset(cs) {
         builder
             .ins()
-            .brif(is_ascii, ascii_check_block, &[byte], bt_resume, &[]);
+            .brif(is_ascii, ascii_check_block, &[BlockArg::Value(byte)], bt_resume, &[]);
     } else {
         let nonascii_block = builder.create_block();
         builder
             .ins()
-            .brif(is_ascii, ascii_check_block, &[byte], nonascii_block, &[]);
+            .brif(is_ascii, ascii_check_block, &[BlockArg::Value(byte)], nonascii_block, &[]);
 
         builder.switch_to_block(nonascii_block);
         let ctx_v = builder.use_var(var_ctx);
@@ -1699,7 +1690,7 @@ fn inline_fork(
             // Out of bounds → no failure recorded; push normally
             builder
                 .ins()
-                .brif(in_bounds, do_check_block, &[idx], fast_block, &[]);
+                .brif(in_bounds, do_check_block, &[BlockArg::Value(idx)], fast_block, &[]);
         }
 
         // do_check_block(idx): idx is in bounds; read one byte and check mask.
