@@ -12,9 +12,7 @@ Five engine variants are compared side-by-side:
 
 Run on: 2026-03-02 (macOS, Apple Silicon M-series, PCRE2 10.47)
 
-Oniai numbers from `log/bench-memchr-scanning-v2-2026-03-02.txt` (latest, all
-optimizations applied).  Reference engine numbers from
-`log/bench-pcre2-comparison-2026-02-28.txt` (comparison engines are unchanged).
+Source log: `log/bench-full-2026-03-02.txt` (all optimizations applied).
 
 ### Running benchmarks
 
@@ -39,77 +37,79 @@ cargo bench 2>&1 | tee log/bench-$(date +%F).txt
 
 ## Standard patterns (all five engines)
 
-### Literal search
+### Literal search — `hello` in 1 000-char haystack
 
 | Benchmark | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
 |-----------|----------:|-------------:|------:|------------:|------:|
-| `no_match` 1 000 'a's | 51 ns | 52 ns | 40 ns | 40 ns | 49 ns |
-| `match_mid` 1 000 chars | **85 ns** | 108 ns | 25 ns | 26 ns | 58 ns |
+| `no_match` | 51 ns | 52 ns | **40 ns** | 39 ns | 48 ns |
+| `match_mid` | 84 ns | 107 ns | **25 ns** | 26 ns | 57 ns |
 
-`memchr::memmem` scanning cuts `match_mid` from 143 ns to 85 ns (−41% vs prior release).
-`regex` uses Aho-Corasick / SIMD literal scanning and remains fastest for this case.
+`memchr::memmem` scanning cuts `match_mid` to 84 ns.
+`regex` uses SIMD literal scanning and remains fastest for single-literal search.
 
-### Anchored match `\Aabc` — 1 000 chars
+### Anchored `\Ahello` — 1 000-char haystack (no match)
 
 | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
 |----------:|-------------:|------:|------------:|------:|
-| 19 ns | 20 ns | **12 ns** | 11 ns | 34 ns |
+| 19 ns | 19 ns | **11 ns** | 11 ns | 34 ns |
 
-### Alternation `foo|bar|baz|qux` — AltTrie optimized
+### Alternation `foo|bar|baz|qux` — AltTrie
 
-All four alternatives share a single `AltTrie` deterministic trie instruction.
+All alternatives share a single deterministic-trie instruction (`AltTrie`).
 
 | Benchmark | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
 |-----------|----------:|-------------:|------:|------------:|------:|
-| 4 alts — match (400 chars) | **653 ns** | 754 ns | 30 ns | 32 ns | 208 ns |
-| 4 alts — no match (500 chars) | 786 ns | 879 ns | **56 ns** | 56 ns | 367 ns |
-| 10 alts — match | 1.24 µs | 1.46 µs | — | — | — |
-| 10 alts — no match | 1.47 µs | 1.68 µs | — | — | — |
+| 4 alts — match (~400 chars) | 665 ns | 760 ns | **30 ns** | 33 ns | 214 ns |
+| 4 alts — no match (~500 chars) | 816 ns | 902 ns | **58 ns** | 56 ns | 365 ns |
+| 10 alts — match | 1.26 µs | 1.48 µs | **36 ns** | 39 ns | 294 ns |
+| 10 alts — no match | 1.53 µs | 1.72 µs | **66 ns** | 65 ns | 376 ns |
 
-Previous oniai numbers (without AltTrie): 18.9 µs match, 46.7 µs no-match — 28–60× improvement.
-`regex` still leads for multi-literal alternation (Aho-Corasick).
+`regex` uses Aho-Corasick and is 20–40× faster for multi-string alternation.
+oniai improved ~29× for 4-alt match vs the pre-AltTrie NFA approach (was ~18.9 µs).
 
 ### Quantifiers
 
 | Benchmark | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
 |-----------|----------:|-------------:|------:|------------:|------:|
-| `a*b` no-match 500 'a's | **27 ns** | 28 ns | 816 ns | 819 ns | 31 ns |
-| `a+` match 500 'a's | 1.90 µs | 8.34 µs | 2.32 µs | 2.32 µs | **366 ns** |
+| `a*b` no-match — 500 'a's | **28 ns** | 29 ns | 833 ns | 834 ns | 31 ns |
+| `a+` match — 500 'a's | 1.97 µs | 8.62 µs | 2.39 µs | 2.35 µs | **372 ns** |
 
-`a*b` on all-'a' input: oniai and pcre2 fail immediately (memoization / early-exit); `regex`/`fancy-regex` walk every position (~30× slower).
+`a*b` on all-'a' input: oniai and pcre2 fail at once (memoization / early-exit);
+`regex`/`fancy-regex` pay a ~30× penalty.
 
 ### Captures `(\w+)\s+(\w+)`
 
 | Benchmark | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
 |-----------|----------:|-------------:|------:|------------:|------:|
-| first capture | 573 ns | 569 ns | 201 ns | 205 ns | **151 ns** |
-| iterate all (44-char input) | 2.27 µs | 2.26 µs | **111 ns** | 901 ns | 730 ns |
+| first capture | 598 ns | 603 ns | 206 ns | 209 ns | **154 ns** |
+| iterate all (44-char input) | 2.37 µs | 2.34 µs | **112 ns** | 921 ns | 746 ns |
+
+`regex` is 21× faster than oniai for `captures_iter` due to DFA substring extraction.
 
 ### Email `\w+@\w+\.\w+`
 
 | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
 |----------:|-------------:|------:|------------:|------:|
-| 1.09 µs | 3.18 µs | **140 ns** | 136 ns | 484 ns |
+| 1.12 µs | 3.30 µs | **144 ns** | 138 ns | 479 ns |
 
 ### Character classes
 
 | Benchmark | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
 |-----------|----------:|-------------:|------:|------------:|------:|
-| `[a-zA-Z]+` (900 chars) | **4.86 µs** | 24.0 µs | 2.97 µs | 5.72 µs | 4.22 µs |
-| `[[:digit:]]+` (900 chars) | **4.14 µs** | 13.83 µs | 3.72 µs | 6.10 µs | 4.23 µs |
+| `[a-zA-Z]+` — 900 chars | **4.91 µs** | 24.0 µs | 2.98 µs | 5.73 µs | 4.20 µs |
+| `[[:digit:]]+` — 900 chars | **4.15 µs** | 13.9 µs | 3.76 µs | 6.06 µs | 4.23 µs |
 
-`AsciiClassStart` strategy (skipping non-matching positions with a bitmap) cut `alpha_iter/jit`
-from 7.9 µs to 4.86 µs (−38%) and `posix_digit_iter/jit` from 10.5 µs to 4.14 µs (−61%).
-oniai/jit is now faster than pcre2 on both charclass benchmarks.
+`AsciiClassStart` strategy (bitmap-based position skipping) cut alpha from 7.9 µs (−38%)
+and posix_digit from 10.5 µs (−61%). oniai/jit is now faster than pcre2 on both.
 
 ### Case-insensitive `(?i)hello` — 600 chars
 
 | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
 |----------:|-------------:|------:|------------:|------:|
-| 319 ns | **272 ns** | 83 ns | 85 ns | **79 ns** |
+| 321 ns | **274 ns** | 83 ns | 85 ns | **79 ns** |
 
-Previous oniai numbers: 14.3 µs — the UTF-8 ByteTrie optimization achieved a ~50× speedup.
-The remaining 3–4× gap vs regex/pcre2 is due to the NFA call overhead per match found.
+Previous oniai: 14.3 µs — UTF-8 ByteTrie achieved ~45× speedup.
+The remaining 4× gap vs regex/pcre2 reflects NFA iteration overhead.
 
 ---
 
@@ -117,39 +117,36 @@ The remaining 3–4× gap vs regex/pcre2 is due to the NFA call overhead per mat
 
 `regex` does not support lookarounds, backreferences, or atomic groups.
 
-### Lookahead: `\w+(?=,)` — "A Study in Scarlet" (~580 KB)
+### Lookahead `\w+(?=,)` — "A Study in Scarlet" (~580 KB)
 
 | oniai/jit | oniai/interp | fancy-regex | pcre2 |
 |----------:|-------------:|------------:|------:|
-| 18.8 ms | 35.0 ms | **418 µs** | 15.5 ms |
+| 18.8 ms | 34.6 ms | **418 µs** | 15.5 ms |
 
-`fancy-regex` is 45× faster than pcre2 and 45× faster than oniai/jit on a large text.
-oniai/jit is 1.9× faster than its interpreter for this case.
+`fancy-regex` is 45× faster than pcre2 and 45× faster than oniai/jit.
 
-### Lookbehind: `(?<=\. )[A-Z]\w+` — "A Study in Scarlet"
+### Lookbehind `(?<=\. )[A-Z]\w+` — "A Study in Scarlet"
 
 | oniai/jit | oniai/interp | fancy-regex | pcre2 |
 |----------:|-------------:|------------:|------:|
-| 21.2 ms | 22.6 ms | 6.9 ms | **421 µs** |
+| 21.3 ms | 21.7 ms | 6.98 ms | **424 µs** |
 
 `pcre2` is 16× faster than `fancy-regex` and ~50× faster than oniai.
 
-### Backreference: `(\b\w+\b) \1` (doubled word) — "A Study in Scarlet"
+### Backreference `(\b\w+\b) \1` (doubled word) — "A Study in Scarlet"
 
 | oniai/jit | oniai/interp | fancy-regex | pcre2 |
 |----------:|-------------:|------------:|------:|
-| 20.3 ms | 20.2 ms | 14.6 ms | **8.5 ms** |
+| 20.4 ms | 20.3 ms | 14.7 ms | **8.57 ms** |
 
-`pcre2` is 1.7× faster than `fancy-regex` and 2.4× faster than oniai.
-
-### Atomic groups: `(?>a+)b` — 500 'a's (no match)
+### Atomic groups `(?>a+)b` — 500 'a's (no match)
 
 | oniai/jit | oniai/interp | fancy-regex | pcre2 |
 |----------:|-------------:|------------:|------:|
-| **27 ns** | 28 ns | 273 µs | 37 ns |
+| **27 ns** | 28 ns | 268 µs | 36 ns |
 
-`fancy-regex` is **10 000× slower** than oniai/pcre2: it parses `(?>...)` syntax but does not
-optimize away backtracking.  oniai and pcre2 correctly treat the group as possessive.
+`fancy-regex` is ~10 000× slower: it parses `(?>...)` but does not eliminate backtracking.
+oniai and pcre2 correctly treat atomic groups as possessive.
 
 ---
 
@@ -157,40 +154,38 @@ optimize away backtracking.  oniai and pcre2 correctly treat the group as posses
 
 | Size | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
 |-----:|----------:|-------------:|------:|------------:|------:|
-| 100 | 1.22 µs | 1.96 µs | **437 ns** | 970 ns | 1.40 µs |
-| 500 | 5.81 µs | 9.59 µs | **2.05 µs** | 4.70 µs | 6.84 µs |
-| 1 000 | 11.6 µs | 19.1 µs | **4.05 µs** | 9.34 µs | 13.5 µs |
-| 5 000 | 57.8 µs | 95.5 µs | **20.1 µs** | 46.3 µs | 68.4 µs |
+| 100 | 1.23 µs | 2.07 µs | **421 ns** | 963 ns | 1.40 µs |
+| 500 | 5.82 µs | 10.1 µs | **2.04 µs** | 4.67 µs | 6.84 µs |
+| 1 000 | 11.6 µs | 20.2 µs | **4.03 µs** | 9.37 µs | 13.5 µs |
+| 5 000 | 58.5 µs | 101 µs | **20.0 µs** | 46.4 µs | 68.0 µs |
 
-All engines are linear in input size. `regex` is ~2.4× faster than oniai/jit.
+All engines scale linearly. `regex` is ~2.9× faster than oniai/jit.
 
 ---
 
-## Pathological: `(a?)^n a^n` on `a^n`
-
-Demonstrates backtracking complexity. `regex` and `fancy-regex` use DFA and are immune.
+## Pathological: `(a?){n}a{n}` on `a{n}`
 
 | n | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
 |---|----------:|-------------:|------:|------------:|------:|
-| 10 | 1.41 µs | 4.39 µs | 26 ns | 25 ns | 26 µs |
-| 15 | 2.78 µs | 10.2 µs | 33 ns | 32 ns | 958 µs |
-| 20 | 4.80 µs | 18.0 µs | 40 ns | 40 ns | **35 ms** |
+| 10 | 1.42 µs | 4.47 µs | **25 ns** | 25 ns | 26.6 µs |
+| 15 | 2.80 µs | 10.3 µs | **33 ns** | 33 ns | 978 µs |
+| 20 | 4.83 µs | 18.1 µs | **40 ns** | 41 ns | **35.5 ms** |
 
-- `regex` / `fancy-regex`: DFA, O(n) — immune to exponential blowup.
-- oniai: memoization bounds the search to O(|prog| × |text|) — polynomial, not exponential.
-- **pcre2**: classic backtracking, **exponential** — 35 ms at n=20, grows as ~32× per 5-step increase.
+- `regex` / `fancy-regex`: DFA — O(n), immune to exponential blowup.
+- **oniai**: memoization bounds the search to O(|prog|×|text|) — polynomial, ~3.4× from n=10 to n=20.
+- **pcre2**: classic backtracking — **exponential**, ~1 300× from n=10 to n=20.
 
 ### Pathological with prefix (cross-position memoization)
 
-Input: `b^(10n) a^n` — prefix forces many NFA start positions.
+Input: `b{10n} a{n}` — prefix forces many NFA start positions.
 
 | n | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
 |---|----------:|-------------:|------:|------------:|------:|
-| 10 | 1.45 µs | 4.42 µs | 51 ns | 58 ns | 26.5 µs |
-| 15 | 2.84 µs | 10.2 µs | 57 ns | 70 ns | 952 µs |
-| 20 | 4.88 µs | 18.1 µs | 71 ns | 83 ns | 35.1 ms |
+| 10 | 1.46 µs | 4.50 µs | **52 ns** | 58 ns | 26.5 µs |
+| 15 | 2.86 µs | 10.3 µs | **60 ns** | 71 ns | 983 µs |
+| 20 | 4.92 µs | 18.1 µs | **73 ns** | 84 ns | 35.6 ms |
 
-oniai's memoization reuses cached fork-failure data across start positions, keeping growth gentle (3.4× from n=10 to n=20). pcre2 re-executes exponentially per start position.
+oniai's memoization reuses cached fork-failure data across start positions, keeping growth gentle (~3.4× from n=10 to n=20). pcre2 re-executes exponentially per start position.
 
 ---
 
@@ -198,40 +193,48 @@ oniai's memoization reuses cached fork-failure data across start positions, keep
 
 | Pattern | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
 |---------|----------:|-------------:|------:|------------:|------:|
-| `Holmes` (literal) | 15.9 µs | 18.9 µs | **10.4 µs** | 10.8 µs | 26.2 µs |
-| `[A-Z][a-z]+` | **359 µs** | 854 µs | 559 µs | 654 µs | 422 µs |
-| `[[:digit:]]+` | **139 µs** | 141 µs | 12.6 µs | 13.6 µs | 188 µs |
-| `"[^"]*"` | **297 µs** | 1 975 µs | 189 µs | 374 µs | 115 µs |
-| `Mrs?. [A-Z][a-z]+` | **11.5 µs** | 22.6 µs | 7.0 µs | 8.2 µs | 13.1 µs |
+| `Holmes` (literal) | 16.0 µs | 19.1 µs | **10.3 µs** | 10.9 µs | 26.0 µs |
+| `[A-Z][a-z]+` | **361 µs** | 860 µs | 557 µs | 653 µs | 420 µs |
+| `[[:digit:]]+` | 139 µs | 141 µs | **12.6 µs** | 13.6 µs | 184 µs |
+| `"[^"]*"` | 299 µs | 1.98 ms | **189 µs** | 375 µs | 115 µs |
+| `Mrs?. [A-Z][a-z]+` | 11.4 µs | 22.4 µs | **7.04 µs** | 8.36 µs | 13.2 µs |
 
 Notes:
-- `[A-Z][a-z]+` — oniai/jit is now **faster than regex** (359 µs vs 559 µs), thanks to `AsciiClassStart`.
-- `[[:digit:]]+` — 3× gap vs regex on full-text scan reflects Aho-Corasick for the no-match gaps between digit runs.
-- `"[^"]*"` — oniai/interp is 6× slower than jit due to the backtracking overhead of `[^"]*` without JIT.
+- `[A-Z][a-z]+` — oniai/jit (361 µs) is **faster than regex** (557 µs) thanks to `AsciiClassStart`.
+- `[[:digit:]]+` — 11× gap vs regex reflects Aho-Corasick scanning the no-match gaps between digit runs.
+- `"[^"]*"` — oniai/interp is 6× slower than jit due to backtracking overhead without JIT.
 
 ---
 
-## AsciiClassStart strategy
+## AsciiClassStart — sparse haystack
 
-New benchmark added to measure start-position filtering for class-prefixed patterns on sparse input.
+`\d+` and `\w+` on 2 000-char haystacks with one match token per 10 chars.
+The `AsciiClassStart` strategy skips 9/10 positions with a single bitmap test.
 
-| Benchmark | oniai/jit | oniai/interp |
-|-----------|----------:|-------------:|
-| `\d+` — digits sparse in ASCII text | 7.64 µs | 12.0 µs |
-| `\w+` — words sparse in ASCII text | 8.81 µs | 31.1 µs |
+| Benchmark | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
+|-----------|----------:|-------------:|------:|------------:|------:|
+| `\d+` — digit sparse | 7.73 µs | 12.7 µs | **3.65 µs** | 6.49 µs | 8.75 µs |
+| `\w+` — word sparse | 8.76 µs | 31.1 µs | 4.66 µs | 9.25 µs | **1.06 µs** |
 
-The interpreter benefits proportionally less because it also scans with the bitmap but lacks
-the JIT inner-loop advantage.
+`pcre2` is exceptionally fast on `\w+` sparse (1.06 µs), likely due to a JIT-compiled
+word-boundary / SIMD scan. `regex` leads on `\d+` sparse with Aho-Corasick digit detection.
 
 ---
 
-## Case-insensitive alternation
+## Case-insensitive alternation `(?i:get|post|put|delete)`
 
-`(?i:get|post|put|delete)` compiles to a single `AltTrie` covering all Unicode case variants.
+Haystack: ~6 600 chars (1 match per ~30 chars). Pattern compiles to an `AltTrie` that
+encodes all Unicode case variants, but oniai iterates via NFA whereas `regex` uses
+Aho-Corasick.
 
-| Benchmark | oniai/jit | oniai/interp |
-|-----------|----------:|-------------:|
-| find all in 580 KB text | 14.6 ms | 15.1 ms |
+| Benchmark | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
+|-----------|----------:|-------------:|------:|------------:|------:|
+| `find_all` | 14.8 ms | 15.2 ms | **9.59 µs** | 13.4 µs | 30.3 µs |
+
+The ~1 500× gap between oniai and `regex` on this benchmark reflects the fundamental
+difference between a backtracking NFA and Aho-Corasick: `regex` scans the entire haystack
+in one pass, while oniai restarts the NFA at every position. Iterating over matches with
+`find_iter` is a known performance bottleneck for oniai on long inputs with many candidates.
 
 ---
 
@@ -239,221 +242,14 @@ the JIT inner-loop advantage.
 
 | Scenario | Fastest engine | Notes |
 |----------|---------------|-------|
-| Simple literal / alternation | **regex** | Aho-Corasick + SIMD, up to 600× faster |
-| Multi-string alternation | **regex** | Aho-Corasick; oniai AltTrie 28–60× faster than before |
-| Case-insensitive search | **pcre2** or **regex** | Both ~80 ns; oniai 50× faster than before (ByteTrie) |
-| Character classes (`[a-z]+`) | **regex** | oniai/jit now faster than pcre2 |
+| Simple literal | **regex** | SIMD scanning; oniai 3× slower |
+| Multi-string alternation | **regex** | Aho-Corasick; oniai AltTrie 29× faster than before |
+| Case-insensitive single match | **pcre2/regex** | All ~80 ns; oniai 45× faster than before (ByteTrie) |
+| Case-insensitive `find_iter` | **regex** | Aho-Corasick; oniai NFA ~1 500× slower |
+| Character classes `[a-z]+` | **regex** | oniai/jit now faster than pcre2 |
 | `a*b` no-match (memoization) | **oniai/jit** | ~30× faster than regex |
 | Lookahead patterns | **fancy-regex** | NFA with lookahead optimization |
 | Lookbehind / backreference | **pcre2** | C library, tight inner loop |
 | Atomic groups | **oniai/jit** or **pcre2** | fancy-regex lacks atomic optimization (~10 000×) |
-| Pathological backtracking | **regex** (immune) or **oniai** (polynomial) | pcre2 is exponential |
-| JIT vs interpreter | **oniai/jit** | 1.5–5× faster on compute-heavy patterns |
-
-
-Five engine variants are compared side-by-side:
-
-| Variant | Description |
-|---------|-------------|
-| **oniai/jit** | Oniai with Cranelift JIT (default feature) |
-| **oniai/interp** | Oniai interpreter (no JIT code generation) |
-| **regex** | [`regex`](https://docs.rs/regex) crate — DFA + Aho-Corasick, no lookarounds/backrefs |
-| **fancy-regex** | [`fancy-regex`](https://docs.rs/fancy-regex) crate — NFA + backtracking fallback |
-| **pcre2** | [`pcre2`](https://docs.rs/pcre2) crate — PCRE2 C library bindings |
-
-Run on: 2026-02-28 (macOS, Apple Silicon, PCRE2 10.47)
-
-### Running benchmarks
-
-The full suite takes several minutes because it runs all five engines.
-Use Criterion's filter argument to speed things up:
-
-```sh
-# Only oniai variants (skips comparison libraries — much faster)
-cargo bench -- oniai
-
-# One specific group
-cargo bench -- literal
-
-# Advanced-feature groups only (no regex crate)
-cargo bench -- "lookahead|lookbehind|backreference|atomic"
-
-# Save output to a log file for later analysis
-cargo bench 2>&1 | tee log/bench-$(date +%F).txt
-```
-
----
-
-## Standard patterns (all five engines)
-
-### Literal search
-
-| Benchmark | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
-|-----------|----------:|-------------:|------:|------------:|------:|
-| `no_match` 1 000 'a's | 51 ns | 52 ns | 40 ns | 40 ns | 49 ns |
-| `match_mid` 1 000 chars | 143 ns | 172 ns | **25 ns** | 26 ns | 58 ns |
-
-`regex` uses Aho-Corasick / SIMD literal scanning; oniai scans character by character.
-
-### Anchored match `\Aabc` — 1 000 chars
-
-| oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
-|----------:|-------------:|------:|------------:|------:|
-| 18 ns | 19 ns | **12 ns** | 12 ns | 34 ns |
-
-### Alternation `foo|bar|baz|qux`
-
-| Benchmark | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
-|-----------|----------:|-------------:|------:|------------:|------:|
-| match at mid (400 chars) | 18.9 µs | 18.8 µs | **30 ns** | 32 ns | 208 ns |
-| no match (500 chars) | 46.7 µs | 46.6 µs | **56 ns** | 56 ns | 366 ns |
-
-`regex` compiles multi-literal alternations to Aho-Corasick (630× faster than oniai for this case).
-
-### Quantifiers
-
-| Benchmark | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
-|-----------|----------:|-------------:|------:|------------:|------:|
-| `a*b` no-match 500 'a's | **27 ns** | 27 ns | 816 ns | 819 ns | 31 ns |
-| `a+` match 500 'a's | 1.9 µs | 9.6 µs | 2.3 µs | 2.3 µs | **366 ns** |
-
-`a*b` on all-'a' input: oniai and pcre2 fail immediately (memoization / early-exit); `regex`/`fancy-regex` walk every position (~30× slower).
-
-### Captures `(\w+)\s+(\w+)`
-
-| Benchmark | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
-|-----------|----------:|-------------:|------:|------------:|------:|
-| first capture | 621 ns | 618 ns | 201 ns | 205 ns | **151 ns** |
-| iterate all (44-char input) | 2.6 µs | 2.6 µs | **110 ns** | 898 ns | 730 ns |
-
-### Email `\w+@\w+\.\w+`
-
-| oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
-|----------:|-------------:|------:|------------:|------:|
-| 1.2 µs | 3.3 µs | **140 ns** | 136 ns | 484 ns |
-
-### Character classes
-
-| Benchmark | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
-|-----------|----------:|-------------:|------:|------------:|------:|
-| `[a-zA-Z]+` (900 chars) | 7.9 µs | 29.6 µs | **3.0 µs** | 5.7 µs | 4.2 µs |
-| `[[:digit:]]+` (900 chars) | 10.5 µs | 22.8 µs | **3.8 µs** | 6.0 µs | 4.2 µs |
-
-### Case-insensitive `(?i)hello` — 600 chars
-
-| oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
-|----------:|-------------:|------:|------------:|------:|
-| 283 ns | **257 ns** | 83 ns | 85 ns | **79 ns** |
-
-The 3× gap vs pcre2/regex is due to one NFA call (~200–250 ns) per match found;
-closing it would require a DFA engine.  Both paths improved significantly after
-the UTF-8 byte-trie optimization (from ~14 µs, a ×55 speedup).
-
----
-
-## Advanced patterns (oniai / fancy-regex / pcre2 only)
-
-`regex` does not support lookarounds, backreferences, or atomic groups.
-
-### Lookahead: `\w+(?=,)` — "A Study in Scarlet" (~580 KB)
-
-| oniai/jit | oniai/interp | fancy-regex | pcre2 |
-|----------:|-------------:|------------:|------:|
-| 20.2 ms | 34.0 ms | **418 µs** | 15.5 ms |
-
-`fancy-regex` is 50× faster than pcre2 and 48× faster than oniai/jit on a large text.
-oniai's JIT is 1.7× faster than its interpreter for this case.
-
-### Lookbehind: `(?<=\. )[A-Z]\w+` — "A Study in Scarlet"
-
-| oniai/jit | oniai/interp | fancy-regex | pcre2 |
-|----------:|-------------:|------------:|------:|
-| 22.2 ms | 22.4 ms | 6.9 ms | **421 µs** |
-
-`pcre2` is 50× faster than `fancy-regex` and ~50× faster than oniai.
-
-### Backreference: `(\b\w+\b) \1` (doubled word) — "A Study in Scarlet"
-
-| oniai/jit | oniai/interp | fancy-regex | pcre2 |
-|----------:|-------------:|------------:|------:|
-| 20.8 ms | 20.7 ms | 14.6 ms | **8.5 ms** |
-
-`pcre2` is 2.4× faster than `fancy-regex` and 2.4× faster than oniai.
-
-### Atomic groups: `(?>a+)b` — 500 'a's (no match)
-
-| oniai/jit | oniai/interp | fancy-regex | pcre2 |
-|----------:|-------------:|------------:|------:|
-| **27 ns** | 27 ns | 272 µs | 37 ns |
-
-`fancy-regex` is **10 000× slower** than oniai/pcre2: it parses `(?>...)` syntax but does not
-optimize away backtracking — the engine still explores all 500 positions.  
-oniai and pcre2 correctly treat the group as possessive: one O(1) failure.
-
----
-
-## Scaling: `\d+` on growing input
-
-| Size | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
-|-----:|----------:|-------------:|------:|------------:|------:|
-| 100 | 1.85 µs | 2.92 µs | **424 ns** | 962 ns | 1.40 µs |
-| 500 | 9.0 µs | 14.4 µs | **2.05 µs** | 4.68 µs | 6.84 µs |
-| 1 000 | 17.8 µs | 28.6 µs | **4.05 µs** | 9.34 µs | 13.5 µs |
-| 5 000 | 87.9 µs | 143.0 µs | **20.1 µs** | 46.3 µs | 68.4 µs |
-
-All engines are linear in input size. `regex` is ~4× faster than oniai/jit.
-
----
-
-## Pathological: `(a?)^n a^n` on `a^n`
-
-Demonstrates backtracking complexity. `regex` and `fancy-regex` use DFA and are immune.
-
-| n | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
-|---|----------:|-------------:|------:|------------:|------:|
-| 10 | 1.42 µs | 4.50 µs | 26 ns | 26 ns | 26 µs |
-| 15 | 2.80 µs | 10.2 µs | 33 ns | 33 ns | 958 µs |
-| 20 | 4.80 µs | 18.0 µs | 40 ns | 40 ns | **35 ms** |
-
-- `regex` / `fancy-regex`: DFA, O(n) — immune to exponential blowup.
-- oniai: memoization bounds the search to O(|prog| × |text|) — polynomial, not exponential.
-- **pcre2**: classic backtracking, **exponential** — 35 ms at n=20, grows as ~32× per 5-step increase.
-
-### Pathological with prefix (cross-position memoization)
-
-Input: `b^(10n) a^n` — prefix forces many NFA start positions.
-
-| n | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
-|---|----------:|-------------:|------:|------------:|------:|
-| 10 | 4.55 µs | 7.68 µs | 52 ns | 58 ns | 26.5 µs |
-| 15 | 7.45 µs | 14.8 µs | 57 ns | 70 ns | 952 µs |
-| 20 | 11.0 µs | 23.9 µs | 71 ns | 83 ns | 35.1 ms |
-
-oniai's memoization reuses cached fork-failure data across start positions, keeping growth gentle (2.4× from n=10 to n=20). pcre2 re-executes exponentially per start position.
-
----
-
-## Real-world text ("A Study in Scarlet", ~580 KB)
-
-| Pattern | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
-|---------|----------:|-------------:|------:|------------:|------:|
-| `Holmes` (literal) | 134 µs | 138 µs | **10.3 µs** | 10.8 µs | 26.2 µs |
-| `[A-Z][a-z]+` | 3.0 ms | 3.5 ms | **561 µs** | 654 µs | 422 µs |
-| `[[:digit:]]+` | 3.0 ms | 3.0 ms | **12.6 µs** | 13.6 µs | 188 µs |
-| `"[^"]*"` | 5.3 ms | 7.2 ms | **189 µs** | 374 µs | 115 µs |
-| `Mrs?. [A-Z][a-z]+` | 133 µs | 145 µs | **7.0 µs** | 8.2 µs | 13.1 µs |
-
----
-
-## Summary
-
-| Scenario | Fastest engine | Notes |
-|----------|---------------|-------|
-| Simple literal / alternation | **regex** | Aho-Corasick + SIMD, up to 600× faster |
-| Case-insensitive search | **pcre2** or **regex** | Both ~80 ns |
-| `a*b` no-match (memoization) | **oniai/jit** | ~30× faster than regex |
-| Lookahead patterns | **fancy-regex** | NFA with lookahead optimization |
-| Lookbehind / backreference | **pcre2** | C library, tight inner loop |
-| Atomic groups | **oniai/jit** or **pcre2** | fancy-regex lacks atomic optimization (~10 000×) |
-| Pathological backtracking | **regex** (immune) or **oniai** (polynomial) | pcre2 is exponential |
+| Pathological backtracking | **regex** (immune) / **oniai** (polynomial) | pcre2 is exponential |
 | JIT vs interpreter | **oniai/jit** | 1.5–5× faster on compute-heavy patterns |
