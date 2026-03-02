@@ -571,8 +571,173 @@ fn emit_function(
             }
 
             // ----------------------------------------------------------------
-            // Capture slots — INLINED
+            // SpanChar / SpanClass — possessive tight loops (no backtrack push)
             // ----------------------------------------------------------------
+            Inst::SpanChar { c, exit_pc } => {
+                let loop_header = builder.create_block();
+                let check_block = builder.create_block();
+                let advance_block = builder.create_block();
+
+                builder.ins().jump(loop_header, &[]);
+
+                // loop_header: bounds check
+                builder.switch_to_block(loop_header);
+                let ctx_v = builder.use_var(var_ctx);
+                let pos_v = builder.use_var(var_pos);
+                let text_len =
+                    builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_LEN);
+                let in_bounds =
+                    builder.ins().icmp(IntCC::UnsignedLessThan, pos_v, text_len);
+                builder.ins().brif(in_bounds, check_block, &[], inst_blocks[*exit_pc], &[]);
+
+                // check_block: load byte and compare
+                builder.switch_to_block(check_block);
+                let ctx_v = builder.use_var(var_ctx);
+                let pos_v = builder.use_var(var_pos);
+                let text_ptr =
+                    builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_PTR);
+                let byte_ptr = builder.ins().iadd(text_ptr, pos_v);
+                let byte = builder
+                    .ins()
+                    .uload8(types::I32, MemFlags::trusted(), byte_ptr, 0);
+
+                if c.is_ascii() {
+                    let ch_v = builder.ins().iconst(types::I32, *c as u8 as i64);
+                    let ok = builder.ins().icmp(IntCC::Equal, byte, ch_v);
+                    builder.ins().brif(ok, advance_block, &[], inst_blocks[*exit_pc], &[]);
+
+                    builder.switch_to_block(advance_block);
+                    let pos_v = builder.use_var(var_pos);
+                    let new_pos = builder.ins().iadd_imm(pos_v, 1_i64);
+                    builder.def_var(var_pos, new_pos);
+                    builder.ins().jump(loop_header, &[]);
+                } else {
+                    // Non-ASCII: detect leading byte mismatch cheaply, then call helper.
+                    // We avoid the helper for bytes that can't be the char's leading byte.
+                    let leading = (*c as u32).to_le_bytes()[0] as u64; // approx leading byte
+                    let leading_v = builder.ins().iconst(types::I32, leading as i64);
+                    // Compare leading byte; if different, exit immediately (no helper call).
+                    let maybe_match = builder.ins().icmp(IntCC::Equal, byte, leading_v);
+                    let helper_block = builder.create_block();
+                    builder.ins().brif(
+                        maybe_match,
+                        helper_block,
+                        &[],
+                        inst_blocks[*exit_pc],
+                        &[],
+                    );
+
+                    builder.switch_to_block(helper_block);
+                    let ctx_v = builder.use_var(var_ctx);
+                    let pos_v = builder.use_var(var_pos);
+                    let c_v = builder.ins().iconst(types::I32, *c as i64);
+                    let call = builder.ins().call(h_match_char, &[ctx_v, pos_v, c_v]);
+                    let result = builder.inst_results(call)[0];
+                    let neg1 = builder.ins().iconst(types::I64, -1_i64);
+                    let is_fail = builder.ins().icmp(IntCC::Equal, result, neg1);
+                    // On success result == new_pos; on failure keep old pos.
+                    let new_pos = builder.ins().select(is_fail, pos_v, result);
+                    builder.def_var(var_pos, new_pos);
+                    builder.ins().brif(
+                        is_fail,
+                        inst_blocks[*exit_pc],
+                        &[],
+                        loop_header,
+                        &[],
+                    );
+                }
+            }
+
+            Inst::SpanClass { idx, exit_pc } => {
+                let cs = &charsets[*idx];
+                let ascii_ranges = charset_ascii_ranges(cs);
+
+                let loop_header = builder.create_block();
+                let read_block = builder.create_block();
+                let ascii_check_block = builder.create_block();
+                let advance_block = builder.create_block();
+
+                builder.ins().jump(loop_header, &[]);
+
+                // loop_header: bounds check
+                builder.switch_to_block(loop_header);
+                let ctx_v = builder.use_var(var_ctx);
+                let pos_v = builder.use_var(var_pos);
+                let text_len =
+                    builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_LEN);
+                let in_bounds =
+                    builder.ins().icmp(IntCC::UnsignedLessThan, pos_v, text_len);
+                builder.ins().brif(in_bounds, read_block, &[], inst_blocks[*exit_pc], &[]);
+
+                // read_block: load leading byte and route ASCII vs non-ASCII
+                builder.switch_to_block(read_block);
+                let ctx_v = builder.use_var(var_ctx);
+                let pos_v = builder.use_var(var_pos);
+                let text_ptr =
+                    builder.ins().load(types::I64, MemFlags::trusted(), ctx_v, CTX_TEXT_PTR);
+                let byte_ptr = builder.ins().iadd(text_ptr, pos_v);
+                let byte = builder
+                    .ins()
+                    .uload8(types::I32, MemFlags::trusted(), byte_ptr, 0);
+                let c80 = builder.ins().iconst(types::I32, 0x80);
+                let is_ascii = builder.ins().icmp(IntCC::UnsignedLessThan, byte, c80);
+
+                if is_ascii_only_charset(cs) {
+                    // Non-ASCII bytes never match this charset → exit immediately.
+                    builder.ins().brif(
+                        is_ascii,
+                        ascii_check_block,
+                        &[BlockArg::Value(byte)],
+                        inst_blocks[*exit_pc],
+                        &[],
+                    );
+                } else {
+                    // Non-ASCII bytes may match → call helper for correct handling.
+                    let nonascii_block = builder.create_block();
+                    builder.ins().brif(
+                        is_ascii,
+                        ascii_check_block,
+                        &[BlockArg::Value(byte)],
+                        nonascii_block,
+                        &[],
+                    );
+
+                    builder.switch_to_block(nonascii_block);
+                    let ctx_v = builder.use_var(var_ctx);
+                    let pos_v = builder.use_var(var_pos);
+                    let i = builder.ins().iconst(types::I32, *idx as i64);
+                    let ic_v = builder.ins().iconst(types::I32, 0_i64);
+                    let call = builder.ins().call(h_match_class, &[ctx_v, pos_v, i, ic_v]);
+                    let result = builder.inst_results(call)[0];
+                    let neg1 = builder.ins().iconst(types::I64, -1_i64);
+                    let is_fail = builder.ins().icmp(IntCC::Equal, result, neg1);
+                    let new_pos = builder.ins().select(is_fail, pos_v, result);
+                    builder.def_var(var_pos, new_pos);
+                    builder.ins().brif(is_fail, inst_blocks[*exit_pc], &[], loop_header, &[]);
+                }
+
+                // ascii_check_block: bitmap/range check (byte passed as block param)
+                builder.append_block_param(ascii_check_block, types::I32);
+                builder.switch_to_block(ascii_check_block);
+                let byte_p = builder.block_params(ascii_check_block)[0];
+                let raw_ok = emit_ascii_check(builder, byte_p, cs, &ascii_ranges);
+                let ok = if cs.negate {
+                    let one = builder.ins().iconst(types::I8, 1);
+                    builder.ins().bxor(raw_ok, one)
+                } else {
+                    raw_ok
+                };
+                builder.ins().brif(ok, advance_block, &[], inst_blocks[*exit_pc], &[]);
+
+                // advance_block: pos += 1, loop back
+                builder.switch_to_block(advance_block);
+                let pos_v = builder.use_var(var_pos);
+                let new_pos = builder.ins().iadd_imm(pos_v, 1_i64);
+                builder.def_var(var_pos, new_pos);
+                builder.ins().jump(loop_header, &[]);
+            }
+
+
             Inst::Save(slot) => {
                 let ctx_v = builder.use_var(var_ctx);
                 let pos_v = builder.use_var(var_pos);

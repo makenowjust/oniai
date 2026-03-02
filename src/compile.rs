@@ -1352,6 +1352,122 @@ fn compute_fork_guards(prog: &mut [Inst]) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// SpanChar/SpanClass post-processing pass
+// ---------------------------------------------------------------------------
+
+/// What the continuation's first character slot looks like (conservative).
+enum ContFirst {
+    /// End of program or unconsumed anchor (StringEnd / Match): no char needed.
+    Terminal,
+    /// The first consumed-character instruction is `Char(c)` / `CharFast(c)`.
+    Char(char),
+    /// The first consumed-character instruction is `Class(idx, false)`.
+    Class(usize),
+    /// Unknown / complex: conservatively block the optimisation.
+    Unknown,
+}
+
+/// Scan forward from `pc` (skipping zero-width instructions) to determine
+/// what character(s) the continuation can start with.
+fn continuation_first(prog: &[Inst], mut pc: usize) -> ContFirst {
+    loop {
+        match prog.get(pc) {
+            None => return ContFirst::Terminal,
+            Some(Inst::Save(_) | Inst::KeepStart) => pc += 1,
+            Some(Inst::Match) => return ContFirst::Terminal,
+            Some(Inst::Anchor(AnchorKind::StringEnd, _)) => return ContFirst::Terminal,
+            Some(Inst::Char(c) | Inst::CharFast(c)) => return ContFirst::Char(*c),
+            Some(Inst::Class(idx, false)) => return ContFirst::Class(*idx),
+            _ => return ContFirst::Unknown,
+        }
+    }
+}
+
+fn char_disjoint_from_continuation(c: char, first: &ContFirst, charsets: &[CharSet]) -> bool {
+    match first {
+        ContFirst::Terminal => true,
+        ContFirst::Char(c2) => c != *c2,
+        ContFirst::Class(idx) => !charsets[*idx].matches(c),
+        ContFirst::Unknown => false,
+    }
+}
+
+fn class_disjoint_from_continuation(idx: usize, first: &ContFirst, charsets: &[CharSet]) -> bool {
+    let body_cs = &charsets[idx];
+    match first {
+        ContFirst::Terminal => true,
+        ContFirst::Char(c) => !body_cs.matches(*c),
+        ContFirst::Class(idx2) => {
+            // Conservative: only declare disjoint when both are non-negated and
+            // their ASCII bitmaps have no overlap, and neither has non-ASCII ranges.
+            let cont_cs = &charsets[*idx2];
+            if body_cs.negate || cont_cs.negate {
+                return false;
+            }
+            let body_nonascii = body_cs.ranges.iter().any(|&(lo, _)| lo as u32 >= 128);
+            let cont_nonascii = cont_cs.ranges.iter().any(|&(lo, _)| lo as u32 >= 128);
+            if body_nonascii || cont_nonascii {
+                return false;
+            }
+            body_cs.ascii_bits[0] & cont_cs.ascii_bits[0] == 0
+                && body_cs.ascii_bits[1] & cont_cs.ascii_bits[1] == 0
+        }
+        ContFirst::Unknown => false,
+    }
+}
+
+/// Post-processing pass: replace simple greedy loops with `SpanChar`/`SpanClass`.
+///
+/// A greedy loop `Fork(exit_pc) + Char/CharFast/Class + Jump(fork_pc)` where
+/// `exit_pc == fork_pc + 3` is replaced by `SpanChar`/`SpanClass` when the
+/// body character set is provably disjoint from the continuation's first-
+/// character set.
+///
+/// Disjointness guarantees that backtracking into the span could never enable
+/// the continuation to succeed, so the greedy loop is de-facto possessive.
+/// This converts it into a tight Rust/JIT inner loop with no backtrack-stack
+/// overhead.
+///
+/// Called after `compute_fork_guards` so the body may be `CharFast` rather
+/// than `Char`.  The two instructions that follow the `SpanChar`/`SpanClass`
+/// are replaced with `Jump(exit_pc)` (dead code, never reached).
+fn spanify_greedy_loops(prog: &mut [Inst], charsets: &[CharSet]) {
+    let n = prog.len();
+    for fork_pc in 0..n.saturating_sub(2) {
+        // Detect: Fork(exit_pc) where exit_pc == fork_pc + 3
+        let exit_pc = match prog[fork_pc] {
+            Inst::Fork(ep, _) if ep == fork_pc + 3 => ep,
+            _ => continue,
+        };
+        // Body at fork_pc+1, back-edge at fork_pc+2
+        let body = prog[fork_pc + 1].clone();
+        if !matches!(prog[fork_pc + 2], Inst::Jump(j) if j == fork_pc) {
+            continue;
+        }
+
+        let first = continuation_first(prog, exit_pc);
+
+        match body {
+            Inst::Char(c) | Inst::CharFast(c) => {
+                if char_disjoint_from_continuation(c, &first, charsets) {
+                    prog[fork_pc] = Inst::SpanChar { c, exit_pc };
+                    prog[fork_pc + 1] = Inst::Jump(exit_pc);
+                    prog[fork_pc + 2] = Inst::Jump(exit_pc);
+                }
+            }
+            Inst::Class(idx, false) => {
+                if class_disjoint_from_continuation(idx, &first, charsets) {
+                    prog[fork_pc] = Inst::SpanClass { idx, exit_pc };
+                    prog[fork_pc + 1] = Inst::Jump(exit_pc);
+                    prog[fork_pc + 2] = Inst::Jump(exit_pc);
+                }
+            }
+            _ => {} // ic=true, FoldSeq, etc.: skip
+        }
+    }
+}
+
 pub struct CompiledProgram {
     pub prog: Vec<Inst>,
     pub charsets: Vec<CharSet>,
@@ -1379,6 +1495,7 @@ pub fn compile(
     compiler.emit(Inst::Match);
     compiler.backfill_calls()?;
     compute_fork_guards(&mut compiler.prog);
+    spanify_greedy_loops(&mut compiler.prog, &compiler.charsets);
 
     let num_groups = compiler.num_groups as usize;
     let num_null_checks = compiler.num_null_checks as usize;

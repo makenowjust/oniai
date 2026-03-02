@@ -146,6 +146,21 @@ pub enum Inst {
     /// already verified that `text[pos]` equals this character.
     CharFast(char),
 
+    /// Possessive greedy span for a single character.
+    ///
+    /// Emitted by `spanify_greedy_loops` when the body of a `{1,}` greedy
+    /// quantifier is `Char(c)` and `c` is provably disjoint from the
+    /// continuation's first-character set.  Advances `pos` as long as
+    /// `text[pos] == c`, then jumps to `exit_pc`.  No backtrack entries are
+    /// pushed (possessive semantics — safe because disjointness guarantees
+    /// backtracking into the span could never help the continuation succeed).
+    SpanChar { c: char, exit_pc: usize },
+
+    /// Possessive greedy span for a character class (non-case-folding).
+    ///
+    /// Same as `SpanChar` but matches `charsets[idx]` at each position.
+    SpanClass { idx: usize, exit_pc: usize },
+
     /// Record `(pos, bt_depth)` in null-check slot `n`.
     /// Must appear **before** the Fork/ForkNext of the loop so that the saved
     /// `bt_depth` is below the Fork's retry entry on the backtrack stack.
@@ -723,6 +738,27 @@ pub(crate) fn exec(
             Inst::CharFast(c) => {
                 pos += c.len_utf8();
                 pc += 1;
+            }
+
+            Inst::SpanChar { c, exit_pc } => {
+                while let Some((ch, len)) = ctx.char_at(pos) {
+                    if ch != *c {
+                        break;
+                    }
+                    pos += len;
+                }
+                pc = *exit_pc;
+            }
+
+            Inst::SpanClass { idx, exit_pc } => {
+                let cs = &ctx.charsets[*idx];
+                while let Some((ch, len)) = ctx.char_at(pos) {
+                    if !cs.matches(ch) {
+                        break;
+                    }
+                    pos += len;
+                }
+                pc = *exit_pc;
             }
 
             Inst::NullCheckStart(slot) => {

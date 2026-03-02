@@ -1085,3 +1085,66 @@ fn case_fold_neg_class_sharp_s_find_all() {
     let matches: Vec<&str> = re.find_iter("ssx").map(|m| m.as_str()).collect();
     assert_eq!(matches, vec!["s", "x"], "expected ['s','x'] not ['ss','x']");
 }
+
+// ---------------------------------------------------------------------------
+// SpanChar/SpanClass possessive span — correctness tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn span_char_basic() {
+    // a+ on a simple string: SpanChar applied since followed by \z
+    assert_match!(r"\Aa+\z", "aaa");
+    assert_no_match!(r"\Aa+\z", "");
+    assert_no_match!(r"\Aa+\z", "b");
+}
+
+#[test]
+fn span_char_followed_by_disjoint_char() {
+    // a+b: 'a' and 'b' are disjoint → SpanChar applied; must still give correct matches
+    assert_match!(r"\Aa+b\z", "aaab");
+    assert_no_match!(r"\Aa+b\z", "aaa");
+    assert_match!(r"\Aa+b\z", "ab");
+}
+
+#[test]
+fn span_char_not_applied_when_same_char_in_continuation() {
+    // a+a: continuation starts with 'a' (same as body) → SpanChar must NOT be applied.
+    // Standard greedy backtracking: a+ takes 2 'a's, then 'a' matches the 3rd.
+    assert_match!(r"\Aa+a\z", "aa");
+    assert_match!(r"\Aa+a\z", "aaa");
+    assert_no_match!(r"\Aa+a\z", "a");
+}
+
+#[test]
+fn span_char_backreference_correctness() {
+    // (a+)a+\1: SpanChar must NOT be applied to the first a+ since its continuation
+    // (the second a+) starts with 'a'.  Verify standard backtracking is preserved.
+    // "aaa": group1='a', a+='a', \1='a' → matches
+    assert_match!(r"\A(a+)a+\1\z", "aaa");
+    // "aaaa": e.g. group1='aa', a+='a', \1='aa' needs 5 chars; or group1='a', a+='aa', \1='a' → matches
+    assert_match!(r"\A(a+)a+\1\z", "aaaa");
+    // "aa": need at least 3 a's (1+1+1) → no match
+    assert_no_match!(r"\A(a+)a+\1\z", "aa");
+}
+
+#[test]
+fn span_class_basic() {
+    // [a-z]+: SpanClass applied when followed by end-anchor
+    assert_match!(r"\A[a-z]+\z", "hello");
+    assert_no_match!(r"\A[a-z]+\z", "Hello");
+}
+
+#[test]
+fn span_class_followed_by_disjoint_class() {
+    // [a-z]+[A-Z]: disjoint → SpanClass applied; correct match
+    assert_match!(r"\A[a-z]+[A-Z]\z", "helloW");
+    assert_no_match!(r"\A[a-z]+[A-Z]\z", "hello");
+}
+
+#[test]
+fn span_class_not_applied_when_overlap() {
+    // [a-z]+[a-zA-Z]: overlapping → SpanClass must NOT be applied.
+    // "abcD": [a-z]+ takes "abc", then [a-zA-Z] matches 'D' → full match.
+    assert_match!(r"\A[a-z]+[a-zA-Z]\z", "abcD");
+    assert_match!(r"\A[a-z]+[a-zA-Z]\z", "abcd"); // backtrack: [a-z]+ takes "abc", [a-zA-Z] takes 'd'
+}
