@@ -1045,6 +1045,12 @@ impl Parser {
                 Some(_) => {
                     let end = self.parse_class_char()?;
                     if let (ClassItem::Char(lo), ClassItem::Char(hi)) = (&start, &end) {
+                        if lo > hi {
+                            return Err(Error::Parse(format!(
+                                "invalid character class range: {:?}-{:?} (lo > hi)",
+                                lo, hi
+                            )));
+                        }
                         return Ok(ClassItem::Range(*lo, *hi));
                     } else {
                         // Not chars (e.g., shorthands) — not a valid range; rewind

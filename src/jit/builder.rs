@@ -633,7 +633,8 @@ fn emit_function(
                 } else {
                     // Non-ASCII: detect leading byte mismatch cheaply, then call helper.
                     // We avoid the helper for bytes that can't be the char's leading byte.
-                    let leading = (*c as u32).to_le_bytes()[0] as u64; // approx leading byte
+                    let mut utf8_buf = [0u8; 4];
+                    let leading = c.encode_utf8(&mut utf8_buf).as_bytes()[0] as u64;
                     let leading_v = builder.ins().iconst(types::I32, leading as i64);
                     // Compare leading byte; if different, exit immediately (no helper call).
                     let maybe_match = builder.ins().icmp(IntCC::Equal, byte, leading_v);
@@ -1482,6 +1483,9 @@ fn charset_ascii_ranges(cs: &CharSet) -> Vec<(u8, u8)> {
                 return None;
             }
             let hi_u = (hi as u32).min(127) as u8;
+            if hi_u < lo_u as u8 {
+                return None; // invalid range (lo > hi after clamping); skip
+            }
             Some((lo_u as u8, hi_u))
         })
         .collect()
