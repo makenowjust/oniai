@@ -1366,10 +1366,39 @@ fn compute_fork_guards(prog: &mut [Inst]) {
 
     // Phase 2: promote guarded Char(gc, false) → CharFast(gc) on each fork's
     // primary path (after any zero-width instructions).
+    //
+    // For `Fork(alt, Some(gc))`: `pc+1` (the body) is only reached when the
+    // guard passes (text[pos] == gc), so CharFast there is always safe.
+    //
+    // For `ForkNext(alt, Some(gc))`: `alt` is only safe to promote when it
+    // is EXCLUSIVELY reachable via the guard check. Two unsafe paths exist:
+    //
+    // 1. Fall-through from `alt-1`: if the instruction before `alt` is not a
+    //    `Jump`, `alt` is the natural successor of the preceding instruction.
+    //    Blocked by requiring `matches!(prog[alt-1], Inst::Jump(_))`.
+    //
+    // 2. `NullCheckEnd{exit_pc: alt}`: when the body of a lazy loop matches
+    //    empty, `NullCheckEnd` explicitly jumps to `alt` without having
+    //    verified the guard character.  Blocked by requiring that no
+    //    `NullCheckEnd` in the program targets `alt`.
+    let null_check_exits: std::collections::HashSet<usize> = prog
+        .iter()
+        .filter_map(|inst| match inst {
+            Inst::NullCheckEnd { exit_pc, .. } => Some(*exit_pc),
+            _ => None,
+        })
+        .collect();
+
     let promotions: Vec<(usize, char)> = (0..len)
         .filter_map(|pc| match prog[pc] {
             Inst::Fork(_, Some(gc)) => Some((pc + 1, gc)),
-            Inst::ForkNext(alt, Some(gc)) => Some((alt, gc)),
+            Inst::ForkNext(alt, Some(gc))
+                if alt > 0
+                    && matches!(prog[alt - 1], Inst::Jump(_))
+                    && !null_check_exits.contains(&alt) =>
+            {
+                Some((alt, gc))
+            }
             _ => None,
         })
         .collect();
