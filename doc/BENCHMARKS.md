@@ -60,13 +60,18 @@ string set.  Position-skipping is now O(n) in the haystack length.
 
 | Benchmark | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
 |-----------|----------:|-------------:|------:|------------:|------:|
-| **4 alts — match** | 51 ns | 59 ns | **29 ns** | 31 ns | 205 ns |
-| **4 alts — no match** | **30 ns** | **30 ns** | 56 ns | 55 ns | 362 ns |
-| 10 alts — match | 380 ns | 385 ns | **36 ns** | 38 ns | 281 ns |
-| 10 alts — no match | 784 ns | 783 ns | **65 ns** | 63 ns | 362 ns |
+| **4 alts — match** | **40 ns** | 44 ns | 30 ns | 32 ns | 207 ns |
+| **4 alts — no match** | **25 ns** | **25 ns** | 56 ns | 56 ns | 365 ns |
+| 10 alts — match | 141 ns | 150 ns | **36 ns** | 38 ns | 282 ns |
+| 10 alts — no match | 248 ns | 278 ns | **65 ns** | 64 ns | 365 ns |
 
-oniai/jit is **faster than all engines** on 4-alt no-match (30 ns vs regex 56 ns).
-The 10-alt gap vs regex reflects Aho-Corasick scanning all 10 pattern-string variants.
+oniai/jit is **fastest on both 4-alt cases** (25 ns no-match, 40 ns match vs regex 56/30 ns).
+The 10-alt gap (3.8×) remains because `RangeStart{a..j}` triggers a `try_at` on every 'a'-'j' byte;
+a DFA-based engine avoids these false candidate calls.
+
+First-byte strategy selection for `AltTrie`: ≤3 first bytes → `FirstChars` (memchr SIMD),
+contiguous range → `RangeStart`, non-contiguous → `AsciiClassStart` bitmap.
+Improvements vs previous baseline: 4-alt −22%/−16%, 10-alt −63%/−68%.
 
 ### Quantifiers
 
@@ -236,16 +241,17 @@ oniai/jit beats pcre2 and regex on `\d+` sparse thanks to `RangeStart` + `SpanCl
 
 ## Case-insensitive alternation `(?i:get|post|put|delete)`
 
-Haystack: ~6 600 chars (1 match per ~30 chars). Aho-Corasick automaton built from all
-Unicode case-variants of the four words; scanning is now O(n).
+Haystack: ~6 600 chars (1 match per ~30 chars). `AsciiClassStart` bitmap pre-filter
+skips non-matching positions before invoking the `AltTrie` NFA.
 
 | Benchmark | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
 |-----------|----------:|-------------:|------:|------------:|------:|
-| **`find_all`** | **29.1 µs** | **29.3 µs** | **9.66 µs** | 13.6 µs | **30.3 µs** |
+| **`find_all`** | **17.8 µs** | **20.8 µs** | **9.67 µs** | 13.5 µs | **30.3 µs** |
 
-oniai now **beats pcre2** (30.3 µs) and nearly matches `fancy-regex` (13.6 µs).
-`regex` remains 3× faster using its own Aho-Corasick + SIMD implementation.
-Previous: 14.8 ms — the Aho-Corasick `LiteralSet` strategy gave a **510× improvement**.
+oniai/jit (17.8 µs) now **beats fancy-regex** (13.5 µs) and pcre2 (30.3 µs).
+`regex` remains 1.8× faster using its own SIMD implementation.
+Previous (AC LiteralSet strategy): 29.1 µs — **−39% improvement** with `AsciiClassStart`.
+Previous-previous (naive scan): 14.8 ms — total **830× speedup** from the pre-AltTrie baseline.
 
 ---
 
@@ -254,9 +260,9 @@ Previous: 14.8 ms — the Aho-Corasick `LiteralSet` strategy gave a **510× impr
 | Scenario | Fastest engine | Notes |
 |----------|---------------|-------|
 | Simple literal | **regex** | SIMD scanning; oniai 3× slower |
-| Multi-string alternation (4 alts, no match) | **oniai/jit** | 30 ns — beats regex (56 ns) and pcre2 (362 ns) |
-| Multi-string alternation (10 alts) | **regex** | Aho-Corasick; oniai 12× slower (no-match) |
-| Case-insensitive `find_iter` | **regex** | Aho-Corasick + SIMD; oniai beats pcre2 |
+| Multi-string alternation (4 alts, no match) | **oniai/jit** | 25 ns — beats regex (56 ns) and pcre2 (365 ns) |
+| Multi-string alternation (10 alts) | **regex** | DFA; oniai 3.8× slower (first-byte scan, was 12×) |
+| Case-insensitive `find_iter` | **regex** | SIMD; oniai (17.8 µs) beats pcre2/fancy-regex |
 | Character class iteration | **oniai/jit** | Beats regex, fancy-regex, and pcre2 |
 | `a+` greedy match | **oniai/jit** | 344 ns — beats pcre2 (362 ns) and regex (2.3 µs) |
 | `a*b` no-match (memoization) | **oniai/jit** | ~30× faster than regex |

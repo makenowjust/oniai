@@ -1436,11 +1436,54 @@ impl StartStrategy {
             }
         }
         if let Some(Inst::AltTrie(idx)) = prog.get(pc) {
-            let lits = alt_tries[*idx].all_strings();
-            if lits.iter().any(|s| s.len() >= 2) {
-                let ac = aho_corasick::AhoCorasick::new(&lits)
-                    .expect("AltTrie strings are valid UTF-8");
-                return StartStrategy::LiteralSet(ac);
+            // Choose the start strategy based on the ByteTrie's first bytes.
+            //
+            // AC "Teddy" SIMD is fast for few (≤ ~8) short patterns; for larger
+            // AltTrie sets (common in case-insensitive alternation, which expands
+            // to all fold-variants) the AC automaton exceeds Teddy's limits and
+            // falls back to a slow NFA/DFA.  We use faster alternatives:
+            //
+            //  ≤ 3 distinct ASCII first bytes → FirstChars (memchr SIMD, fastest)
+            //  > 3 ASCII first bytes, contiguous range → RangeStart (LLVM auto-vec)
+            //  > 3 ASCII first bytes, non-contiguous → AsciiClassStart (bitmap scan)
+            //
+            // For small AltTries (≤ 8 all-strings, each ≤ 8 bytes) where AC Teddy
+            // would normally win, we prefer FirstChars/RangeStart because they are
+            // equally or more competitive and remain fast even as pattern count grows.
+            let trie = &alt_tries[*idx];
+            let mut ascii_bits = [0u64; 2];
+            let mut can_match_non_ascii = false;
+            for b in trie.first_bytes() {
+                if b < 128 {
+                    ascii_bits[(b >> 6) as usize] |= 1u64 << (b & 63);
+                } else {
+                    can_match_non_ascii = true;
+                }
+            }
+            let ascii_count = ascii_bits[0].count_ones() + ascii_bits[1].count_ones();
+            if ascii_count > 0 {
+                if !can_match_non_ascii && ascii_count <= 3 {
+                    // Collect actual char values for memchr/memchr2/memchr3.
+                    let mut first_chars: Vec<char> = Vec::new();
+                    for word in 0..2u8 {
+                        let mut bits = ascii_bits[word as usize];
+                        while bits != 0 {
+                            let bit = bits.trailing_zeros() as u8;
+                            first_chars.push((word * 64 + bit) as char);
+                            bits &= bits - 1;
+                        }
+                    }
+                    first_chars.sort_unstable();
+                    return StartStrategy::FirstChars(first_chars);
+                }
+                if !can_match_non_ascii
+                    && let Some((lo, hi)) = detect_ascii_range(ascii_bits) {
+                        return StartStrategy::RangeStart { lo, hi };
+                    }
+                return StartStrategy::AsciiClassStart {
+                    ascii_bits,
+                    can_match_non_ascii,
+                };
             }
         }
 

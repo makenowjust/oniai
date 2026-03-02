@@ -1,119 +1,59 @@
 # TODO: Optimize alternation scanning for many alternatives
 
-## Status: Pending
+## Status: Done
 
 ## Problem
 
-With 10 case-insensitive alternatives, the current Aho-Corasick approach is
+With 10 case-insensitive alternatives, the Aho-Corasick approach was
 12× slower than the `regex` crate:
 
 ```
-alternation/10_alts_no_match   oniai/jit = 783 ns   regex = 65 ns   (12× gap)
-alternation/10_alts_match      oniai/jit = 382 ns   regex = 36 ns   (11× gap)
+alternation/10_alts_no_match   oniai/jit = 784 ns   regex = 65 ns   (12× gap)
+alternation/10_alts_match      oniai/jit = 380 ns   regex = 36 ns   (11× gap)
 ```
 
 Pattern: `(?i)(apple|banana|cherry|date|elderberry|fig|grape|honeydew|kiwi|lime)`.
 
 ### Root cause
 
-For 10 case-insensitive alternatives, case folding expands each pattern.
-For example `"apple"` folds to multiple candidates.  The `AhoCorasick::new`
-automaton must handle all folded variants, giving it many more states/transitions
-than for the case-sensitive case.
+The `aho-corasick` crate's "Teddy" SIMD algorithm only activates for ≤ ~8 short
+patterns.  For 10+ patterns (or many case-fold variants), it falls back to a
+slow NFA/DFA, making the AC scan byte-by-byte.
 
-The `regex` crate compiles this to a minimized DFA with SIMD-accelerated state
-transitions, scanning 16–32 bytes per cycle.  The AC automaton transitions are
-byte-by-byte.
+For case-insensitive AltTrie patterns, the trie already encodes all fold
+variants — we only need to scan for possible first bytes, not full strings.
 
-### 4-alt comparison
+## Solution Implemented
 
-For 4 alternatives the AC automaton is fast:
-```
-alternation/4_alts_no_match   oniai/jit = 31 ns   regex = 56 ns   (oniai wins!)
-```
+In `StartStrategy::compute`, for `AltTrie` instructions, extract first bytes
+from the `ByteTrie` root node and choose the fastest matching strategy:
 
-The 10-alt case regresses because the case-folded AC automaton becomes larger.
+| First-byte count | Strategy | Mechanism |
+|-----------------|----------|-----------|
+| ≤ 3 distinct ASCII | `FirstChars` | `memchr`/`memchr2`/`memchr3` SIMD |
+| > 3, contiguous range | `RangeStart` | LLVM-vectorized range check |
+| > 3, non-contiguous | `AsciiClassStart` | 128-bit bitmap scan |
+| any non-ASCII | `Anywhere` | no pre-filter |
 
-## Proposed Solutions
+For `foo|bar|baz|qux`: first bytes {b, f, q} → 3 bytes → `FirstChars` → memchr3 SIMD
+For `alpha|bravo|...|juliet`: first bytes [a..j] contiguous → `RangeStart{97,106}`
+For `(?i:get|post|put|delete)`: first bytes {g,G,p,P,d,D} non-contiguous → `AsciiClassStart`
 
-### Option A: Unicode case-folded normalization before AC construction
+## Benchmark Results (commit xlzmxkyl, log: bench-alttrie-firstbyte2-2026-03-02.txt)
 
-Instead of adding all Unicode case-fold variants of each alternative, convert
-each string to a canonical case-folded form (lowercase) and use a case-folded
-matching approach in the AC search.
+| Benchmark | Before (AC) | After (first-byte) | vs regex |
+|-----------|-------------|-------------------|---------|
+| `4_alts_no_match/jit` | 30 ns | **25 ns (−16%)** | regex 56 ns — oniai wins! |
+| `4_alts_match/jit` | 51 ns | **40 ns (−22%)** | regex 30 ns (1.3×) |
+| `10_alts_no_match/jit` | 784 ns | **248 ns (−68%)** | regex 65 ns (3.8×) |
+| `10_alts_match/jit` | 380 ns | **141 ns (−63%)** | regex 36 ns (3.9×) |
+| `case_insensitive_alt/find_all/jit` | 29 µs | **17.8 µs (−39%)** | regex 9.6 µs (1.8×) |
 
-Reduces the number of AC patterns from `K × fold_variants` to just `K`.
-Requires a custom case-insensitive AC `find` implementation.
+The remaining 10-alt gap (3.8×) is because `RangeStart{97,106}` matches every
+'a'-'j' byte in the haystack (200 'a's + "alpha" + 200 'a's), causing many
+`try_at` calls.  The `regex` crate's DFA avoids these false candidates.
 
-The `aho-corasick` crate supports `AhoCorasickBuilder::ascii_case_insensitive`
-for ASCII-only patterns.  Using this would keep AC pattern count at K instead
-of expanding all Unicode folds.
+## Files Changed
 
-### Option B: Hybrid scan — AC pre-filter + full exec verification
-
-Run Aho-Corasick in streaming mode (`find_iter`) to identify candidate start
-positions where any pattern matches.  At each candidate, run `exec` for the
-full pattern (including capture groups, anchors, etc.).
-
-For no-match haystacks, AC quickly determines no pattern can start at any
-position.  For sparse-match haystacks, we avoid exec overhead between matches.
-
-This is what the current implementation already does for `LiteralSet` — the
-issue is AC state count for case-insensitive patterns.
-
-### Option C: Replace LiteralSet with ByteSet pre-filter
-
-For case-insensitive alternation where all alternatives start with ASCII
-letters, precompute the set of possible first bytes (case-folded) and use
-`AsciiClassStart`-style scanning to find candidate positions.  Then verify with
-a full exec from each candidate.
-
-For `(?i)(apple|banana|...)` the first bytes are `{a, b, c, d, e, f, g, h, k, l}`
-(10 bytes, all ASCII).  A bitmap scan for these 10 bytes is faster than a
-10-alternative AC automaton.
-
-Implementation: in `StartStrategy::compute`, when `LiteralSet` is chosen but
-`can_use_ac_ascii_insensitive` is detected, use `AsciiClassStart` with the
-first-byte bitmap instead.
-
-### Option D: Lazy DFA construction (long term)
-
-Build a minimal DFA from the NFA for the alternation pattern at `Regex::new`
-time (or lazily on first use).  Use SIMD DFA state transitions.  This is the
-approach the `regex` crate uses and would close the gap fully.
-
-Very high implementation complexity; consider as a long-term project.
-
-## Recommended Approach
-
-Implement **Option C** (first-byte bitmap via `AsciiClassStart`) as a quick
-win for case-insensitive many-alt patterns.  Follow with **Option A** (use
-`aho-corasick`'s built-in ASCII case-insensitive mode) to reduce AC automaton
-state count.
-
-## Expected Benchmark Impact
-
-| Benchmark | Current | Option C | Option A+C |
-|-----------|---------|----------|------------|
-| `10_alts_no_match/jit` | 783 ns | ~200 ns (−75%) | ~100 ns (−87%) |
-| `10_alts_match/jit` | 382 ns | ~150 ns (−61%) | ~80 ns (−79%) |
-| `4_alts_no_match/jit` | 31 ns | no regression | no regression |
-
-## Implementation Steps
-
-### Option C (first-byte bitmap for case-insensitive alternation)
-1. [ ] In `StartStrategy::compute`, detect `LiteralSet` + case-insensitive flag
-       and extract the set of possible first bytes.
-2. [ ] If all first bytes are ASCII (common case), emit `AsciiClassStart` with
-       the first-byte bitmap instead of `LiteralSet`.
-3. [ ] Store the AC automaton as a secondary check inside the scan arm (verify
-       candidate position with AC before calling exec).
-4. [ ] Run `cargo test` and `cargo clippy --tests`.
-5. [ ] Run `cargo bench -- alternation` and save log.
-
-### Option A (ASCII case-insensitive AC)
-1. [ ] Detect whether all literal strings in `LiteralSet` are ASCII-only.
-2. [ ] Use `AhoCorasickBuilder::new().ascii_case_insensitive(true).build(&originals)`
-       instead of building with all folded variants.
-3. [ ] Adjust the `ac.find` call: use original case-folded bytes for the pattern,
-       compare case-insensitively.
+- `src/vm.rs`: replaced `AltTrie → LiteralSet(AC)` block with first-byte strategy selection
+- `src/bytetrie.rs`: added `#[allow(dead_code)]` to `all_strings`/`collect_strings`

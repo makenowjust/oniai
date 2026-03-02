@@ -158,6 +158,7 @@ impl ByteTrie {
     }
 
     /// Collect all accepted byte sequences as UTF-8 strings.
+    #[allow(dead_code)]
     pub fn all_strings(&self) -> Vec<String> {
         let mut result = Vec::new();
         let mut buf = Vec::new();
