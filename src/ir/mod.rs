@@ -26,6 +26,15 @@ pub struct LiveSlots {
     words: Vec<u64>,
 }
 
+impl PartialEq for LiveSlots {
+    fn eq(&self, other: &Self) -> bool {
+        let len = self.words.len().max(other.words.len());
+        (0..len).all(|i| {
+            self.words.get(i).copied().unwrap_or(0) == other.words.get(i).copied().unwrap_or(0)
+        })
+    }
+}
+
 impl LiveSlots {
     pub fn new() -> Self {
         Default::default()

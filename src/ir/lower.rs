@@ -76,15 +76,17 @@ impl<'a> Lowerer<'a> {
         self.lower_region(0);
     }
 
-    fn lower_region(&mut self, rid: RegionId) {
+    /// Lower all reachable blocks of a region starting from its entry.
+    /// Returns the PC of the last reachable instruction (the region-end
+    /// marker: `AtomicEnd`, `LookEnd`, `AbsenceEnd`, or `Match`).
+    ///
+    /// Unreachable blocks (DCE-tagged dead code) are NOT emitted here:
+    /// emitting them between the region-end marker and the parent continuation
+    /// would corrupt `pc += 1` fall-through semantics for `AtomicEnd`/`LookEnd`.
+    fn lower_region(&mut self, rid: RegionId) -> usize {
         let entry = self.program.regions[rid].entry;
         self.lower_block(rid, entry);
-        // Also lower any unreachable blocks (for correctness; DCE would handle them)
-        for bid in 0..self.program.regions[rid].blocks.len() {
-            if !self.visited[rid][bid] {
-                self.lower_block(rid, bid);
-            }
-        }
+        self.prog.len().saturating_sub(1)
     }
 
     fn lower_block(&mut self, rid: RegionId, bid: BlockId) {
@@ -160,17 +162,20 @@ impl<'a> Lowerer<'a> {
             }
 
             IrTerminator::Branch(b) => {
-                let jump_pc = self.prog.len();
-                self.prog.push(Inst::Jump(0)); // placeholder
                 if !self.visited[rid][*b] {
+                    // Target block is not yet emitted: lower it inline (fallthrough).
+                    // No Jump needed — the target will be the very next instruction.
                     self.lower_block(rid, *b);
-                }
-                // Now b's PC is known
-                let target_pc = self.block_pcs[rid][*b];
-                debug_assert_ne!(target_pc, NO_PC);
-                match &mut self.prog[jump_pc] {
-                    Inst::Jump(t) => *t = target_pc,
-                    _ => unreachable!(),
+                } else {
+                    // Target block was already emitted elsewhere: need a Jump.
+                    let jump_pc = self.prog.len();
+                    self.prog.push(Inst::Jump(0));
+                    let target_pc = self.block_pcs[rid][*b];
+                    debug_assert_ne!(target_pc, NO_PC);
+                    match &mut self.prog[jump_pc] {
+                        Inst::Jump(t) => *t = target_pc,
+                        _ => unreachable!(),
+                    }
                 }
             }
 
@@ -312,10 +317,8 @@ impl<'a> Lowerer<'a> {
             } => {
                 let atomic_start_pc = self.prog.len();
                 self.prog.push(Inst::AtomicStart(0));
-                // Lower atomic body region inline
-                self.lower_region(*body_rid);
-                // AtomicEnd was the last instruction emitted by RegionEnd of body
-                let atomic_end_pc = self.prog.len() - 1;
+                // Lower atomic body region inline; get the PC of AtomicEnd.
+                let atomic_end_pc = self.lower_region(*body_rid);
                 // Patch AtomicStart.end_pc = atomic_end_pc
                 match &mut self.prog[atomic_start_pc] {
                     Inst::AtomicStart(ep) => *ep = atomic_end_pc,
@@ -341,8 +344,7 @@ impl<'a> Lowerer<'a> {
             } => {
                 let absence_start_pc = self.prog.len();
                 self.prog.push(Inst::AbsenceStart(0));
-                self.lower_region(*inner_rid);
-                let absence_end_pc = self.prog.len() - 1;
+                let absence_end_pc = self.lower_region(*inner_rid);
                 match &mut self.prog[absence_start_pc] {
                     Inst::AbsenceStart(ep) => *ep = absence_end_pc,
                     _ => unreachable!(),
@@ -394,7 +396,8 @@ impl<'a> Lowerer<'a> {
 
         for cand in non_last {
             let fork_pc = self.prog.len();
-            self.prog.push(Inst::Fork(0, None)); // placeholder alt
+            let gc = extract_char_guard(&cand.guard);
+            self.prog.push(Inst::Fork(0, gc)); // placeholder alt
             let bid = cand.block;
             if !self.visited[rid][bid] {
                 self.lower_block(rid, bid);
@@ -440,10 +443,8 @@ impl<'a> Lowerer<'a> {
                     positive,
                     end_pc: 0,
                 });
-                // Lower lookaround body region inline
-                self.lower_region(*body);
-                // LookEnd was emitted by RegionEnd
-                let look_end_pc = self.prog.len() - 1;
+                // Lower lookaround body region inline; get the PC of LookEnd.
+                let look_end_pc = self.lower_region(*body);
                 match &mut self.prog[look_start_pc] {
                     Inst::LookStart { end_pc, .. } => *end_pc = look_end_pc,
                     _ => unreachable!(),
@@ -626,6 +627,21 @@ fn extract_char_guard(guard: &IrGuard) -> Option<char> {
     }
 }
 
+/// Scan forward from `start` (skipping zero-width instructions) and promote
+/// the first `Inst::Char(gc)` to `Inst::CharFast(gc)`.
+fn promote_to_char_fast(prog: &mut [Inst], mut pc: usize, gc: char) {
+    loop {
+        match prog.get(pc) {
+            Some(Inst::Save(_) | Inst::KeepStart | Inst::NullCheckStart(_)) => pc += 1,
+            Some(Inst::Char(c)) if *c == gc => {
+                prog[pc] = Inst::CharFast(gc);
+                return;
+            }
+            _ => return,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -634,6 +650,44 @@ pub fn lower(program: &IrProgram) -> CompiledProgram {
     let mut l = Lowerer::new(program);
     l.lower_all();
     l.apply_patches();
+
+    // Promote Char(gc) → CharFast(gc) on the primary path of every guarded Fork,
+    // but only when the position immediately after the Fork is exclusively
+    // reachable via the Fork's fall-through (i.e. no other Jump targets it).
+    // If anything else can reach fork_pc+1 without passing the guard, CharFast
+    // would fire without verification — causing incorrect pos advances.
+    let jump_targets: std::collections::HashSet<usize> = l
+        .prog
+        .iter()
+        .flat_map(|inst| -> Box<dyn Iterator<Item = usize>> {
+            match inst {
+                Inst::Jump(t) => Box::new(std::iter::once(*t)),
+                Inst::Fork(alt, _) | Inst::ForkNext(alt, _) => Box::new(std::iter::once(*alt)),
+                Inst::NullCheckEnd { exit_pc, .. } => Box::new(std::iter::once(*exit_pc)),
+                Inst::RepeatNext { body_pc, .. } => Box::new(std::iter::once(*body_pc)),
+                Inst::LookStart { end_pc, .. } => Box::new(std::iter::once(*end_pc)),
+                Inst::AtomicStart(ep) | Inst::AbsenceStart(ep) => Box::new(std::iter::once(*ep)),
+                Inst::CheckGroup { yes_pc, no_pc, .. } => Box::new([*yes_pc, *no_pc].into_iter()),
+                _ => Box::new(std::iter::empty()),
+            }
+        })
+        .collect();
+
+    let promotions: Vec<(usize, char)> = l
+        .prog
+        .iter()
+        .enumerate()
+        .filter_map(|(pc, inst)| match inst {
+            Inst::Fork(_, Some(gc)) => Some((pc + 1, *gc)),
+            _ => None,
+        })
+        .collect();
+    for (start, gc) in promotions {
+        // Only promote if start is exclusively reachable via the Fork fall-through.
+        if !jump_targets.contains(&start) {
+            promote_to_char_fast(&mut l.prog, start, gc);
+        }
+    }
 
     let num_groups = program.num_captures / 2;
     let named_groups: Vec<(String, u32)> = program.named_groups.clone();

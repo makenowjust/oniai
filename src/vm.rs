@@ -1968,10 +1968,11 @@ pub struct CompiledRegex {
 impl CompiledRegex {
     pub fn new(pattern: &str, _opts: CompileOptions) -> Result<Self, Error> {
         let (ast, named) = parse(pattern)?;
-        let ir_prog = ir::build::build(&ast, named, _opts)?;
+        let mut ir_prog = ir::build::build(&ast, named, _opts)?;
         if cfg!(debug_assertions) {
             ir::verify::verify(&ir_prog).map_err(Error::Compile)?;
         }
+        ir::pass::run_passes(&mut ir_prog);
         let prog_data = ir::lower::lower(&ir_prog);
 
         let named_groups: Vec<(String, usize)> = prog_data
