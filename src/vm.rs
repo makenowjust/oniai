@@ -1990,12 +1990,29 @@ impl CompiledRegex {
         // Class/ClassBack.  `None` at all other PCs.
         let match_tries = build_match_tries(&prog_data.prog, &prog_data.charsets);
 
-        let start_strategy = StartStrategy::compute(
+        let mut start_strategy = StartStrategy::compute(
             &prog_data.prog,
             &prog_data.charsets,
             &match_tries,
             &prog_data.alt_tries,
         );
+        // If the Vec<Inst> analysis didn't find a restriction but the IR can,
+        // upgrade from Anywhere to AsciiClassStart / RangeStart.
+        if matches!(start_strategy, StartStrategy::Anywhere)
+            && let Some(bits) = ir::prefilter::first_byte_set(&ir_prog)
+        {
+            let non_zero = bits[0] != 0 || bits[1] != 0;
+            if non_zero {
+                if let Some((lo, hi)) = detect_ascii_range(bits) {
+                    start_strategy = StartStrategy::RangeStart { lo, hi };
+                } else {
+                    start_strategy = StartStrategy::AsciiClassStart {
+                        ascii_bits: bits,
+                        can_match_non_ascii: false,
+                    };
+                }
+            }
+        }
         let required_char = compute_required_char(&prog_data.prog);
         // use_memo from IR (already correctly computed during building)
         let use_memo = ir_prog.use_memo;

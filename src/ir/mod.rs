@@ -10,6 +10,7 @@
 pub mod build;
 pub mod lower;
 pub mod pass;
+pub mod prefilter;
 pub mod verify;
 #[cfg(feature = "jit")]
 pub mod jit;
