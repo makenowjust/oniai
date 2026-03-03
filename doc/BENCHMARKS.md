@@ -10,9 +10,9 @@ Five engine variants are compared side-by-side:
 | **fancy-regex** | [`fancy-regex`](https://docs.rs/fancy-regex) crate — NFA + backtracking fallback |
 | **pcre2** | [`pcre2`](https://docs.rs/pcre2) crate — PCRE2 C library bindings |
 
-Run on: 2026-03-03 (macOS, Apple Silicon M-series, PCRE2 10.47)
+Run on: 2026-03-04 (macOS, Apple Silicon M-series, PCRE2 10.47)
 
-Source logs: `log/bench-ir-full-oniai-2026-03-03.txt` (oniai variants, after IR passes),
+Source logs: `log/bench-ir-jit-2026-03-04.txt` (oniai variants, after direct IR→Cranelift JIT),
 `log/bench-smallslots-full-2026-03-02.txt` (regex / fancy-regex / pcre2).
 
 ### Running benchmarks
@@ -276,3 +276,4 @@ Previous-previous (naive scan): 14.8 ms — total **830× speedup** from the pre
 | Atomic groups | **oniai/jit** | Beats pcre2 (27 vs 36 ns); fancy-regex ~10 000× slower |
 | Pathological backtracking | **regex** (immune) / **oniai** (polynomial) | pcre2 exponential |
 | JIT vs interpreter | **oniai/jit** | 1.3–5× faster on compute-heavy patterns |
+| Direct IR→Cranelift JIT | **oniai/jit** | No regressions vs Vec\<Inst\> JIT; direct block jumps, CounterNext JIT-compiled |
