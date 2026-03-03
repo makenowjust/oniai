@@ -6,9 +6,9 @@ A pure-Rust regular expression engine compatible with
 Oniai implements the full Onigmo syntax including look-around (lookahead and
 variable-length lookbehind), atomic groups, backreferences, named captures,
 subexpression calls (`\g<name>`), the absence operator `(?~...)`, and more.
-Case-insensitive matching uses full Unicode case folding (via static tables
-generated from the official Unicode data files), including multi-codepoint folds
-such as `ß` ↔ `ss`.
+Case-insensitive matching uses full Unicode case folding, and Unicode property
+classes (`\p{Alpha}`, `[:lower:]`, etc.) are compiled via pre-computed static
+range tables — both derived from the official Unicode data files.
 It is backed by a memoizing backtracking VM that provides near-linear time
 behaviour on a broad class of patterns (see [Performance](#performance)).
 
@@ -266,6 +266,10 @@ This gives near-linear matching time for a broad class of patterns.  Key propert
 
 Memoization is automatically disabled for patterns containing backreferences or
 conditional groups, where `(pc, pos)` alone does not determine the outcome.
+Patterns with counter-based `{n}` repetitions keep memoization enabled but use
+a counter-aware key `(pc, counters, pos)` instead.  Patterns with large `{n}`
+use an internal counter rather than expanding to `n` copies of the body, keeping
+compile time and bytecode size bounded.
 
 See [`doc/BENCHMARKS.md`](doc/BENCHMARKS.md) for measured results.
 
@@ -280,20 +284,23 @@ src/
   parser.rs     Recursive-descent parser
   compile.rs    AST → VM bytecode compiler
   vm.rs         Memoizing backtracking VM executor
-  charset.rs    Character property helpers (Unicode, POSIX)
+  charset.rs    Character property helpers (Unicode, POSIX); binary-searches static range tables
   casefold.rs   Unicode full case folding (binary search on static tables)
   casefold_trie.rs  Compile-time case-fold → ByteTrie expansion
-  general_category.rs  Unicode General Category lookup (binary search on static ranges)
   bytetrie.rs   Immutable UTF-8 byte trie for case-fold matching
   error.rs      Error type
   data/
-    casefold_data.rs          Pre-generated case fold tables (from data/CaseFolding.txt)
-    general_category_data.rs  Pre-generated GC range table (from data/DerivedGeneralCategory.txt)
+    casefold_data.rs            Pre-generated case fold tables (from data/CaseFolding.txt)
+    general_category_data.rs    Pre-generated GC range table (from data/extracted/DerivedGeneralCategory.txt)
+    unicode_prop_ranges_data.rs Pre-generated property range tables (from data/DerivedCoreProperties.txt,
+                                  data/PropList.txt, data/extracted/DerivedGeneralCategory.txt)
   bin/
     oniai.rs   grep-like CLI binary
-data/
+data/          (git-ignored — fetch with scripts/fetch_unicode_data.sh)
   CaseFolding.txt                        Unicode 17.0.0 case folding data
-  extracted/DerivedGeneralCategory.txt   Unicode 17.0.0 general category data
+  extracted/DerivedGeneralCategory.txt   Unicode 17.0.0 General Category data
+  DerivedCoreProperties.txt              Unicode 17.0.0 derived core properties
+  PropList.txt                           Unicode 17.0.0 property list
 doc/
   RE            Onigmo v6.1.0 syntax reference
   DESIGN.md     Architecture and implementation notes
@@ -337,18 +344,19 @@ cargo clippy --tests
 
 ### Unicode data tables
 
-The files `src/data/casefold_data.rs` and `src/data/general_category_data.rs`
-are pre-generated from the Unicode Character Database and committed to the
-repository so that builds require no network access or extra tooling.
+The files under `src/data/` are pre-generated from the Unicode Character
+Database and committed to the repository so that builds require no network
+access or extra tooling.  The raw Unicode data files live in `data/`, which is
+**git-ignored** (they are large and easily re-fetched).
 
-To update to a new Unicode version:
+To regenerate after a Unicode version update:
 
 ```sh
-sh scripts/fetch_unicode_data.sh 17.0.0   # downloads data/ files
+sh scripts/fetch_unicode_data.sh 17.0.0   # downloads data/ files from unicode.org
 cargo run --manifest-path scripts/gen_unicode_tables/Cargo.toml
 ```
 
-Then commit the updated `data/` and `src/data/` files together.
+Then commit the updated `src/data/` files.
 
 ### Benchmarks
 

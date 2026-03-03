@@ -5,6 +5,7 @@ use crate::data::general_category_data::{
     GC_MN, GC_ND, GC_NL, GC_NO, GC_PC, GC_PD, GC_PE, GC_PF, GC_PI, GC_PO, GC_PS, GC_RANGES,
     GC_SC, GC_SK, GC_SM, GC_SO, GC_ZL, GC_ZP, GC_ZS,
 };
+use crate::data::script_data::{SCRIPT_BY_NAME, SCRIPT_EXT_BY_NAME};
 use crate::data::unicode_prop_ranges_data::{
     ALPHABETIC_RANGES, ALPHANUMERIC_RANGES, LOWERCASE_RANGES, MATH_RANGES, NUMERIC_RANGES,
     UPPERCASE_RANGES, WHITESPACE_RANGES,
@@ -151,6 +152,15 @@ pub fn unicode_prop_direct_ranges(name: &str) -> Option<Vec<(char, char)>> {
         return Some(table.to_vec());
     }
 
+    // Script / Script_Extensions properties.
+    // Accepted forms (all case-insensitive, ignoring `_`/`-`/` `):
+    //   \p{Script=Latin}          \p{sc=Latin}
+    //   \p{Script_Extensions=Latin}  \p{scx=Latin}
+    //   \p{Latin}  (bare script name, treated as Script=Latin)
+    if let Some(ranges) = script_prop_ranges(&norm) {
+        return Some(ranges);
+    }
+
     // GC-based properties: filter GC_RANGES directly.
     let ids = gc_ids_for_prop(&norm)?;
     let mut ranges = Vec::new();
@@ -160,6 +170,40 @@ pub fn unicode_prop_direct_ranges(name: &str) -> Option<Vec<(char, char)>> {
         }
     }
     Some(ranges)
+}
+
+/// Look up Script or Script_Extensions ranges for a normalized property name.
+///
+/// Handles `script=<value>`, `sc=<value>`, `scriptextensions=<value>`,
+/// `scx=<value>`, and bare script names (e.g. `latin`).
+/// Returns `None` if the name is not recognized as a Script property.
+fn script_prop_ranges(norm: &str) -> Option<Vec<(char, char)>> {
+    // Property=value form: split on '='.
+    if let Some(eq) = norm.find('=') {
+        let prop = &norm[..eq];
+        let val = &norm[eq + 1..];
+        let table = match prop {
+            "script" | "sc" => SCRIPT_BY_NAME,
+            "scriptextensions" | "scx" => SCRIPT_EXT_BY_NAME,
+            _ => return None,
+        };
+        return lookup_script_ranges(table, val);
+    }
+
+    // Bare script name: try Script first (most common intent).
+    lookup_script_ranges(SCRIPT_BY_NAME, norm)
+}
+
+/// Binary-search `table` (sorted by normalized name) for `norm_val` and return
+/// a copy of the matched ranges, or `None` if not found.
+fn lookup_script_ranges(
+    table: &[(&str, &[(char, char)])],
+    norm_val: &str,
+) -> Option<Vec<(char, char)>> {
+    table
+        .binary_search_by_key(&norm_val, |&(n, _)| n)
+        .ok()
+        .map(|i| table[i].1.to_vec())
 }
 
 // ---------------------------------------------------------------------------

@@ -213,6 +213,44 @@ ignored** in the name (e.g. `\p{Lu}` ≡ `\p{Uppercase_Letter}` ≡
 | `Numeric` | Numeric characters |
 | `Math` | Math symbols (same as `Sm`) |
 
+#### Script properties
+
+The `Script` (`sc`) and `Script_Extensions` (`scx`) properties match characters
+by their Unicode script assignment (UAX #24).
+
+Syntax:
+
+| Form | Meaning |
+|------|---------|
+| `\p{Script=Name}` | Script property equals *Name* |
+| `\p{sc=Name}` | Short alias for `Script=` |
+| `\p{Script_Extensions=Name}` | Script_Extensions property includes *Name* |
+| `\p{scx=Name}` | Short alias for `Script_Extensions=` |
+| `\p{Name}` | Bare script name — equivalent to `\p{Script=Name}` |
+
+**`Script`** assigns every codepoint to exactly one script.  **`Script_Extensions`**
+is broader: a codepoint belongs to a script's extension set if the character is
+commonly used with that script (e.g. combining diacritics used with multiple scripts).
+
+Script names are **case-insensitive** and **underscores/hyphens/spaces are
+ignored**, matching the same loose-matching rules as all other property names.
+
+Examples:
+
+```ruby
+/\p{Script=Latin}/       # Latin letters (A-Z, à, é, …)
+/\p{sc=Greek}/           # Greek letters (α, β, Γ, …)
+/\p{Latin}/              # same as \p{Script=Latin}
+/\p{Script_Extensions=Latin}/   # Latin + shared combining marks
+/\p{scx=Han}/            # Han + shared characters
+/\P{Script=Common}/      # negated — not Common-script characters
+```
+
+All 174 Unicode 17.0.0 scripts are supported (e.g. `Adlam`, `Arabic`,
+`Armenian`, `Bengali`, `Bopomofo`, `Common`, `Cyrillic`, `Devanagari`,
+`Georgian`, `Greek`, `Han`, `Hangul`, `Hebrew`, `Hiragana`, `Inherited`,
+`Katakana`, `Latin`, `Tamil`, `Thai`, `Tibetan`, `Unknown`, …).
+
 An **unknown property name** is a compile-time error.
 
 ---

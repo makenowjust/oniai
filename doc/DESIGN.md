@@ -39,6 +39,7 @@ No external dependencies are used.
 | `src/data/casefold_data.rs` | Pre-generated case fold tables (from `data/CaseFolding.txt`) |
 | `src/data/general_category_data.rs` | Pre-generated GC range table (from `data/extracted/DerivedGeneralCategory.txt`) |
 | `src/data/unicode_prop_ranges_data.rs` | Pre-generated property range tables (from `data/DerivedCoreProperties.txt`, `data/PropList.txt`, `data/extracted/DerivedGeneralCategory.txt`) |
+| `src/data/script_data.rs` | Pre-generated Script and Script_Extensions range tables (from `data/Scripts.txt`, `data/ScriptExtensions.txt`, `data/PropertyValueAliases.txt`) |
 | `src/bin/oniai.rs` | `grep`-like CLI binary |
 
 ### Unicode data files and generator
@@ -52,7 +53,10 @@ and committed to the repository so that builds require no network access.
 | `data/extracted/DerivedGeneralCategory.txt` | Unicode 17.0.0 General Category data |
 | `data/DerivedCoreProperties.txt` | Unicode 17.0.0 derived core properties (Alphabetic, Uppercase, Lowercase, Math, …) |
 | `data/PropList.txt` | Unicode 17.0.0 property list (White_Space, Hex_Digit, …) |
-| `scripts/fetch_unicode_data.sh` | Downloads all four files from unicode.org |
+| `data/Scripts.txt` | Unicode 17.0.0 Script property assignments |
+| `data/ScriptExtensions.txt` | Unicode 17.0.0 Script_Extensions property assignments |
+| `data/PropertyValueAliases.txt` | Unicode 17.0.0 property value aliases (used to resolve Script abbreviations) |
+| `scripts/fetch_unicode_data.sh` | Downloads all seven files from unicode.org |
 | `scripts/gen_unicode_tables/` | Standalone Rust binary; reads `data/` and writes `src/data/` |
 
 The `data/` directory is **git-ignored**; regenerate its contents by running:

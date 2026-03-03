@@ -1192,3 +1192,113 @@ fn lookbehind_start_strategy_char_first() {
     let matches: Vec<&str> = re.find_iter(text).map(|m| m.as_str()).collect();
     assert_eq!(matches, vec!["example", "test"]);
 }
+
+// ---------------------------------------------------------------------------
+// Script and Script_Extensions Unicode properties
+// ---------------------------------------------------------------------------
+
+#[test]
+fn unicode_prop_script_latin() {
+    // \p{Script=Latin} matches Latin-script letters
+    assert_match!(r"\p{Script=Latin}", "A");
+    assert_match!(r"\p{Script=Latin}", "z");
+    assert_match!(r"\p{sc=Latin}", "é"); // U+00E9 LATIN SMALL LETTER E WITH ACUTE
+    assert_no_match!(r"\p{Script=Latin}", "α"); // Greek
+    assert_no_match!(r"\p{Script=Latin}", "日"); // CJK
+}
+
+#[test]
+fn unicode_prop_script_short_alias() {
+    // Short 4-letter aliases must work: Hira=Hiragana, Latn=Latin, Grek=Greek, …
+    assert_match!(r"\p{sc=Hira}", "あ"); // Hiragana
+    assert_match!(r"\p{sc=Latn}", "A"); // Latin
+    assert_match!(r"\p{sc=Grek}", "α"); // Greek
+    assert_match!(r"\p{sc=Hani}", "日"); // Han
+    assert_match!(r"\p{scx=Hira}", "あ");
+    // ー (U+30FC) has Script=Common, ScriptExtensions={Hira,Kana}
+    assert_match!(r"\p{scx=Hira}", "ー");
+    assert_match!(r"\p{scx=Kana}", "ー");
+}
+
+#[test]
+fn unicode_prop_script_bare_name() {
+    // Bare script name treated as Script=<name>
+    assert_match!(r"\p{Latin}", "A");
+    assert_match!(r"\p{Greek}", "α");
+    assert_match!(r"\p{Han}", "日");
+    assert_no_match!(r"\p{Latin}", "α");
+    assert_no_match!(r"\p{Greek}", "A");
+}
+
+#[test]
+fn unicode_prop_script_negated() {
+    // \P{Latin} — negated
+    assert_match!(r"\P{Latin}", "α");
+    assert_no_match!(r"\P{Latin}", "A");
+    // \p{^Latin} — alternate negation syntax
+    assert_match!(r"\p{^Latin}", "α");
+    assert_no_match!(r"\p{^Latin}", "A");
+}
+
+#[test]
+fn unicode_prop_script_common_inherited() {
+    // Common: punctuation/digits shared across scripts
+    assert_match!(r"\p{Script=Common}", "1");
+    assert_match!(r"\p{sc=Common}", ".");
+    // Inherited: marks that inherit the script of their base character
+    assert_match!(r"\p{Script=Inherited}", "\u{0300}"); // COMBINING GRAVE ACCENT
+}
+
+#[test]
+fn unicode_prop_script_cyrillic_hiragana() {
+    assert_match!(r"\p{Script=Cyrillic}", "А"); // U+0410 CYRILLIC CAPITAL LETTER A
+    assert_no_match!(r"\p{Script=Cyrillic}", "A"); // ASCII A
+    assert_match!(r"\p{Script=Hiragana}", "あ");
+    assert_match!(r"\p{Script=Katakana}", "ア");
+}
+
+#[test]
+fn unicode_prop_script_extensions_latin() {
+    // \p{Script_Extensions=Latin} — broader than Script=Latin; includes
+    // characters like U+0300 (combining grave) which are used with Latin.
+    assert_match!(r"\p{Script_Extensions=Latin}", "A");
+    assert_match!(r"\p{scx=Latin}", "A");
+    // U+0300 COMBINING GRAVE ACCENT has Latin in its Script_Extensions
+    assert_match!(r"\p{scx=Latin}", "\u{0300}");
+    // U+0300 does NOT have Script=Latin (it's Inherited)
+    assert_no_match!(r"\p{Script=Latin}", "\u{0300}");
+}
+
+#[test]
+fn unicode_prop_script_extensions_greek() {
+    // Some characters are shared between Greek and other scripts
+    assert_match!(r"\p{Script_Extensions=Greek}", "α");
+    assert_match!(r"\p{scx=Greek}", "α");
+}
+
+#[test]
+fn unicode_prop_scx_common_inherited_exclusion() {
+    // UAX #24: characters listed in ScriptExtensions.txt have their Script_Extensions
+    // overridden — they do NOT fall back to Common/Inherited in scx.
+    // ー (U+30FC) has Script=Common but ScriptExtensions={Hira,Kana}.
+    assert_match!(r"\p{sc=Common}", "ー");       // Script=Common ✓
+    assert_no_match!(r"\p{scx=Common}", "ー");   // scx overridden to {Hira,Kana}, not Common
+    assert_match!(r"\p{scx=Hira}", "ー");         // listed under Hira extensions
+    // U+0300 COMBINING GRAVE ACCENT: Script=Inherited, scx includes Latin (not Inherited).
+    assert_match!(r"\p{sc=Inherited}", "\u{0300}");
+    assert_no_match!(r"\p{scx=Inherited}", "\u{0300}");
+}
+
+#[test]
+fn unicode_prop_script_case_insensitive_name() {
+    // Names should be case-insensitive and ignore underscores
+    assert_match!(r"\p{script=latin}", "A");
+    assert_match!(r"\p{SCRIPT=LATIN}", "A");
+    assert_match!(r"\p{script_extensions=latin}", "A");
+}
+
+#[test]
+fn unicode_prop_script_unknown_is_error() {
+    // Nonexistent script names should fail to compile
+    assert!(Regex::new(r"\p{Script=Klingon}").is_err());
+}

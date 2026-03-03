@@ -57,7 +57,7 @@ impl Regex {
 
     /// Like [`find`], but forces the interpreter path even when JIT is compiled in.
     /// Available in test, fuzzing, and JIT-enabled builds; used for differential testing.
-    #[cfg(any(feature = "jit"))]
+    #[cfg(feature = "jit")]
     #[doc(hidden)]
     pub fn find_interp<'t>(&self, text: &'t str) -> Option<Match<'t>> {
         self.inner

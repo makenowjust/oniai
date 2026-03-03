@@ -2357,7 +2357,7 @@ impl CompiledRegex {
 
     /// Force the interpreter path, bypassing JIT even when it is compiled in.
     /// Available in test, fuzzing, and JIT-enabled builds (for benchmarking).
-    #[cfg(any(test, fuzzing, feature = "jit"))]
+    #[cfg(feature = "jit")]
     pub fn find_interp(
         &self,
         text: &str,
@@ -2570,7 +2570,7 @@ impl CompiledRegex {
     }
 
     /// Run the interpreter at exactly `pos`, bypassing JIT.
-    #[cfg(any(test, fuzzing, feature = "jit"))]
+    #[cfg(feature = "jit")]
     fn exec_interp(
         &self,
         text: &str,
