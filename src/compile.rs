@@ -282,12 +282,7 @@ impl Compiler {
             }
 
             Node::UnicodeProp { name, negate } => {
-                if !charset::is_known_unicode_prop(name) {
-                    return Err(Error::Compile(format!(
-                        "unknown Unicode property: {name:?}"
-                    )));
-                }
-                let cs = unicode_prop_charset(name, *negate, ic);
+                let cs = unicode_prop_charset(name, *negate, ic)?;
                 let idx = self.add_charset(cs);
                 if backward {
                     self.emit(Inst::ClassBack(idx, ic));
@@ -1137,34 +1132,9 @@ fn intersect_ranges(a: &[(char, char)], b: &[(char, char)]) -> Vec<(char, char)>
     result
 }
 
-/// Collect all valid Unicode codepoints satisfying `pred` into compact ranges.
-fn codepoints_matching(pred: impl Fn(char) -> bool) -> Vec<(char, char)> {
-    let mut ranges: Vec<(char, char)> = Vec::new();
-    let mut run_start: Option<char> = None;
-    let mut run_end: char = '\0';
-    for cp in 0u32..=0x10FFFF {
-        match char::from_u32(cp) {
-            None => {} // surrogate gap — leave run open
-            Some(c) if pred(c) => {
-                run_end = c;
-                run_start.get_or_insert(c);
-            }
-            Some(_) => {
-                if let Some(s) = run_start.take() {
-                    ranges.push((s, run_end));
-                }
-            }
-        }
-    }
-    if let Some(s) = run_start {
-        ranges.push((s, run_end));
-    }
-    ranges
-}
-
 /// Build a `CharSet` for a shorthand (`\w`, `\d`, etc.) at compile time.
 fn shorthand_charset(sh: Shorthand, ascii_range: bool, ignore_case: bool) -> CharSet {
-    let raw = codepoints_matching(|c| charset::matches_shorthand(sh, c, ascii_range));
+    let raw = charset::shorthand_direct_ranges(sh, ascii_range);
     let ranges = merge_ranges(raw);
     let ranges = if ignore_case {
         expand_case_folds(ranges)
@@ -1177,18 +1147,17 @@ fn shorthand_charset(sh: Shorthand, ascii_range: bool, ignore_case: bool) -> Cha
 }
 
 /// Build a `CharSet` for a Unicode property (`\p{...}`) at compile time.
-fn unicode_prop_charset(name: &str, negate: bool, ignore_case: bool) -> CharSet {
-    // Fast path: for GC-based properties we filter the static range table directly
-    // instead of iterating all 1.1 M Unicode codepoints.
-    let raw = charset::unicode_prop_direct_ranges(name)
-        .unwrap_or_else(|| codepoints_matching(|c| charset::matches_unicode_prop(name, c, false)));
+fn unicode_prop_charset(name: &str, negate: bool, ignore_case: bool) -> Result<CharSet, Error> {
+    let raw = charset::unicode_prop_direct_ranges(name).ok_or_else(|| {
+        Error::Compile(format!("unknown Unicode property: {name:?}"))
+    })?;
     let ranges = merge_ranges(raw);
     let ranges = if ignore_case {
         expand_case_folds(ranges)
     } else {
         ranges
     };
-    CharSet::new(negate, ranges)
+    Ok(CharSet::new(negate, ranges))
 }
 
 pub fn compile_charset(
@@ -1235,25 +1204,21 @@ fn expand_class_item(
         ClassItem::Char(c) => out.push((*c, *c)),
         ClassItem::Range(lo, hi) => out.push((*lo, *hi)),
         ClassItem::Shorthand(sh) => {
-            let raw = codepoints_matching(|c| charset::matches_shorthand(*sh, c, ascii_range));
+            let raw = charset::shorthand_direct_ranges(*sh, ascii_range);
             out.extend(raw);
         }
         ClassItem::Posix(cls, neg) => {
-            let raw = codepoints_matching(|c| {
-                let m = charset::matches_posix(*cls, c, ascii_range);
-                if *neg { !m } else { m }
-            });
-            out.extend(raw);
+            let raw = charset::posix_direct_ranges(*cls, ascii_range);
+            if *neg {
+                out.extend(complement_ranges(&merge_ranges(raw)));
+            } else {
+                out.extend(raw);
+            }
         }
         ClassItem::Unicode(name, neg) => {
-            if !charset::is_known_unicode_prop(name) {
-                return Err(Error::Compile(format!(
-                    "unknown Unicode property: {name:?}"
-                )));
-            }
-            let raw = charset::unicode_prop_direct_ranges(name).unwrap_or_else(|| {
-                codepoints_matching(|c| charset::matches_unicode_prop(name, c, false))
-            });
+            let raw = charset::unicode_prop_direct_ranges(name).ok_or_else(|| {
+                Error::Compile(format!("unknown Unicode property: {name:?}"))
+            })?;
             if *neg {
                 let negated = complement_ranges(&merge_ranges(raw));
                 out.extend(negated);

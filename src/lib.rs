@@ -18,7 +18,6 @@ mod charset;
 mod compile;
 mod data;
 mod error;
-mod general_category;
 #[cfg(feature = "jit")]
 mod jit;
 mod parser;
@@ -58,7 +57,8 @@ impl Regex {
 
     /// Like [`find`], but forces the interpreter path even when JIT is compiled in.
     /// Available in test, fuzzing, and JIT-enabled builds; used for differential testing.
-    #[cfg(any(test, fuzzing, feature = "jit"))]
+    #[cfg(any(feature = "jit"))]
+    #[doc(hidden)]
     pub fn find_interp<'t>(&self, text: &'t str) -> Option<Match<'t>> {
         self.inner
             .find_interp(text, 0)
@@ -280,6 +280,7 @@ pub struct FindIterInterp<'r, 't> {
 }
 
 #[cfg(feature = "jit")]
+#[doc(hidden)]
 impl<'r, 't> Iterator for FindIterInterp<'r, 't> {
     type Item = Match<'t>;
     fn next(&mut self) -> Option<Self::Item> {
