@@ -11,6 +11,8 @@ pub mod build;
 pub mod lower;
 pub mod pass;
 pub mod verify;
+#[cfg(feature = "jit")]
+pub mod jit;
 
 use crate::ast::{AnchorKind, Flags, LookDir, LookPol};
 use crate::bytetrie::ByteTrie;

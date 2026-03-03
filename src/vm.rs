@@ -1963,6 +1963,11 @@ pub struct CompiledRegex {
     /// Total number of Fork/ForkNext instructions.  Used to size the dense memo array.
     #[cfg(feature = "jit")]
     fork_pc_count: u32,
+    /// Kept alive when the IR JIT was selected: the compiled JIT code embeds raw
+    /// pointers into the `IrProgram`'s heap data (e.g. `MatchFoldSeq` char slices),
+    /// so `ir_prog` must outlive the `JitModule`.
+    #[cfg(feature = "jit")]
+    _ir_prog: Option<ir::IrProgram>,
 }
 
 impl CompiledRegex {
@@ -2003,14 +2008,25 @@ impl CompiledRegex {
         #[cfg(feature = "jit")]
         let class_tries = build_class_tries(&prog_data.charsets);
 
+        // Try the IR JIT first.  If it succeeds we must keep `ir_prog` alive because
+        // the compiled code contains raw pointers into its heap data (e.g. MatchFoldSeq
+        // char slices).  If the IR JIT fails, fall back to the Vec<Inst>-based JIT.
         #[cfg(feature = "jit")]
-        let jit = crate::jit::try_compile(
-            &prog_data.prog,
-            &prog_data.charsets,
-            &prog_data.alt_tries,
-            use_memo,
-            &fork_pc_indices,
-        );
+        let (jit, _ir_prog) = {
+            let ir_jit = crate::jit::try_compile_from_ir(&ir_prog);
+            if ir_jit.is_some() {
+                (ir_jit, Some(ir_prog))
+            } else {
+                let old_jit = crate::jit::try_compile(
+                    &prog_data.prog,
+                    &prog_data.charsets,
+                    &prog_data.alt_tries,
+                    use_memo,
+                    &fork_pc_indices,
+                );
+                (old_jit, None)
+            }
+        };
 
         Ok(CompiledRegex {
             prog: prog_data.prog,
@@ -2032,6 +2048,8 @@ impl CompiledRegex {
             fork_pc_indices,
             #[cfg(feature = "jit")]
             fork_pc_count,
+            #[cfg(feature = "jit")]
+            _ir_prog,
         })
     }
 

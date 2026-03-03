@@ -95,6 +95,53 @@ pub(crate) fn try_compile(
     Some(module)
 }
 
+/// Attempt to JIT-compile from the IR program directly, skipping the
+/// `Vec<Inst>` round-trip.  Returns `None` on failure or ineligibility.
+pub(crate) fn try_compile_from_ir(ir_prog: &crate::ir::IrProgram) -> Option<JitModule> {
+    if !crate::ir::jit::is_eligible(ir_prog) {
+        return None;
+    }
+    let module = match build_module_from_ir(ir_prog) {
+        Ok(m) => m,
+        Err(_e) => {
+            #[cfg(debug_assertions)]
+            eprintln!("[oniai jit] build_module_from_ir error: {_e}");
+            return None;
+        }
+    };
+    Some(module)
+}
+
+fn build_module_from_ir(ir_prog: &crate::ir::IrProgram) -> Result<JitModule, String> {
+    let mut flag_builder = settings::builder();
+    flag_builder.set("use_colocated_libcalls", "false").unwrap();
+    flag_builder.set("is_pic", "false").unwrap();
+    flag_builder.set("opt_level", "speed").unwrap();
+    let flags = settings::Flags::new(flag_builder);
+
+    let isa_builder = cranelift_native::builder().map_err(|e| format!("ISA builder: {e}"))?;
+    let isa = isa_builder
+        .finish(flags)
+        .map_err(|e| format!("ISA finish: {e}"))?;
+
+    let mut jit_builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+    helpers::register_symbols(&mut jit_builder);
+
+    let mut module = JITModule::new(jit_builder);
+    let func_id = crate::ir::jit::build_from_ir(&mut module, ir_prog)?;
+    module
+        .finalize_definitions()
+        .map_err(|e| format!("finalize: {e}"))?;
+    let raw_ptr = module.get_finalized_function(func_id);
+    let func_ptr: unsafe extern "C" fn(i64, i64) -> i64 =
+        unsafe { std::mem::transmute(raw_ptr) };
+    Ok(JitModule {
+        _module: module,
+        func_ptr,
+    })
+}
+
+
 fn build_module(
     prog: &[Inst],
     charsets: &[CharSet],
