@@ -32,12 +32,8 @@ const SCRIPT_EXT_AHOM_RANGES: &[(char, char)] = &[
     ('\u{1171D}', '\u{1172B}'),
     ('\u{11730}', '\u{11746}'),
 ];
-const SCRIPT_ANATOLIAN_HIEROGLYPHS_RANGES: &[(char, char)] = &[
-    ('\u{14400}', '\u{14646}'),
-];
-const SCRIPT_EXT_ANATOLIAN_HIEROGLYPHS_RANGES: &[(char, char)] = &[
-    ('\u{14400}', '\u{14646}'),
-];
+const SCRIPT_ANATOLIAN_HIEROGLYPHS_RANGES: &[(char, char)] = &[('\u{14400}', '\u{14646}')];
+const SCRIPT_EXT_ANATOLIAN_HIEROGLYPHS_RANGES: &[(char, char)] = &[('\u{14400}', '\u{14646}')];
 const SCRIPT_ARABIC_RANGES: &[(char, char)] = &[
     ('\u{0600}', '\u{0604}'),
     ('\u{0606}', '\u{060B}'),
@@ -163,48 +159,29 @@ const SCRIPT_EXT_ARMENIAN_RANGES: &[(char, char)] = &[
     ('\u{058D}', '\u{058F}'),
     ('\u{FB13}', '\u{FB17}'),
 ];
-const SCRIPT_AVESTAN_RANGES: &[(char, char)] = &[
-    ('\u{10B00}', '\u{10B35}'),
-    ('\u{10B39}', '\u{10B3F}'),
-];
+const SCRIPT_AVESTAN_RANGES: &[(char, char)] =
+    &[('\u{10B00}', '\u{10B35}'), ('\u{10B39}', '\u{10B3F}')];
 const SCRIPT_EXT_AVESTAN_RANGES: &[(char, char)] = &[
     ('\u{00B7}', '\u{00B7}'),
     ('\u{2E30}', '\u{2E31}'),
     ('\u{10B00}', '\u{10B35}'),
     ('\u{10B39}', '\u{10B3F}'),
 ];
-const SCRIPT_BALINESE_RANGES: &[(char, char)] = &[
-    ('\u{1B00}', '\u{1B4C}'),
-    ('\u{1B4E}', '\u{1B7F}'),
-];
-const SCRIPT_EXT_BALINESE_RANGES: &[(char, char)] = &[
-    ('\u{1B00}', '\u{1B4C}'),
-    ('\u{1B4E}', '\u{1B7F}'),
-];
-const SCRIPT_BAMUM_RANGES: &[(char, char)] = &[
-    ('\u{A6A0}', '\u{A6F7}'),
-    ('\u{16800}', '\u{16A38}'),
-];
-const SCRIPT_EXT_BAMUM_RANGES: &[(char, char)] = &[
-    ('\u{A6A0}', '\u{A6F7}'),
-    ('\u{16800}', '\u{16A38}'),
-];
-const SCRIPT_BASSA_VAH_RANGES: &[(char, char)] = &[
-    ('\u{16AD0}', '\u{16AED}'),
-    ('\u{16AF0}', '\u{16AF5}'),
-];
-const SCRIPT_EXT_BASSA_VAH_RANGES: &[(char, char)] = &[
-    ('\u{16AD0}', '\u{16AED}'),
-    ('\u{16AF0}', '\u{16AF5}'),
-];
-const SCRIPT_BATAK_RANGES: &[(char, char)] = &[
-    ('\u{1BC0}', '\u{1BF3}'),
-    ('\u{1BFC}', '\u{1BFF}'),
-];
-const SCRIPT_EXT_BATAK_RANGES: &[(char, char)] = &[
-    ('\u{1BC0}', '\u{1BF3}'),
-    ('\u{1BFC}', '\u{1BFF}'),
-];
+const SCRIPT_BALINESE_RANGES: &[(char, char)] =
+    &[('\u{1B00}', '\u{1B4C}'), ('\u{1B4E}', '\u{1B7F}')];
+const SCRIPT_EXT_BALINESE_RANGES: &[(char, char)] =
+    &[('\u{1B00}', '\u{1B4C}'), ('\u{1B4E}', '\u{1B7F}')];
+const SCRIPT_BAMUM_RANGES: &[(char, char)] =
+    &[('\u{A6A0}', '\u{A6F7}'), ('\u{16800}', '\u{16A38}')];
+const SCRIPT_EXT_BAMUM_RANGES: &[(char, char)] =
+    &[('\u{A6A0}', '\u{A6F7}'), ('\u{16800}', '\u{16A38}')];
+const SCRIPT_BASSA_VAH_RANGES: &[(char, char)] =
+    &[('\u{16AD0}', '\u{16AED}'), ('\u{16AF0}', '\u{16AF5}')];
+const SCRIPT_EXT_BASSA_VAH_RANGES: &[(char, char)] =
+    &[('\u{16AD0}', '\u{16AED}'), ('\u{16AF0}', '\u{16AF5}')];
+const SCRIPT_BATAK_RANGES: &[(char, char)] = &[('\u{1BC0}', '\u{1BF3}'), ('\u{1BFC}', '\u{1BFF}')];
+const SCRIPT_EXT_BATAK_RANGES: &[(char, char)] =
+    &[('\u{1BC0}', '\u{1BF3}'), ('\u{1BFC}', '\u{1BFF}')];
 const SCRIPT_BENGALI_RANGES: &[(char, char)] = &[
     ('\u{0980}', '\u{0983}'),
     ('\u{0985}', '\u{098C}'),
@@ -250,14 +227,10 @@ const SCRIPT_EXT_BENGALI_RANGES: &[(char, char)] = &[
     ('\u{1CF5}', '\u{1CF7}'),
     ('\u{A8F1}', '\u{A8F1}'),
 ];
-const SCRIPT_BERIA_ERFE_RANGES: &[(char, char)] = &[
-    ('\u{16EA0}', '\u{16EB8}'),
-    ('\u{16EBB}', '\u{16ED3}'),
-];
-const SCRIPT_EXT_BERIA_ERFE_RANGES: &[(char, char)] = &[
-    ('\u{16EA0}', '\u{16EB8}'),
-    ('\u{16EBB}', '\u{16ED3}'),
-];
+const SCRIPT_BERIA_ERFE_RANGES: &[(char, char)] =
+    &[('\u{16EA0}', '\u{16EB8}'), ('\u{16EBB}', '\u{16ED3}')];
+const SCRIPT_EXT_BERIA_ERFE_RANGES: &[(char, char)] =
+    &[('\u{16EA0}', '\u{16EB8}'), ('\u{16EBB}', '\u{16ED3}')];
 const SCRIPT_BHAIKSUKI_RANGES: &[(char, char)] = &[
     ('\u{11C00}', '\u{11C08}'),
     ('\u{11C0A}', '\u{11C36}'),
@@ -302,28 +275,18 @@ const SCRIPT_EXT_BRAHMI_RANGES: &[(char, char)] = &[
     ('\u{11052}', '\u{11075}'),
     ('\u{1107F}', '\u{1107F}'),
 ];
-const SCRIPT_BRAILLE_RANGES: &[(char, char)] = &[
-    ('\u{2800}', '\u{28FF}'),
-];
-const SCRIPT_EXT_BRAILLE_RANGES: &[(char, char)] = &[
-    ('\u{2800}', '\u{28FF}'),
-];
-const SCRIPT_BUGINESE_RANGES: &[(char, char)] = &[
-    ('\u{1A00}', '\u{1A1B}'),
-    ('\u{1A1E}', '\u{1A1F}'),
-];
+const SCRIPT_BRAILLE_RANGES: &[(char, char)] = &[('\u{2800}', '\u{28FF}')];
+const SCRIPT_EXT_BRAILLE_RANGES: &[(char, char)] = &[('\u{2800}', '\u{28FF}')];
+const SCRIPT_BUGINESE_RANGES: &[(char, char)] =
+    &[('\u{1A00}', '\u{1A1B}'), ('\u{1A1E}', '\u{1A1F}')];
 const SCRIPT_EXT_BUGINESE_RANGES: &[(char, char)] = &[
     ('\u{1A00}', '\u{1A1B}'),
     ('\u{1A1E}', '\u{1A1F}'),
     ('\u{A9CF}', '\u{A9CF}'),
 ];
-const SCRIPT_BUHID_RANGES: &[(char, char)] = &[
-    ('\u{1740}', '\u{1753}'),
-];
-const SCRIPT_EXT_BUHID_RANGES: &[(char, char)] = &[
-    ('\u{1735}', '\u{1736}'),
-    ('\u{1740}', '\u{1753}'),
-];
+const SCRIPT_BUHID_RANGES: &[(char, char)] = &[('\u{1740}', '\u{1753}')];
+const SCRIPT_EXT_BUHID_RANGES: &[(char, char)] =
+    &[('\u{1735}', '\u{1736}'), ('\u{1740}', '\u{1753}')];
 const SCRIPT_CANADIAN_ABORIGINAL_RANGES: &[(char, char)] = &[
     ('\u{1400}', '\u{167F}'),
     ('\u{18B0}', '\u{18F5}'),
@@ -334,9 +297,7 @@ const SCRIPT_EXT_CANADIAN_ABORIGINAL_RANGES: &[(char, char)] = &[
     ('\u{18B0}', '\u{18F5}'),
     ('\u{11AB0}', '\u{11ABF}'),
 ];
-const SCRIPT_CARIAN_RANGES: &[(char, char)] = &[
-    ('\u{102A0}', '\u{102D0}'),
-];
+const SCRIPT_CARIAN_RANGES: &[(char, char)] = &[('\u{102A0}', '\u{102D0}')];
 const SCRIPT_EXT_CARIAN_RANGES: &[(char, char)] = &[
     ('\u{00B7}', '\u{00B7}'),
     ('\u{205A}', '\u{205A}'),
@@ -344,10 +305,8 @@ const SCRIPT_EXT_CARIAN_RANGES: &[(char, char)] = &[
     ('\u{2E31}', '\u{2E31}'),
     ('\u{102A0}', '\u{102D0}'),
 ];
-const SCRIPT_CAUCASIAN_ALBANIAN_RANGES: &[(char, char)] = &[
-    ('\u{10530}', '\u{10563}'),
-    ('\u{1056F}', '\u{1056F}'),
-];
+const SCRIPT_CAUCASIAN_ALBANIAN_RANGES: &[(char, char)] =
+    &[('\u{10530}', '\u{10563}'), ('\u{1056F}', '\u{1056F}')];
 const SCRIPT_EXT_CAUCASIAN_ALBANIAN_RANGES: &[(char, char)] = &[
     ('\u{0304}', '\u{0304}'),
     ('\u{0331}', '\u{0331}'),
@@ -355,10 +314,8 @@ const SCRIPT_EXT_CAUCASIAN_ALBANIAN_RANGES: &[(char, char)] = &[
     ('\u{10530}', '\u{10563}'),
     ('\u{1056F}', '\u{1056F}'),
 ];
-const SCRIPT_CHAKMA_RANGES: &[(char, char)] = &[
-    ('\u{11100}', '\u{11134}'),
-    ('\u{11136}', '\u{11147}'),
-];
+const SCRIPT_CHAKMA_RANGES: &[(char, char)] =
+    &[('\u{11100}', '\u{11134}'), ('\u{11136}', '\u{11147}')];
 const SCRIPT_EXT_CHAKMA_RANGES: &[(char, char)] = &[
     ('\u{09E6}', '\u{09EF}'),
     ('\u{1040}', '\u{1049}'),
@@ -392,12 +349,8 @@ const SCRIPT_EXT_CHEROKEE_RANGES: &[(char, char)] = &[
     ('\u{13F8}', '\u{13FD}'),
     ('\u{AB70}', '\u{ABBF}'),
 ];
-const SCRIPT_CHORASMIAN_RANGES: &[(char, char)] = &[
-    ('\u{10FB0}', '\u{10FCB}'),
-];
-const SCRIPT_EXT_CHORASMIAN_RANGES: &[(char, char)] = &[
-    ('\u{10FB0}', '\u{10FCB}'),
-];
+const SCRIPT_CHORASMIAN_RANGES: &[(char, char)] = &[('\u{10FB0}', '\u{10FCB}')];
+const SCRIPT_EXT_CHORASMIAN_RANGES: &[(char, char)] = &[('\u{10FB0}', '\u{10FCB}')];
 const SCRIPT_COMMON_RANGES: &[(char, char)] = &[
     ('\u{0000}', '\u{0040}'),
     ('\u{005B}', '\u{0060}'),
@@ -787,13 +740,9 @@ const SCRIPT_EXT_CYPRIOT_RANGES: &[(char, char)] = &[
     ('\u{1083C}', '\u{1083C}'),
     ('\u{1083F}', '\u{1083F}'),
 ];
-const SCRIPT_CYPRO_MINOAN_RANGES: &[(char, char)] = &[
-    ('\u{12F90}', '\u{12FF2}'),
-];
-const SCRIPT_EXT_CYPRO_MINOAN_RANGES: &[(char, char)] = &[
-    ('\u{10100}', '\u{10101}'),
-    ('\u{12F90}', '\u{12FF2}'),
-];
+const SCRIPT_CYPRO_MINOAN_RANGES: &[(char, char)] = &[('\u{12F90}', '\u{12FF2}')];
+const SCRIPT_EXT_CYPRO_MINOAN_RANGES: &[(char, char)] =
+    &[('\u{10100}', '\u{10101}'), ('\u{12F90}', '\u{12FF2}')];
 const SCRIPT_CYRILLIC_RANGES: &[(char, char)] = &[
     ('\u{0400}', '\u{0484}'),
     ('\u{0487}', '\u{052F}'),
@@ -826,12 +775,8 @@ const SCRIPT_EXT_CYRILLIC_RANGES: &[(char, char)] = &[
     ('\u{1E030}', '\u{1E06D}'),
     ('\u{1E08F}', '\u{1E08F}'),
 ];
-const SCRIPT_DESERET_RANGES: &[(char, char)] = &[
-    ('\u{10400}', '\u{1044F}'),
-];
-const SCRIPT_EXT_DESERET_RANGES: &[(char, char)] = &[
-    ('\u{10400}', '\u{1044F}'),
-];
+const SCRIPT_DESERET_RANGES: &[(char, char)] = &[('\u{10400}', '\u{1044F}')];
+const SCRIPT_EXT_DESERET_RANGES: &[(char, char)] = &[('\u{10400}', '\u{1044F}')];
 const SCRIPT_DEVANAGARI_RANGES: &[(char, char)] = &[
     ('\u{0900}', '\u{0950}'),
     ('\u{0955}', '\u{0963}'),
@@ -870,9 +815,7 @@ const SCRIPT_EXT_DIVES_AKURU_RANGES: &[(char, char)] = &[
     ('\u{1193B}', '\u{11946}'),
     ('\u{11950}', '\u{11959}'),
 ];
-const SCRIPT_DOGRA_RANGES: &[(char, char)] = &[
-    ('\u{11800}', '\u{1183B}'),
-];
+const SCRIPT_DOGRA_RANGES: &[(char, char)] = &[('\u{11800}', '\u{1183B}')];
 const SCRIPT_EXT_DOGRA_RANGES: &[(char, char)] = &[
     ('\u{0964}', '\u{096F}'),
     ('\u{A830}', '\u{A839}'),
@@ -897,28 +840,18 @@ const SCRIPT_EXT_DUPLOYAN_RANGES: &[(char, char)] = &[
     ('\u{1BC90}', '\u{1BC99}'),
     ('\u{1BC9C}', '\u{1BCA3}'),
 ];
-const SCRIPT_EGYPTIAN_HIEROGLYPHS_RANGES: &[(char, char)] = &[
-    ('\u{13000}', '\u{13455}'),
-    ('\u{13460}', '\u{143FA}'),
-];
-const SCRIPT_EXT_EGYPTIAN_HIEROGLYPHS_RANGES: &[(char, char)] = &[
-    ('\u{13000}', '\u{13455}'),
-    ('\u{13460}', '\u{143FA}'),
-];
-const SCRIPT_ELBASAN_RANGES: &[(char, char)] = &[
-    ('\u{10500}', '\u{10527}'),
-];
+const SCRIPT_EGYPTIAN_HIEROGLYPHS_RANGES: &[(char, char)] =
+    &[('\u{13000}', '\u{13455}'), ('\u{13460}', '\u{143FA}')];
+const SCRIPT_EXT_EGYPTIAN_HIEROGLYPHS_RANGES: &[(char, char)] =
+    &[('\u{13000}', '\u{13455}'), ('\u{13460}', '\u{143FA}')];
+const SCRIPT_ELBASAN_RANGES: &[(char, char)] = &[('\u{10500}', '\u{10527}')];
 const SCRIPT_EXT_ELBASAN_RANGES: &[(char, char)] = &[
     ('\u{00B7}', '\u{00B7}'),
     ('\u{0305}', '\u{0305}'),
     ('\u{10500}', '\u{10527}'),
 ];
-const SCRIPT_ELYMAIC_RANGES: &[(char, char)] = &[
-    ('\u{10FE0}', '\u{10FF6}'),
-];
-const SCRIPT_EXT_ELYMAIC_RANGES: &[(char, char)] = &[
-    ('\u{10FE0}', '\u{10FF6}'),
-];
+const SCRIPT_ELYMAIC_RANGES: &[(char, char)] = &[('\u{10FE0}', '\u{10FF6}')];
+const SCRIPT_EXT_ELYMAIC_RANGES: &[(char, char)] = &[('\u{10FE0}', '\u{10FF6}')];
 const SCRIPT_ETHIOPIC_RANGES: &[(char, char)] = &[
     ('\u{1200}', '\u{1248}'),
     ('\u{124A}', '\u{124D}'),
@@ -1062,9 +995,7 @@ const SCRIPT_EXT_GLAGOLITIC_RANGES: &[(char, char)] = &[
     ('\u{1E023}', '\u{1E024}'),
     ('\u{1E026}', '\u{1E02A}'),
 ];
-const SCRIPT_GOTHIC_RANGES: &[(char, char)] = &[
-    ('\u{10330}', '\u{1034A}'),
-];
+const SCRIPT_GOTHIC_RANGES: &[(char, char)] = &[('\u{10330}', '\u{1034A}')];
 const SCRIPT_EXT_GOTHIC_RANGES: &[(char, char)] = &[
     ('\u{00B7}', '\u{00B7}'),
     ('\u{0304}', '\u{0305}'),
@@ -1292,13 +1223,9 @@ const SCRIPT_EXT_GURMUKHI_RANGES: &[(char, char)] = &[
     ('\u{0A66}', '\u{0A76}'),
     ('\u{A830}', '\u{A839}'),
 ];
-const SCRIPT_GURUNG_KHEMA_RANGES: &[(char, char)] = &[
-    ('\u{16100}', '\u{16139}'),
-];
-const SCRIPT_EXT_GURUNG_KHEMA_RANGES: &[(char, char)] = &[
-    ('\u{0965}', '\u{0965}'),
-    ('\u{16100}', '\u{16139}'),
-];
+const SCRIPT_GURUNG_KHEMA_RANGES: &[(char, char)] = &[('\u{16100}', '\u{16139}')];
+const SCRIPT_EXT_GURUNG_KHEMA_RANGES: &[(char, char)] =
+    &[('\u{0965}', '\u{0965}'), ('\u{16100}', '\u{16139}')];
 const SCRIPT_HAN_RANGES: &[(char, char)] = &[
     ('\u{2E80}', '\u{2E99}'),
     ('\u{2E9B}', '\u{2EF3}'),
@@ -1404,10 +1331,8 @@ const SCRIPT_EXT_HANGUL_RANGES: &[(char, char)] = &[
     ('\u{FFD2}', '\u{FFD7}'),
     ('\u{FFDA}', '\u{FFDC}'),
 ];
-const SCRIPT_HANIFI_ROHINGYA_RANGES: &[(char, char)] = &[
-    ('\u{10D00}', '\u{10D27}'),
-    ('\u{10D30}', '\u{10D39}'),
-];
+const SCRIPT_HANIFI_ROHINGYA_RANGES: &[(char, char)] =
+    &[('\u{10D00}', '\u{10D27}'), ('\u{10D30}', '\u{10D39}')];
 const SCRIPT_EXT_HANIFI_ROHINGYA_RANGES: &[(char, char)] = &[
     ('\u{060C}', '\u{060C}'),
     ('\u{061B}', '\u{061B}'),
@@ -1417,12 +1342,8 @@ const SCRIPT_EXT_HANIFI_ROHINGYA_RANGES: &[(char, char)] = &[
     ('\u{10D00}', '\u{10D27}'),
     ('\u{10D30}', '\u{10D39}'),
 ];
-const SCRIPT_HANUNOO_RANGES: &[(char, char)] = &[
-    ('\u{1720}', '\u{1734}'),
-];
-const SCRIPT_EXT_HANUNOO_RANGES: &[(char, char)] = &[
-    ('\u{1720}', '\u{1736}'),
-];
+const SCRIPT_HANUNOO_RANGES: &[(char, char)] = &[('\u{1720}', '\u{1734}')];
+const SCRIPT_EXT_HANUNOO_RANGES: &[(char, char)] = &[('\u{1720}', '\u{1736}')];
 const SCRIPT_HATRAN_RANGES: &[(char, char)] = &[
     ('\u{108E0}', '\u{108F2}'),
     ('\u{108F4}', '\u{108F5}'),
@@ -1483,14 +1404,10 @@ const SCRIPT_EXT_HIRAGANA_RANGES: &[(char, char)] = &[
     ('\u{1B150}', '\u{1B152}'),
     ('\u{1F200}', '\u{1F200}'),
 ];
-const SCRIPT_IMPERIAL_ARAMAIC_RANGES: &[(char, char)] = &[
-    ('\u{10840}', '\u{10855}'),
-    ('\u{10857}', '\u{1085F}'),
-];
-const SCRIPT_EXT_IMPERIAL_ARAMAIC_RANGES: &[(char, char)] = &[
-    ('\u{10840}', '\u{10855}'),
-    ('\u{10857}', '\u{1085F}'),
-];
+const SCRIPT_IMPERIAL_ARAMAIC_RANGES: &[(char, char)] =
+    &[('\u{10840}', '\u{10855}'), ('\u{10857}', '\u{1085F}')];
+const SCRIPT_EXT_IMPERIAL_ARAMAIC_RANGES: &[(char, char)] =
+    &[('\u{10840}', '\u{10855}'), ('\u{10857}', '\u{1085F}')];
 const SCRIPT_INHERITED_RANGES: &[(char, char)] = &[
     ('\u{0300}', '\u{036F}'),
     ('\u{0485}', '\u{0486}'),
@@ -1553,22 +1470,14 @@ const SCRIPT_EXT_INHERITED_RANGES: &[(char, char)] = &[
     ('\u{1D1AA}', '\u{1D1AD}'),
     ('\u{E0100}', '\u{E01EF}'),
 ];
-const SCRIPT_INSCRIPTIONAL_PAHLAVI_RANGES: &[(char, char)] = &[
-    ('\u{10B60}', '\u{10B72}'),
-    ('\u{10B78}', '\u{10B7F}'),
-];
-const SCRIPT_EXT_INSCRIPTIONAL_PAHLAVI_RANGES: &[(char, char)] = &[
-    ('\u{10B60}', '\u{10B72}'),
-    ('\u{10B78}', '\u{10B7F}'),
-];
-const SCRIPT_INSCRIPTIONAL_PARTHIAN_RANGES: &[(char, char)] = &[
-    ('\u{10B40}', '\u{10B55}'),
-    ('\u{10B58}', '\u{10B5F}'),
-];
-const SCRIPT_EXT_INSCRIPTIONAL_PARTHIAN_RANGES: &[(char, char)] = &[
-    ('\u{10B40}', '\u{10B55}'),
-    ('\u{10B58}', '\u{10B5F}'),
-];
+const SCRIPT_INSCRIPTIONAL_PAHLAVI_RANGES: &[(char, char)] =
+    &[('\u{10B60}', '\u{10B72}'), ('\u{10B78}', '\u{10B7F}')];
+const SCRIPT_EXT_INSCRIPTIONAL_PAHLAVI_RANGES: &[(char, char)] =
+    &[('\u{10B60}', '\u{10B72}'), ('\u{10B78}', '\u{10B7F}')];
+const SCRIPT_INSCRIPTIONAL_PARTHIAN_RANGES: &[(char, char)] =
+    &[('\u{10B40}', '\u{10B55}'), ('\u{10B58}', '\u{10B5F}')];
+const SCRIPT_EXT_INSCRIPTIONAL_PARTHIAN_RANGES: &[(char, char)] =
+    &[('\u{10B40}', '\u{10B55}'), ('\u{10B58}', '\u{10B5F}')];
 const SCRIPT_JAVANESE_RANGES: &[(char, char)] = &[
     ('\u{A980}', '\u{A9CD}'),
     ('\u{A9D0}', '\u{A9D9}'),
@@ -1579,10 +1488,8 @@ const SCRIPT_EXT_JAVANESE_RANGES: &[(char, char)] = &[
     ('\u{A9CF}', '\u{A9D9}'),
     ('\u{A9DE}', '\u{A9DF}'),
 ];
-const SCRIPT_KAITHI_RANGES: &[(char, char)] = &[
-    ('\u{11080}', '\u{110C2}'),
-    ('\u{110CD}', '\u{110CD}'),
-];
+const SCRIPT_KAITHI_RANGES: &[(char, char)] =
+    &[('\u{11080}', '\u{110C2}'), ('\u{110CD}', '\u{110CD}')];
 const SCRIPT_EXT_KAITHI_RANGES: &[(char, char)] = &[
     ('\u{0966}', '\u{096F}'),
     ('\u{2E31}', '\u{2E31}'),
@@ -1678,13 +1585,9 @@ const SCRIPT_EXT_KAWI_RANGES: &[(char, char)] = &[
     ('\u{11F12}', '\u{11F3A}'),
     ('\u{11F3E}', '\u{11F5A}'),
 ];
-const SCRIPT_KAYAH_LI_RANGES: &[(char, char)] = &[
-    ('\u{A900}', '\u{A92D}'),
-    ('\u{A92F}', '\u{A92F}'),
-];
-const SCRIPT_EXT_KAYAH_LI_RANGES: &[(char, char)] = &[
-    ('\u{A900}', '\u{A92F}'),
-];
+const SCRIPT_KAYAH_LI_RANGES: &[(char, char)] =
+    &[('\u{A900}', '\u{A92D}'), ('\u{A92F}', '\u{A92F}')];
+const SCRIPT_EXT_KAYAH_LI_RANGES: &[(char, char)] = &[('\u{A900}', '\u{A92F}')];
 const SCRIPT_KHAROSHTHI_RANGES: &[(char, char)] = &[
     ('\u{10A00}', '\u{10A03}'),
     ('\u{10A05}', '\u{10A06}'),
@@ -1727,32 +1630,24 @@ const SCRIPT_EXT_KHMER_RANGES: &[(char, char)] = &[
     ('\u{17F0}', '\u{17F9}'),
     ('\u{19E0}', '\u{19FF}'),
 ];
-const SCRIPT_KHOJKI_RANGES: &[(char, char)] = &[
-    ('\u{11200}', '\u{11211}'),
-    ('\u{11213}', '\u{11241}'),
-];
+const SCRIPT_KHOJKI_RANGES: &[(char, char)] =
+    &[('\u{11200}', '\u{11211}'), ('\u{11213}', '\u{11241}')];
 const SCRIPT_EXT_KHOJKI_RANGES: &[(char, char)] = &[
     ('\u{0AE6}', '\u{0AEF}'),
     ('\u{A830}', '\u{A839}'),
     ('\u{11200}', '\u{11211}'),
     ('\u{11213}', '\u{11241}'),
 ];
-const SCRIPT_KHUDAWADI_RANGES: &[(char, char)] = &[
-    ('\u{112B0}', '\u{112EA}'),
-    ('\u{112F0}', '\u{112F9}'),
-];
+const SCRIPT_KHUDAWADI_RANGES: &[(char, char)] =
+    &[('\u{112B0}', '\u{112EA}'), ('\u{112F0}', '\u{112F9}')];
 const SCRIPT_EXT_KHUDAWADI_RANGES: &[(char, char)] = &[
     ('\u{0964}', '\u{0965}'),
     ('\u{A830}', '\u{A839}'),
     ('\u{112B0}', '\u{112EA}'),
     ('\u{112F0}', '\u{112F9}'),
 ];
-const SCRIPT_KIRAT_RAI_RANGES: &[(char, char)] = &[
-    ('\u{16D40}', '\u{16D79}'),
-];
-const SCRIPT_EXT_KIRAT_RAI_RANGES: &[(char, char)] = &[
-    ('\u{16D40}', '\u{16D79}'),
-];
+const SCRIPT_KIRAT_RAI_RANGES: &[(char, char)] = &[('\u{16D40}', '\u{16D79}')];
+const SCRIPT_EXT_KIRAT_RAI_RANGES: &[(char, char)] = &[('\u{16D40}', '\u{16D79}')];
 const SCRIPT_LAO_RANGES: &[(char, char)] = &[
     ('\u{0E81}', '\u{0E82}'),
     ('\u{0E84}', '\u{0E84}'),
@@ -1937,10 +1832,7 @@ const SCRIPT_EXT_LINEAR_B_RANGES: &[(char, char)] = &[
     ('\u{10107}', '\u{10133}'),
     ('\u{10137}', '\u{1013F}'),
 ];
-const SCRIPT_LISU_RANGES: &[(char, char)] = &[
-    ('\u{A4D0}', '\u{A4FF}'),
-    ('\u{11FB0}', '\u{11FB0}'),
-];
+const SCRIPT_LISU_RANGES: &[(char, char)] = &[('\u{A4D0}', '\u{A4FF}'), ('\u{11FB0}', '\u{11FB0}')];
 const SCRIPT_EXT_LISU_RANGES: &[(char, char)] = &[
     ('\u{02BC}', '\u{02BC}'),
     ('\u{02CD}', '\u{02CD}'),
@@ -1948,38 +1840,26 @@ const SCRIPT_EXT_LISU_RANGES: &[(char, char)] = &[
     ('\u{A4D0}', '\u{A4FF}'),
     ('\u{11FB0}', '\u{11FB0}'),
 ];
-const SCRIPT_LYCIAN_RANGES: &[(char, char)] = &[
-    ('\u{10280}', '\u{1029C}'),
-];
-const SCRIPT_EXT_LYCIAN_RANGES: &[(char, char)] = &[
-    ('\u{205A}', '\u{205A}'),
-    ('\u{10280}', '\u{1029C}'),
-];
-const SCRIPT_LYDIAN_RANGES: &[(char, char)] = &[
-    ('\u{10920}', '\u{10939}'),
-    ('\u{1093F}', '\u{1093F}'),
-];
+const SCRIPT_LYCIAN_RANGES: &[(char, char)] = &[('\u{10280}', '\u{1029C}')];
+const SCRIPT_EXT_LYCIAN_RANGES: &[(char, char)] =
+    &[('\u{205A}', '\u{205A}'), ('\u{10280}', '\u{1029C}')];
+const SCRIPT_LYDIAN_RANGES: &[(char, char)] =
+    &[('\u{10920}', '\u{10939}'), ('\u{1093F}', '\u{1093F}')];
 const SCRIPT_EXT_LYDIAN_RANGES: &[(char, char)] = &[
     ('\u{00B7}', '\u{00B7}'),
     ('\u{2E31}', '\u{2E31}'),
     ('\u{10920}', '\u{10939}'),
     ('\u{1093F}', '\u{1093F}'),
 ];
-const SCRIPT_MAHAJANI_RANGES: &[(char, char)] = &[
-    ('\u{11150}', '\u{11176}'),
-];
+const SCRIPT_MAHAJANI_RANGES: &[(char, char)] = &[('\u{11150}', '\u{11176}')];
 const SCRIPT_EXT_MAHAJANI_RANGES: &[(char, char)] = &[
     ('\u{00B7}', '\u{00B7}'),
     ('\u{0964}', '\u{096F}'),
     ('\u{A830}', '\u{A839}'),
     ('\u{11150}', '\u{11176}'),
 ];
-const SCRIPT_MAKASAR_RANGES: &[(char, char)] = &[
-    ('\u{11EE0}', '\u{11EF8}'),
-];
-const SCRIPT_EXT_MAKASAR_RANGES: &[(char, char)] = &[
-    ('\u{11EE0}', '\u{11EF8}'),
-];
+const SCRIPT_MAKASAR_RANGES: &[(char, char)] = &[('\u{11EE0}', '\u{11EF8}')];
+const SCRIPT_EXT_MAKASAR_RANGES: &[(char, char)] = &[('\u{11EE0}', '\u{11EF8}')];
 const SCRIPT_MALAYALAM_RANGES: &[(char, char)] = &[
     ('\u{0D00}', '\u{0D0C}'),
     ('\u{0D0E}', '\u{0D10}'),
@@ -2003,19 +1883,15 @@ const SCRIPT_EXT_MALAYALAM_RANGES: &[(char, char)] = &[
     ('\u{1CF2}', '\u{1CF2}'),
     ('\u{A830}', '\u{A832}'),
 ];
-const SCRIPT_MANDAIC_RANGES: &[(char, char)] = &[
-    ('\u{0840}', '\u{085B}'),
-    ('\u{085E}', '\u{085E}'),
-];
+const SCRIPT_MANDAIC_RANGES: &[(char, char)] =
+    &[('\u{0840}', '\u{085B}'), ('\u{085E}', '\u{085E}')];
 const SCRIPT_EXT_MANDAIC_RANGES: &[(char, char)] = &[
     ('\u{0640}', '\u{0640}'),
     ('\u{0840}', '\u{085B}'),
     ('\u{085E}', '\u{085E}'),
 ];
-const SCRIPT_MANICHAEAN_RANGES: &[(char, char)] = &[
-    ('\u{10AC0}', '\u{10AE6}'),
-    ('\u{10AEB}', '\u{10AF6}'),
-];
+const SCRIPT_MANICHAEAN_RANGES: &[(char, char)] =
+    &[('\u{10AC0}', '\u{10AE6}'), ('\u{10AEB}', '\u{10AF6}')];
 const SCRIPT_EXT_MANICHAEAN_RANGES: &[(char, char)] = &[
     ('\u{0640}', '\u{0640}'),
     ('\u{10AC0}', '\u{10AE6}'),
@@ -2050,12 +1926,8 @@ const SCRIPT_EXT_MASARAM_GONDI_RANGES: &[(char, char)] = &[
     ('\u{11D3F}', '\u{11D47}'),
     ('\u{11D50}', '\u{11D59}'),
 ];
-const SCRIPT_MEDEFAIDRIN_RANGES: &[(char, char)] = &[
-    ('\u{16E40}', '\u{16E9A}'),
-];
-const SCRIPT_EXT_MEDEFAIDRIN_RANGES: &[(char, char)] = &[
-    ('\u{16E40}', '\u{16E9A}'),
-];
+const SCRIPT_MEDEFAIDRIN_RANGES: &[(char, char)] = &[('\u{16E40}', '\u{16E9A}')];
+const SCRIPT_EXT_MEDEFAIDRIN_RANGES: &[(char, char)] = &[('\u{16E40}', '\u{16E9A}')];
 const SCRIPT_MEETEI_MAYEK_RANGES: &[(char, char)] = &[
     ('\u{AAE0}', '\u{AAF6}'),
     ('\u{ABC0}', '\u{ABED}'),
@@ -2066,14 +1938,10 @@ const SCRIPT_EXT_MEETEI_MAYEK_RANGES: &[(char, char)] = &[
     ('\u{ABC0}', '\u{ABED}'),
     ('\u{ABF0}', '\u{ABF9}'),
 ];
-const SCRIPT_MENDE_KIKAKUI_RANGES: &[(char, char)] = &[
-    ('\u{1E800}', '\u{1E8C4}'),
-    ('\u{1E8C7}', '\u{1E8D6}'),
-];
-const SCRIPT_EXT_MENDE_KIKAKUI_RANGES: &[(char, char)] = &[
-    ('\u{1E800}', '\u{1E8C4}'),
-    ('\u{1E8C7}', '\u{1E8D6}'),
-];
+const SCRIPT_MENDE_KIKAKUI_RANGES: &[(char, char)] =
+    &[('\u{1E800}', '\u{1E8C4}'), ('\u{1E8C7}', '\u{1E8D6}')];
+const SCRIPT_EXT_MENDE_KIKAKUI_RANGES: &[(char, char)] =
+    &[('\u{1E800}', '\u{1E8C4}'), ('\u{1E8C7}', '\u{1E8D6}')];
 const SCRIPT_MEROITIC_CURSIVE_RANGES: &[(char, char)] = &[
     ('\u{109A0}', '\u{109B7}'),
     ('\u{109BC}', '\u{109CF}'),
@@ -2084,13 +1952,9 @@ const SCRIPT_EXT_MEROITIC_CURSIVE_RANGES: &[(char, char)] = &[
     ('\u{109BC}', '\u{109CF}'),
     ('\u{109D2}', '\u{109FF}'),
 ];
-const SCRIPT_MEROITIC_HIEROGLYPHS_RANGES: &[(char, char)] = &[
-    ('\u{10980}', '\u{1099F}'),
-];
-const SCRIPT_EXT_MEROITIC_HIEROGLYPHS_RANGES: &[(char, char)] = &[
-    ('\u{205D}', '\u{205D}'),
-    ('\u{10980}', '\u{1099F}'),
-];
+const SCRIPT_MEROITIC_HIEROGLYPHS_RANGES: &[(char, char)] = &[('\u{10980}', '\u{1099F}')];
+const SCRIPT_EXT_MEROITIC_HIEROGLYPHS_RANGES: &[(char, char)] =
+    &[('\u{205D}', '\u{205D}'), ('\u{10980}', '\u{1099F}')];
 const SCRIPT_MIAO_RANGES: &[(char, char)] = &[
     ('\u{16F00}', '\u{16F4A}'),
     ('\u{16F4F}', '\u{16F87}'),
@@ -2101,10 +1965,8 @@ const SCRIPT_EXT_MIAO_RANGES: &[(char, char)] = &[
     ('\u{16F4F}', '\u{16F87}'),
     ('\u{16F8F}', '\u{16F9F}'),
 ];
-const SCRIPT_MODI_RANGES: &[(char, char)] = &[
-    ('\u{11600}', '\u{11644}'),
-    ('\u{11650}', '\u{11659}'),
-];
+const SCRIPT_MODI_RANGES: &[(char, char)] =
+    &[('\u{11600}', '\u{11644}'), ('\u{11650}', '\u{11659}')];
 const SCRIPT_EXT_MODI_RANGES: &[(char, char)] = &[
     ('\u{A830}', '\u{A839}'),
     ('\u{11600}', '\u{11644}'),
@@ -2165,20 +2027,12 @@ const SCRIPT_EXT_MYANMAR_RANGES: &[(char, char)] = &[
     ('\u{AA60}', '\u{AA7F}'),
     ('\u{116D0}', '\u{116E3}'),
 ];
-const SCRIPT_NABATAEAN_RANGES: &[(char, char)] = &[
-    ('\u{10880}', '\u{1089E}'),
-    ('\u{108A7}', '\u{108AF}'),
-];
-const SCRIPT_EXT_NABATAEAN_RANGES: &[(char, char)] = &[
-    ('\u{10880}', '\u{1089E}'),
-    ('\u{108A7}', '\u{108AF}'),
-];
-const SCRIPT_NAG_MUNDARI_RANGES: &[(char, char)] = &[
-    ('\u{1E4D0}', '\u{1E4F9}'),
-];
-const SCRIPT_EXT_NAG_MUNDARI_RANGES: &[(char, char)] = &[
-    ('\u{1E4D0}', '\u{1E4F9}'),
-];
+const SCRIPT_NABATAEAN_RANGES: &[(char, char)] =
+    &[('\u{10880}', '\u{1089E}'), ('\u{108A7}', '\u{108AF}')];
+const SCRIPT_EXT_NABATAEAN_RANGES: &[(char, char)] =
+    &[('\u{10880}', '\u{1089E}'), ('\u{108A7}', '\u{108AF}')];
+const SCRIPT_NAG_MUNDARI_RANGES: &[(char, char)] = &[('\u{1E4D0}', '\u{1E4F9}')];
+const SCRIPT_EXT_NAG_MUNDARI_RANGES: &[(char, char)] = &[('\u{1E4D0}', '\u{1E4F9}')];
 const SCRIPT_NANDINAGARI_RANGES: &[(char, char)] = &[
     ('\u{119A0}', '\u{119A7}'),
     ('\u{119AA}', '\u{119D7}'),
@@ -2196,10 +2050,8 @@ const SCRIPT_EXT_NANDINAGARI_RANGES: &[(char, char)] = &[
     ('\u{119AA}', '\u{119D7}'),
     ('\u{119DA}', '\u{119E4}'),
 ];
-const SCRIPT_NEWA_RANGES: &[(char, char)] = &[
-    ('\u{11400}', '\u{1145B}'),
-    ('\u{1145D}', '\u{11461}'),
-];
+const SCRIPT_NEWA_RANGES: &[(char, char)] =
+    &[('\u{11400}', '\u{1145B}'), ('\u{1145D}', '\u{11461}')];
 const SCRIPT_EXT_NEWA_RANGES: &[(char, char)] = &[
     ('\u{0951}', '\u{0952}'),
     ('\u{1CD5}', '\u{1CD5}'),
@@ -2223,10 +2075,7 @@ const SCRIPT_EXT_NEW_TAI_LUE_RANGES: &[(char, char)] = &[
     ('\u{19D0}', '\u{19DA}'),
     ('\u{19DE}', '\u{19DF}'),
 ];
-const SCRIPT_NKO_RANGES: &[(char, char)] = &[
-    ('\u{07C0}', '\u{07FA}'),
-    ('\u{07FD}', '\u{07FF}'),
-];
+const SCRIPT_NKO_RANGES: &[(char, char)] = &[('\u{07C0}', '\u{07FA}'), ('\u{07FD}', '\u{07FF}')];
 const SCRIPT_EXT_NKO_RANGES: &[(char, char)] = &[
     ('\u{060C}', '\u{060C}'),
     ('\u{061B}', '\u{061B}'),
@@ -2235,14 +2084,10 @@ const SCRIPT_EXT_NKO_RANGES: &[(char, char)] = &[
     ('\u{07FD}', '\u{07FF}'),
     ('\u{FD3E}', '\u{FD3F}'),
 ];
-const SCRIPT_NUSHU_RANGES: &[(char, char)] = &[
-    ('\u{16FE1}', '\u{16FE1}'),
-    ('\u{1B170}', '\u{1B2FB}'),
-];
-const SCRIPT_EXT_NUSHU_RANGES: &[(char, char)] = &[
-    ('\u{16FE1}', '\u{16FE1}'),
-    ('\u{1B170}', '\u{1B2FB}'),
-];
+const SCRIPT_NUSHU_RANGES: &[(char, char)] =
+    &[('\u{16FE1}', '\u{16FE1}'), ('\u{1B170}', '\u{1B2FB}')];
+const SCRIPT_EXT_NUSHU_RANGES: &[(char, char)] =
+    &[('\u{16FE1}', '\u{16FE1}'), ('\u{1B170}', '\u{1B2FB}')];
 const SCRIPT_NYIAKENG_PUACHUE_HMONG_RANGES: &[(char, char)] = &[
     ('\u{1E100}', '\u{1E12C}'),
     ('\u{1E130}', '\u{1E13D}'),
@@ -2255,18 +2100,10 @@ const SCRIPT_EXT_NYIAKENG_PUACHUE_HMONG_RANGES: &[(char, char)] = &[
     ('\u{1E140}', '\u{1E149}'),
     ('\u{1E14E}', '\u{1E14F}'),
 ];
-const SCRIPT_OGHAM_RANGES: &[(char, char)] = &[
-    ('\u{1680}', '\u{169C}'),
-];
-const SCRIPT_EXT_OGHAM_RANGES: &[(char, char)] = &[
-    ('\u{1680}', '\u{169C}'),
-];
-const SCRIPT_OL_CHIKI_RANGES: &[(char, char)] = &[
-    ('\u{1C50}', '\u{1C7F}'),
-];
-const SCRIPT_EXT_OL_CHIKI_RANGES: &[(char, char)] = &[
-    ('\u{1C50}', '\u{1C7F}'),
-];
+const SCRIPT_OGHAM_RANGES: &[(char, char)] = &[('\u{1680}', '\u{169C}')];
+const SCRIPT_EXT_OGHAM_RANGES: &[(char, char)] = &[('\u{1680}', '\u{169C}')];
+const SCRIPT_OL_CHIKI_RANGES: &[(char, char)] = &[('\u{1C50}', '\u{1C7F}')];
+const SCRIPT_EXT_OL_CHIKI_RANGES: &[(char, char)] = &[('\u{1C50}', '\u{1C7F}')];
 const SCRIPT_OLD_HUNGARIAN_RANGES: &[(char, char)] = &[
     ('\u{10C80}', '\u{10CB2}'),
     ('\u{10CC0}', '\u{10CF2}'),
@@ -2281,23 +2118,13 @@ const SCRIPT_EXT_OLD_HUNGARIAN_RANGES: &[(char, char)] = &[
     ('\u{10CC0}', '\u{10CF2}'),
     ('\u{10CFA}', '\u{10CFF}'),
 ];
-const SCRIPT_OLD_ITALIC_RANGES: &[(char, char)] = &[
-    ('\u{10300}', '\u{10323}'),
-    ('\u{1032D}', '\u{1032F}'),
-];
-const SCRIPT_EXT_OLD_ITALIC_RANGES: &[(char, char)] = &[
-    ('\u{10300}', '\u{10323}'),
-    ('\u{1032D}', '\u{1032F}'),
-];
-const SCRIPT_OLD_NORTH_ARABIAN_RANGES: &[(char, char)] = &[
-    ('\u{10A80}', '\u{10A9F}'),
-];
-const SCRIPT_EXT_OLD_NORTH_ARABIAN_RANGES: &[(char, char)] = &[
-    ('\u{10A80}', '\u{10A9F}'),
-];
-const SCRIPT_OLD_PERMIC_RANGES: &[(char, char)] = &[
-    ('\u{10350}', '\u{1037A}'),
-];
+const SCRIPT_OLD_ITALIC_RANGES: &[(char, char)] =
+    &[('\u{10300}', '\u{10323}'), ('\u{1032D}', '\u{1032F}')];
+const SCRIPT_EXT_OLD_ITALIC_RANGES: &[(char, char)] =
+    &[('\u{10300}', '\u{10323}'), ('\u{1032D}', '\u{1032F}')];
+const SCRIPT_OLD_NORTH_ARABIAN_RANGES: &[(char, char)] = &[('\u{10A80}', '\u{10A9F}')];
+const SCRIPT_EXT_OLD_NORTH_ARABIAN_RANGES: &[(char, char)] = &[('\u{10A80}', '\u{10A9F}')];
+const SCRIPT_OLD_PERMIC_RANGES: &[(char, char)] = &[('\u{10350}', '\u{1037A}')];
 const SCRIPT_EXT_OLD_PERMIC_RANGES: &[(char, char)] = &[
     ('\u{00B7}', '\u{00B7}'),
     ('\u{0300}', '\u{0300}'),
@@ -2306,46 +2133,28 @@ const SCRIPT_EXT_OLD_PERMIC_RANGES: &[(char, char)] = &[
     ('\u{0483}', '\u{0483}'),
     ('\u{10350}', '\u{1037A}'),
 ];
-const SCRIPT_OLD_PERSIAN_RANGES: &[(char, char)] = &[
-    ('\u{103A0}', '\u{103C3}'),
-    ('\u{103C8}', '\u{103D5}'),
-];
-const SCRIPT_EXT_OLD_PERSIAN_RANGES: &[(char, char)] = &[
-    ('\u{103A0}', '\u{103C3}'),
-    ('\u{103C8}', '\u{103D5}'),
-];
-const SCRIPT_OLD_SOGDIAN_RANGES: &[(char, char)] = &[
-    ('\u{10F00}', '\u{10F27}'),
-];
-const SCRIPT_EXT_OLD_SOGDIAN_RANGES: &[(char, char)] = &[
-    ('\u{10F00}', '\u{10F27}'),
-];
-const SCRIPT_OLD_SOUTH_ARABIAN_RANGES: &[(char, char)] = &[
-    ('\u{10A60}', '\u{10A7F}'),
-];
-const SCRIPT_EXT_OLD_SOUTH_ARABIAN_RANGES: &[(char, char)] = &[
-    ('\u{10A60}', '\u{10A7F}'),
-];
-const SCRIPT_OLD_TURKIC_RANGES: &[(char, char)] = &[
-    ('\u{10C00}', '\u{10C48}'),
-];
+const SCRIPT_OLD_PERSIAN_RANGES: &[(char, char)] =
+    &[('\u{103A0}', '\u{103C3}'), ('\u{103C8}', '\u{103D5}')];
+const SCRIPT_EXT_OLD_PERSIAN_RANGES: &[(char, char)] =
+    &[('\u{103A0}', '\u{103C3}'), ('\u{103C8}', '\u{103D5}')];
+const SCRIPT_OLD_SOGDIAN_RANGES: &[(char, char)] = &[('\u{10F00}', '\u{10F27}')];
+const SCRIPT_EXT_OLD_SOGDIAN_RANGES: &[(char, char)] = &[('\u{10F00}', '\u{10F27}')];
+const SCRIPT_OLD_SOUTH_ARABIAN_RANGES: &[(char, char)] = &[('\u{10A60}', '\u{10A7F}')];
+const SCRIPT_EXT_OLD_SOUTH_ARABIAN_RANGES: &[(char, char)] = &[('\u{10A60}', '\u{10A7F}')];
+const SCRIPT_OLD_TURKIC_RANGES: &[(char, char)] = &[('\u{10C00}', '\u{10C48}')];
 const SCRIPT_EXT_OLD_TURKIC_RANGES: &[(char, char)] = &[
     ('\u{205A}', '\u{205A}'),
     ('\u{2E30}', '\u{2E30}'),
     ('\u{10C00}', '\u{10C48}'),
 ];
-const SCRIPT_OLD_UYGHUR_RANGES: &[(char, char)] = &[
-    ('\u{10F70}', '\u{10F89}'),
-];
+const SCRIPT_OLD_UYGHUR_RANGES: &[(char, char)] = &[('\u{10F70}', '\u{10F89}')];
 const SCRIPT_EXT_OLD_UYGHUR_RANGES: &[(char, char)] = &[
     ('\u{0640}', '\u{0640}'),
     ('\u{10AF2}', '\u{10AF2}'),
     ('\u{10F70}', '\u{10F89}'),
 ];
-const SCRIPT_OL_ONAL_RANGES: &[(char, char)] = &[
-    ('\u{1E5D0}', '\u{1E5FA}'),
-    ('\u{1E5FF}', '\u{1E5FF}'),
-];
+const SCRIPT_OL_ONAL_RANGES: &[(char, char)] =
+    &[('\u{1E5D0}', '\u{1E5FA}'), ('\u{1E5FF}', '\u{1E5FF}')];
 const SCRIPT_EXT_OL_ONAL_RANGES: &[(char, char)] = &[
     ('\u{0964}', '\u{0965}'),
     ('\u{1E5D0}', '\u{1E5FA}'),
@@ -2387,10 +2196,8 @@ const SCRIPT_EXT_ORIYA_RANGES: &[(char, char)] = &[
     ('\u{1CDA}', '\u{1CDA}'),
     ('\u{1CF2}', '\u{1CF2}'),
 ];
-const SCRIPT_OSAGE_RANGES: &[(char, char)] = &[
-    ('\u{104B0}', '\u{104D3}'),
-    ('\u{104D8}', '\u{104FB}'),
-];
+const SCRIPT_OSAGE_RANGES: &[(char, char)] =
+    &[('\u{104B0}', '\u{104D3}'), ('\u{104D8}', '\u{104FB}')];
 const SCRIPT_EXT_OSAGE_RANGES: &[(char, char)] = &[
     ('\u{0301}', '\u{0301}'),
     ('\u{0304}', '\u{0304}'),
@@ -2399,14 +2206,10 @@ const SCRIPT_EXT_OSAGE_RANGES: &[(char, char)] = &[
     ('\u{104B0}', '\u{104D3}'),
     ('\u{104D8}', '\u{104FB}'),
 ];
-const SCRIPT_OSMANYA_RANGES: &[(char, char)] = &[
-    ('\u{10480}', '\u{1049D}'),
-    ('\u{104A0}', '\u{104A9}'),
-];
-const SCRIPT_EXT_OSMANYA_RANGES: &[(char, char)] = &[
-    ('\u{10480}', '\u{1049D}'),
-    ('\u{104A0}', '\u{104A9}'),
-];
+const SCRIPT_OSMANYA_RANGES: &[(char, char)] =
+    &[('\u{10480}', '\u{1049D}'), ('\u{104A0}', '\u{104A9}')];
+const SCRIPT_EXT_OSMANYA_RANGES: &[(char, char)] =
+    &[('\u{10480}', '\u{1049D}'), ('\u{104A0}', '\u{104A9}')];
 const SCRIPT_PAHAWH_HMONG_RANGES: &[(char, char)] = &[
     ('\u{16B00}', '\u{16B45}'),
     ('\u{16B50}', '\u{16B59}'),
@@ -2421,21 +2224,11 @@ const SCRIPT_EXT_PAHAWH_HMONG_RANGES: &[(char, char)] = &[
     ('\u{16B63}', '\u{16B77}'),
     ('\u{16B7D}', '\u{16B8F}'),
 ];
-const SCRIPT_PALMYRENE_RANGES: &[(char, char)] = &[
-    ('\u{10860}', '\u{1087F}'),
-];
-const SCRIPT_EXT_PALMYRENE_RANGES: &[(char, char)] = &[
-    ('\u{10860}', '\u{1087F}'),
-];
-const SCRIPT_PAU_CIN_HAU_RANGES: &[(char, char)] = &[
-    ('\u{11AC0}', '\u{11AF8}'),
-];
-const SCRIPT_EXT_PAU_CIN_HAU_RANGES: &[(char, char)] = &[
-    ('\u{11AC0}', '\u{11AF8}'),
-];
-const SCRIPT_PHAGS_PA_RANGES: &[(char, char)] = &[
-    ('\u{A840}', '\u{A877}'),
-];
+const SCRIPT_PALMYRENE_RANGES: &[(char, char)] = &[('\u{10860}', '\u{1087F}')];
+const SCRIPT_EXT_PALMYRENE_RANGES: &[(char, char)] = &[('\u{10860}', '\u{1087F}')];
+const SCRIPT_PAU_CIN_HAU_RANGES: &[(char, char)] = &[('\u{11AC0}', '\u{11AF8}')];
+const SCRIPT_EXT_PAU_CIN_HAU_RANGES: &[(char, char)] = &[('\u{11AC0}', '\u{11AF8}')];
+const SCRIPT_PHAGS_PA_RANGES: &[(char, char)] = &[('\u{A840}', '\u{A877}')];
 const SCRIPT_EXT_PHAGS_PA_RANGES: &[(char, char)] = &[
     ('\u{1802}', '\u{1803}'),
     ('\u{1805}', '\u{1805}'),
@@ -2443,14 +2236,10 @@ const SCRIPT_EXT_PHAGS_PA_RANGES: &[(char, char)] = &[
     ('\u{3002}', '\u{3002}'),
     ('\u{A840}', '\u{A877}'),
 ];
-const SCRIPT_PHOENICIAN_RANGES: &[(char, char)] = &[
-    ('\u{10900}', '\u{1091B}'),
-    ('\u{1091F}', '\u{1091F}'),
-];
-const SCRIPT_EXT_PHOENICIAN_RANGES: &[(char, char)] = &[
-    ('\u{10900}', '\u{1091B}'),
-    ('\u{1091F}', '\u{1091F}'),
-];
+const SCRIPT_PHOENICIAN_RANGES: &[(char, char)] =
+    &[('\u{10900}', '\u{1091B}'), ('\u{1091F}', '\u{1091F}')];
+const SCRIPT_EXT_PHOENICIAN_RANGES: &[(char, char)] =
+    &[('\u{10900}', '\u{1091B}'), ('\u{1091F}', '\u{1091F}')];
 const SCRIPT_PSALTER_PAHLAVI_RANGES: &[(char, char)] = &[
     ('\u{10B80}', '\u{10B91}'),
     ('\u{10B99}', '\u{10B9C}'),
@@ -2462,42 +2251,24 @@ const SCRIPT_EXT_PSALTER_PAHLAVI_RANGES: &[(char, char)] = &[
     ('\u{10B99}', '\u{10B9C}'),
     ('\u{10BA9}', '\u{10BAF}'),
 ];
-const SCRIPT_REJANG_RANGES: &[(char, char)] = &[
-    ('\u{A930}', '\u{A953}'),
-    ('\u{A95F}', '\u{A95F}'),
-];
-const SCRIPT_EXT_REJANG_RANGES: &[(char, char)] = &[
-    ('\u{A930}', '\u{A953}'),
-    ('\u{A95F}', '\u{A95F}'),
-];
-const SCRIPT_RUNIC_RANGES: &[(char, char)] = &[
-    ('\u{16A0}', '\u{16EA}'),
-    ('\u{16EE}', '\u{16F8}'),
-];
-const SCRIPT_EXT_RUNIC_RANGES: &[(char, char)] = &[
-    ('\u{16A0}', '\u{16F8}'),
-];
-const SCRIPT_SAMARITAN_RANGES: &[(char, char)] = &[
-    ('\u{0800}', '\u{082D}'),
-    ('\u{0830}', '\u{083E}'),
-];
+const SCRIPT_REJANG_RANGES: &[(char, char)] = &[('\u{A930}', '\u{A953}'), ('\u{A95F}', '\u{A95F}')];
+const SCRIPT_EXT_REJANG_RANGES: &[(char, char)] =
+    &[('\u{A930}', '\u{A953}'), ('\u{A95F}', '\u{A95F}')];
+const SCRIPT_RUNIC_RANGES: &[(char, char)] = &[('\u{16A0}', '\u{16EA}'), ('\u{16EE}', '\u{16F8}')];
+const SCRIPT_EXT_RUNIC_RANGES: &[(char, char)] = &[('\u{16A0}', '\u{16F8}')];
+const SCRIPT_SAMARITAN_RANGES: &[(char, char)] =
+    &[('\u{0800}', '\u{082D}'), ('\u{0830}', '\u{083E}')];
 const SCRIPT_EXT_SAMARITAN_RANGES: &[(char, char)] = &[
     ('\u{0800}', '\u{082D}'),
     ('\u{0830}', '\u{083E}'),
     ('\u{2E31}', '\u{2E31}'),
 ];
-const SCRIPT_SAURASHTRA_RANGES: &[(char, char)] = &[
-    ('\u{A880}', '\u{A8C5}'),
-    ('\u{A8CE}', '\u{A8D9}'),
-];
-const SCRIPT_EXT_SAURASHTRA_RANGES: &[(char, char)] = &[
-    ('\u{A880}', '\u{A8C5}'),
-    ('\u{A8CE}', '\u{A8D9}'),
-];
-const SCRIPT_SHARADA_RANGES: &[(char, char)] = &[
-    ('\u{11180}', '\u{111DF}'),
-    ('\u{11B60}', '\u{11B67}'),
-];
+const SCRIPT_SAURASHTRA_RANGES: &[(char, char)] =
+    &[('\u{A880}', '\u{A8C5}'), ('\u{A8CE}', '\u{A8D9}')];
+const SCRIPT_EXT_SAURASHTRA_RANGES: &[(char, char)] =
+    &[('\u{A880}', '\u{A8C5}'), ('\u{A8CE}', '\u{A8D9}')];
+const SCRIPT_SHARADA_RANGES: &[(char, char)] =
+    &[('\u{11180}', '\u{111DF}'), ('\u{11B60}', '\u{11B67}')];
 const SCRIPT_EXT_SHARADA_RANGES: &[(char, char)] = &[
     ('\u{0951}', '\u{0951}'),
     ('\u{1CD7}', '\u{1CD7}'),
@@ -2511,27 +2282,15 @@ const SCRIPT_EXT_SHARADA_RANGES: &[(char, char)] = &[
     ('\u{11180}', '\u{111DF}'),
     ('\u{11B60}', '\u{11B67}'),
 ];
-const SCRIPT_SHAVIAN_RANGES: &[(char, char)] = &[
-    ('\u{10450}', '\u{1047F}'),
-];
-const SCRIPT_EXT_SHAVIAN_RANGES: &[(char, char)] = &[
-    ('\u{00B7}', '\u{00B7}'),
-    ('\u{10450}', '\u{1047F}'),
-];
-const SCRIPT_SIDDHAM_RANGES: &[(char, char)] = &[
-    ('\u{11580}', '\u{115B5}'),
-    ('\u{115B8}', '\u{115DD}'),
-];
-const SCRIPT_EXT_SIDDHAM_RANGES: &[(char, char)] = &[
-    ('\u{11580}', '\u{115B5}'),
-    ('\u{115B8}', '\u{115DD}'),
-];
-const SCRIPT_SIDETIC_RANGES: &[(char, char)] = &[
-    ('\u{10940}', '\u{10959}'),
-];
-const SCRIPT_EXT_SIDETIC_RANGES: &[(char, char)] = &[
-    ('\u{10940}', '\u{10959}'),
-];
+const SCRIPT_SHAVIAN_RANGES: &[(char, char)] = &[('\u{10450}', '\u{1047F}')];
+const SCRIPT_EXT_SHAVIAN_RANGES: &[(char, char)] =
+    &[('\u{00B7}', '\u{00B7}'), ('\u{10450}', '\u{1047F}')];
+const SCRIPT_SIDDHAM_RANGES: &[(char, char)] =
+    &[('\u{11580}', '\u{115B5}'), ('\u{115B8}', '\u{115DD}')];
+const SCRIPT_EXT_SIDDHAM_RANGES: &[(char, char)] =
+    &[('\u{11580}', '\u{115B5}'), ('\u{115B8}', '\u{115DD}')];
+const SCRIPT_SIDETIC_RANGES: &[(char, char)] = &[('\u{10940}', '\u{10959}')];
+const SCRIPT_EXT_SIDETIC_RANGES: &[(char, char)] = &[('\u{10940}', '\u{10959}')];
 const SCRIPT_SIGNWRITING_RANGES: &[(char, char)] = &[
     ('\u{1D800}', '\u{1DA8B}'),
     ('\u{1DA9B}', '\u{1DA9F}'),
@@ -2574,39 +2333,21 @@ const SCRIPT_EXT_SINHALA_RANGES: &[(char, char)] = &[
     ('\u{1CF2}', '\u{1CF2}'),
     ('\u{111E1}', '\u{111F4}'),
 ];
-const SCRIPT_SOGDIAN_RANGES: &[(char, char)] = &[
-    ('\u{10F30}', '\u{10F59}'),
-];
-const SCRIPT_EXT_SOGDIAN_RANGES: &[(char, char)] = &[
-    ('\u{0640}', '\u{0640}'),
-    ('\u{10F30}', '\u{10F59}'),
-];
-const SCRIPT_SORA_SOMPENG_RANGES: &[(char, char)] = &[
-    ('\u{110D0}', '\u{110E8}'),
-    ('\u{110F0}', '\u{110F9}'),
-];
-const SCRIPT_EXT_SORA_SOMPENG_RANGES: &[(char, char)] = &[
-    ('\u{110D0}', '\u{110E8}'),
-    ('\u{110F0}', '\u{110F9}'),
-];
-const SCRIPT_SOYOMBO_RANGES: &[(char, char)] = &[
-    ('\u{11A50}', '\u{11AA2}'),
-];
-const SCRIPT_EXT_SOYOMBO_RANGES: &[(char, char)] = &[
-    ('\u{11A50}', '\u{11AA2}'),
-];
-const SCRIPT_SUNDANESE_RANGES: &[(char, char)] = &[
-    ('\u{1B80}', '\u{1BBF}'),
-    ('\u{1CC0}', '\u{1CC7}'),
-];
-const SCRIPT_EXT_SUNDANESE_RANGES: &[(char, char)] = &[
-    ('\u{1B80}', '\u{1BBF}'),
-    ('\u{1CC0}', '\u{1CC7}'),
-];
-const SCRIPT_SUNUWAR_RANGES: &[(char, char)] = &[
-    ('\u{11BC0}', '\u{11BE1}'),
-    ('\u{11BF0}', '\u{11BF9}'),
-];
+const SCRIPT_SOGDIAN_RANGES: &[(char, char)] = &[('\u{10F30}', '\u{10F59}')];
+const SCRIPT_EXT_SOGDIAN_RANGES: &[(char, char)] =
+    &[('\u{0640}', '\u{0640}'), ('\u{10F30}', '\u{10F59}')];
+const SCRIPT_SORA_SOMPENG_RANGES: &[(char, char)] =
+    &[('\u{110D0}', '\u{110E8}'), ('\u{110F0}', '\u{110F9}')];
+const SCRIPT_EXT_SORA_SOMPENG_RANGES: &[(char, char)] =
+    &[('\u{110D0}', '\u{110E8}'), ('\u{110F0}', '\u{110F9}')];
+const SCRIPT_SOYOMBO_RANGES: &[(char, char)] = &[('\u{11A50}', '\u{11AA2}')];
+const SCRIPT_EXT_SOYOMBO_RANGES: &[(char, char)] = &[('\u{11A50}', '\u{11AA2}')];
+const SCRIPT_SUNDANESE_RANGES: &[(char, char)] =
+    &[('\u{1B80}', '\u{1BBF}'), ('\u{1CC0}', '\u{1CC7}')];
+const SCRIPT_EXT_SUNDANESE_RANGES: &[(char, char)] =
+    &[('\u{1B80}', '\u{1BBF}'), ('\u{1CC0}', '\u{1CC7}')];
+const SCRIPT_SUNUWAR_RANGES: &[(char, char)] =
+    &[('\u{11BC0}', '\u{11BE1}'), ('\u{11BF0}', '\u{11BF9}')];
 const SCRIPT_EXT_SUNUWAR_RANGES: &[(char, char)] = &[
     ('\u{0300}', '\u{0301}'),
     ('\u{0303}', '\u{0303}'),
@@ -2617,9 +2358,7 @@ const SCRIPT_EXT_SUNUWAR_RANGES: &[(char, char)] = &[
     ('\u{11BC0}', '\u{11BE1}'),
     ('\u{11BF0}', '\u{11BF9}'),
 ];
-const SCRIPT_SYLOTI_NAGRI_RANGES: &[(char, char)] = &[
-    ('\u{A800}', '\u{A82C}'),
-];
+const SCRIPT_SYLOTI_NAGRI_RANGES: &[(char, char)] = &[('\u{A800}', '\u{A82C}')];
 const SCRIPT_EXT_SYLOTI_NAGRI_RANGES: &[(char, char)] = &[
     ('\u{0964}', '\u{0965}'),
     ('\u{09E6}', '\u{09EF}'),
@@ -2651,10 +2390,8 @@ const SCRIPT_EXT_SYRIAC_RANGES: &[(char, char)] = &[
     ('\u{1DF8}', '\u{1DF8}'),
     ('\u{1DFA}', '\u{1DFA}'),
 ];
-const SCRIPT_TAGALOG_RANGES: &[(char, char)] = &[
-    ('\u{1700}', '\u{1715}'),
-    ('\u{171F}', '\u{171F}'),
-];
+const SCRIPT_TAGALOG_RANGES: &[(char, char)] =
+    &[('\u{1700}', '\u{1715}'), ('\u{171F}', '\u{171F}')];
 const SCRIPT_EXT_TAGALOG_RANGES: &[(char, char)] = &[
     ('\u{1700}', '\u{1715}'),
     ('\u{171F}', '\u{171F}'),
@@ -2671,10 +2408,7 @@ const SCRIPT_EXT_TAGBANWA_RANGES: &[(char, char)] = &[
     ('\u{176E}', '\u{1770}'),
     ('\u{1772}', '\u{1773}'),
 ];
-const SCRIPT_TAI_LE_RANGES: &[(char, char)] = &[
-    ('\u{1950}', '\u{196D}'),
-    ('\u{1970}', '\u{1974}'),
-];
+const SCRIPT_TAI_LE_RANGES: &[(char, char)] = &[('\u{1950}', '\u{196D}'), ('\u{1970}', '\u{1974}')];
 const SCRIPT_EXT_TAI_LE_RANGES: &[(char, char)] = &[
     ('\u{0300}', '\u{0301}'),
     ('\u{0307}', '\u{0308}'),
@@ -2697,14 +2431,10 @@ const SCRIPT_EXT_TAI_THAM_RANGES: &[(char, char)] = &[
     ('\u{1A90}', '\u{1A99}'),
     ('\u{1AA0}', '\u{1AAD}'),
 ];
-const SCRIPT_TAI_VIET_RANGES: &[(char, char)] = &[
-    ('\u{AA80}', '\u{AAC2}'),
-    ('\u{AADB}', '\u{AADF}'),
-];
-const SCRIPT_EXT_TAI_VIET_RANGES: &[(char, char)] = &[
-    ('\u{AA80}', '\u{AAC2}'),
-    ('\u{AADB}', '\u{AADF}'),
-];
+const SCRIPT_TAI_VIET_RANGES: &[(char, char)] =
+    &[('\u{AA80}', '\u{AAC2}'), ('\u{AADB}', '\u{AADF}')];
+const SCRIPT_EXT_TAI_VIET_RANGES: &[(char, char)] =
+    &[('\u{AA80}', '\u{AAC2}'), ('\u{AADB}', '\u{AADF}')];
 const SCRIPT_TAI_YO_RANGES: &[(char, char)] = &[
     ('\u{1E6C0}', '\u{1E6DE}'),
     ('\u{1E6E0}', '\u{1E6F5}'),
@@ -2715,10 +2445,8 @@ const SCRIPT_EXT_TAI_YO_RANGES: &[(char, char)] = &[
     ('\u{1E6E0}', '\u{1E6F5}'),
     ('\u{1E6FE}', '\u{1E6FF}'),
 ];
-const SCRIPT_TAKRI_RANGES: &[(char, char)] = &[
-    ('\u{11680}', '\u{116B9}'),
-    ('\u{116C0}', '\u{116C9}'),
-];
+const SCRIPT_TAKRI_RANGES: &[(char, char)] =
+    &[('\u{11680}', '\u{116B9}'), ('\u{116C0}', '\u{116C9}')];
 const SCRIPT_EXT_TAKRI_RANGES: &[(char, char)] = &[
     ('\u{0964}', '\u{0965}'),
     ('\u{A830}', '\u{A839}'),
@@ -2772,14 +2500,10 @@ const SCRIPT_EXT_TAMIL_RANGES: &[(char, char)] = &[
     ('\u{11FC0}', '\u{11FF1}'),
     ('\u{11FFF}', '\u{11FFF}'),
 ];
-const SCRIPT_TANGSA_RANGES: &[(char, char)] = &[
-    ('\u{16A70}', '\u{16ABE}'),
-    ('\u{16AC0}', '\u{16AC9}'),
-];
-const SCRIPT_EXT_TANGSA_RANGES: &[(char, char)] = &[
-    ('\u{16A70}', '\u{16ABE}'),
-    ('\u{16AC0}', '\u{16AC9}'),
-];
+const SCRIPT_TANGSA_RANGES: &[(char, char)] =
+    &[('\u{16A70}', '\u{16ABE}'), ('\u{16AC0}', '\u{16AC9}')];
+const SCRIPT_EXT_TANGSA_RANGES: &[(char, char)] =
+    &[('\u{16A70}', '\u{16ABE}'), ('\u{16AC0}', '\u{16AC9}')];
 const SCRIPT_TANGUT_RANGES: &[(char, char)] = &[
     ('\u{16FE0}', '\u{16FE0}'),
     ('\u{17000}', '\u{18AFF}'),
@@ -2830,9 +2554,7 @@ const SCRIPT_EXT_TELUGU_RANGES: &[(char, char)] = &[
     ('\u{1CDA}', '\u{1CDA}'),
     ('\u{1CF2}', '\u{1CF2}'),
 ];
-const SCRIPT_THAANA_RANGES: &[(char, char)] = &[
-    ('\u{0780}', '\u{07B1}'),
-];
+const SCRIPT_THAANA_RANGES: &[(char, char)] = &[('\u{0780}', '\u{07B1}')];
 const SCRIPT_EXT_THAANA_RANGES: &[(char, char)] = &[
     ('\u{060C}', '\u{060C}'),
     ('\u{061B}', '\u{061C}'),
@@ -2842,10 +2564,7 @@ const SCRIPT_EXT_THAANA_RANGES: &[(char, char)] = &[
     ('\u{FDF2}', '\u{FDF2}'),
     ('\u{FDFD}', '\u{FDFD}'),
 ];
-const SCRIPT_THAI_RANGES: &[(char, char)] = &[
-    ('\u{0E01}', '\u{0E3A}'),
-    ('\u{0E40}', '\u{0E5B}'),
-];
+const SCRIPT_THAI_RANGES: &[(char, char)] = &[('\u{0E01}', '\u{0E3A}'), ('\u{0E40}', '\u{0E5B}')];
 const SCRIPT_EXT_THAI_RANGES: &[(char, char)] = &[
     ('\u{02BC}', '\u{02BC}'),
     ('\u{02D7}', '\u{02D7}'),
@@ -2887,10 +2606,8 @@ const SCRIPT_EXT_TIFINAGH_RANGES: &[(char, char)] = &[
     ('\u{2D6F}', '\u{2D70}'),
     ('\u{2D7F}', '\u{2D7F}'),
 ];
-const SCRIPT_TIRHUTA_RANGES: &[(char, char)] = &[
-    ('\u{11480}', '\u{114C7}'),
-    ('\u{114D0}', '\u{114D9}'),
-];
+const SCRIPT_TIRHUTA_RANGES: &[(char, char)] =
+    &[('\u{11480}', '\u{114C7}'), ('\u{114D0}', '\u{114D9}')];
 const SCRIPT_EXT_TIRHUTA_RANGES: &[(char, char)] = &[
     ('\u{0951}', '\u{0952}'),
     ('\u{0964}', '\u{0965}'),
@@ -2901,9 +2618,7 @@ const SCRIPT_EXT_TIRHUTA_RANGES: &[(char, char)] = &[
     ('\u{11480}', '\u{114C7}'),
     ('\u{114D0}', '\u{114D9}'),
 ];
-const SCRIPT_TODHRI_RANGES: &[(char, char)] = &[
-    ('\u{105C0}', '\u{105F3}'),
-];
+const SCRIPT_TODHRI_RANGES: &[(char, char)] = &[('\u{105C0}', '\u{105F3}')];
 const SCRIPT_EXT_TODHRI_RANGES: &[(char, char)] = &[
     ('\u{0301}', '\u{0301}'),
     ('\u{0304}', '\u{0304}'),
@@ -2913,21 +2628,13 @@ const SCRIPT_EXT_TODHRI_RANGES: &[(char, char)] = &[
     ('\u{035E}', '\u{035E}'),
     ('\u{105C0}', '\u{105F3}'),
 ];
-const SCRIPT_TOLONG_SIKI_RANGES: &[(char, char)] = &[
-    ('\u{11DB0}', '\u{11DDB}'),
-    ('\u{11DE0}', '\u{11DE9}'),
-];
-const SCRIPT_EXT_TOLONG_SIKI_RANGES: &[(char, char)] = &[
-    ('\u{11DB0}', '\u{11DDB}'),
-    ('\u{11DE0}', '\u{11DE9}'),
-];
-const SCRIPT_TOTO_RANGES: &[(char, char)] = &[
-    ('\u{1E290}', '\u{1E2AE}'),
-];
-const SCRIPT_EXT_TOTO_RANGES: &[(char, char)] = &[
-    ('\u{02BC}', '\u{02BC}'),
-    ('\u{1E290}', '\u{1E2AE}'),
-];
+const SCRIPT_TOLONG_SIKI_RANGES: &[(char, char)] =
+    &[('\u{11DB0}', '\u{11DDB}'), ('\u{11DE0}', '\u{11DE9}')];
+const SCRIPT_EXT_TOLONG_SIKI_RANGES: &[(char, char)] =
+    &[('\u{11DB0}', '\u{11DDB}'), ('\u{11DE0}', '\u{11DE9}')];
+const SCRIPT_TOTO_RANGES: &[(char, char)] = &[('\u{1E290}', '\u{1E2AE}')];
+const SCRIPT_EXT_TOTO_RANGES: &[(char, char)] =
+    &[('\u{02BC}', '\u{02BC}'), ('\u{1E290}', '\u{1E2AE}')];
 const SCRIPT_TULU_TIGALARI_RANGES: &[(char, char)] = &[
     ('\u{11380}', '\u{11389}'),
     ('\u{1138B}', '\u{1138B}'),
@@ -2959,20 +2666,12 @@ const SCRIPT_EXT_TULU_TIGALARI_RANGES: &[(char, char)] = &[
     ('\u{113D7}', '\u{113D8}'),
     ('\u{113E1}', '\u{113E2}'),
 ];
-const SCRIPT_UGARITIC_RANGES: &[(char, char)] = &[
-    ('\u{10380}', '\u{1039D}'),
-    ('\u{1039F}', '\u{1039F}'),
-];
-const SCRIPT_EXT_UGARITIC_RANGES: &[(char, char)] = &[
-    ('\u{10380}', '\u{1039D}'),
-    ('\u{1039F}', '\u{1039F}'),
-];
-const SCRIPT_VAI_RANGES: &[(char, char)] = &[
-    ('\u{A500}', '\u{A62B}'),
-];
-const SCRIPT_EXT_VAI_RANGES: &[(char, char)] = &[
-    ('\u{A500}', '\u{A62B}'),
-];
+const SCRIPT_UGARITIC_RANGES: &[(char, char)] =
+    &[('\u{10380}', '\u{1039D}'), ('\u{1039F}', '\u{1039F}')];
+const SCRIPT_EXT_UGARITIC_RANGES: &[(char, char)] =
+    &[('\u{10380}', '\u{1039D}'), ('\u{1039F}', '\u{1039F}')];
+const SCRIPT_VAI_RANGES: &[(char, char)] = &[('\u{A500}', '\u{A62B}')];
+const SCRIPT_EXT_VAI_RANGES: &[(char, char)] = &[('\u{A500}', '\u{A62B}')];
 const SCRIPT_VITHKUQI_RANGES: &[(char, char)] = &[
     ('\u{10570}', '\u{1057A}'),
     ('\u{1057C}', '\u{1058A}'),
@@ -2993,22 +2692,14 @@ const SCRIPT_EXT_VITHKUQI_RANGES: &[(char, char)] = &[
     ('\u{105B3}', '\u{105B9}'),
     ('\u{105BB}', '\u{105BC}'),
 ];
-const SCRIPT_WANCHO_RANGES: &[(char, char)] = &[
-    ('\u{1E2C0}', '\u{1E2F9}'),
-    ('\u{1E2FF}', '\u{1E2FF}'),
-];
-const SCRIPT_EXT_WANCHO_RANGES: &[(char, char)] = &[
-    ('\u{1E2C0}', '\u{1E2F9}'),
-    ('\u{1E2FF}', '\u{1E2FF}'),
-];
-const SCRIPT_WARANG_CITI_RANGES: &[(char, char)] = &[
-    ('\u{118A0}', '\u{118F2}'),
-    ('\u{118FF}', '\u{118FF}'),
-];
-const SCRIPT_EXT_WARANG_CITI_RANGES: &[(char, char)] = &[
-    ('\u{118A0}', '\u{118F2}'),
-    ('\u{118FF}', '\u{118FF}'),
-];
+const SCRIPT_WANCHO_RANGES: &[(char, char)] =
+    &[('\u{1E2C0}', '\u{1E2F9}'), ('\u{1E2FF}', '\u{1E2FF}')];
+const SCRIPT_EXT_WANCHO_RANGES: &[(char, char)] =
+    &[('\u{1E2C0}', '\u{1E2F9}'), ('\u{1E2FF}', '\u{1E2FF}')];
+const SCRIPT_WARANG_CITI_RANGES: &[(char, char)] =
+    &[('\u{118A0}', '\u{118F2}'), ('\u{118FF}', '\u{118FF}')];
+const SCRIPT_EXT_WARANG_CITI_RANGES: &[(char, char)] =
+    &[('\u{118A0}', '\u{118F2}'), ('\u{118FF}', '\u{118FF}')];
 const SCRIPT_YEZIDI_RANGES: &[(char, char)] = &[
     ('\u{10E80}', '\u{10EA9}'),
     ('\u{10EAB}', '\u{10EAD}'),
@@ -3023,10 +2714,7 @@ const SCRIPT_EXT_YEZIDI_RANGES: &[(char, char)] = &[
     ('\u{10EAB}', '\u{10EAD}'),
     ('\u{10EB0}', '\u{10EB1}'),
 ];
-const SCRIPT_YI_RANGES: &[(char, char)] = &[
-    ('\u{A000}', '\u{A48C}'),
-    ('\u{A490}', '\u{A4C6}'),
-];
+const SCRIPT_YI_RANGES: &[(char, char)] = &[('\u{A000}', '\u{A48C}'), ('\u{A490}', '\u{A4C6}')];
 const SCRIPT_EXT_YI_RANGES: &[(char, char)] = &[
     ('\u{3001}', '\u{3002}'),
     ('\u{3008}', '\u{3011}'),
@@ -3036,12 +2724,8 @@ const SCRIPT_EXT_YI_RANGES: &[(char, char)] = &[
     ('\u{A490}', '\u{A4C6}'),
     ('\u{FF61}', '\u{FF65}'),
 ];
-const SCRIPT_ZANABAZAR_SQUARE_RANGES: &[(char, char)] = &[
-    ('\u{11A00}', '\u{11A47}'),
-];
-const SCRIPT_EXT_ZANABAZAR_SQUARE_RANGES: &[(char, char)] = &[
-    ('\u{11A00}', '\u{11A47}'),
-];
+const SCRIPT_ZANABAZAR_SQUARE_RANGES: &[(char, char)] = &[('\u{11A00}', '\u{11A47}')];
+const SCRIPT_EXT_ZANABAZAR_SQUARE_RANGES: &[(char, char)] = &[('\u{11A00}', '\u{11A47}')];
 
 /// Lookup table: normalized script name or alias → Script property ranges.
 /// Sorted by name for binary search.  "Normalized" = lowercase, no `_`/`-`/` `.
@@ -3163,7 +2847,10 @@ pub const SCRIPT_BY_NAME: &[(&str, &[(char, char)])] = &[
     ("imperialaramaic", SCRIPT_IMPERIAL_ARAMAIC_RANGES),
     ("inherited", SCRIPT_INHERITED_RANGES),
     ("inscriptionalpahlavi", SCRIPT_INSCRIPTIONAL_PAHLAVI_RANGES),
-    ("inscriptionalparthian", SCRIPT_INSCRIPTIONAL_PARTHIAN_RANGES),
+    (
+        "inscriptionalparthian",
+        SCRIPT_INSCRIPTIONAL_PARTHIAN_RANGES,
+    ),
     ("ital", SCRIPT_OLD_ITALIC_RANGES),
     ("java", SCRIPT_JAVANESE_RANGES),
     ("javanese", SCRIPT_JAVANESE_RANGES),
@@ -3367,7 +3054,10 @@ pub const SCRIPT_EXT_BY_NAME: &[(&str, &[(char, char)])] = &[
     ("adlm", SCRIPT_EXT_ADLAM_RANGES),
     ("aghb", SCRIPT_EXT_CAUCASIAN_ALBANIAN_RANGES),
     ("ahom", SCRIPT_EXT_AHOM_RANGES),
-    ("anatolianhieroglyphs", SCRIPT_EXT_ANATOLIAN_HIEROGLYPHS_RANGES),
+    (
+        "anatolianhieroglyphs",
+        SCRIPT_EXT_ANATOLIAN_HIEROGLYPHS_RANGES,
+    ),
     ("arab", SCRIPT_EXT_ARABIC_RANGES),
     ("arabic", SCRIPT_EXT_ARABIC_RANGES),
     ("armenian", SCRIPT_EXT_ARMENIAN_RANGES),
@@ -3432,7 +3122,10 @@ pub const SCRIPT_EXT_BY_NAME: &[(&str, &[(char, char)])] = &[
     ("dupl", SCRIPT_EXT_DUPLOYAN_RANGES),
     ("duployan", SCRIPT_EXT_DUPLOYAN_RANGES),
     ("egyp", SCRIPT_EXT_EGYPTIAN_HIEROGLYPHS_RANGES),
-    ("egyptianhieroglyphs", SCRIPT_EXT_EGYPTIAN_HIEROGLYPHS_RANGES),
+    (
+        "egyptianhieroglyphs",
+        SCRIPT_EXT_EGYPTIAN_HIEROGLYPHS_RANGES,
+    ),
     ("elba", SCRIPT_EXT_ELBASAN_RANGES),
     ("elbasan", SCRIPT_EXT_ELBASAN_RANGES),
     ("elym", SCRIPT_EXT_ELYMAIC_RANGES),
@@ -3479,8 +3172,14 @@ pub const SCRIPT_EXT_BY_NAME: &[(&str, &[(char, char)])] = &[
     ("hung", SCRIPT_EXT_OLD_HUNGARIAN_RANGES),
     ("imperialaramaic", SCRIPT_EXT_IMPERIAL_ARAMAIC_RANGES),
     ("inherited", SCRIPT_EXT_INHERITED_RANGES),
-    ("inscriptionalpahlavi", SCRIPT_EXT_INSCRIPTIONAL_PAHLAVI_RANGES),
-    ("inscriptionalparthian", SCRIPT_EXT_INSCRIPTIONAL_PARTHIAN_RANGES),
+    (
+        "inscriptionalpahlavi",
+        SCRIPT_EXT_INSCRIPTIONAL_PAHLAVI_RANGES,
+    ),
+    (
+        "inscriptionalparthian",
+        SCRIPT_EXT_INSCRIPTIONAL_PARTHIAN_RANGES,
+    ),
     ("ital", SCRIPT_EXT_OLD_ITALIC_RANGES),
     ("java", SCRIPT_EXT_JAVANESE_RANGES),
     ("javanese", SCRIPT_EXT_JAVANESE_RANGES),
@@ -3542,7 +3241,10 @@ pub const SCRIPT_EXT_BY_NAME: &[(&str, &[(char, char)])] = &[
     ("merc", SCRIPT_EXT_MEROITIC_CURSIVE_RANGES),
     ("mero", SCRIPT_EXT_MEROITIC_HIEROGLYPHS_RANGES),
     ("meroiticcursive", SCRIPT_EXT_MEROITIC_CURSIVE_RANGES),
-    ("meroitichieroglyphs", SCRIPT_EXT_MEROITIC_HIEROGLYPHS_RANGES),
+    (
+        "meroitichieroglyphs",
+        SCRIPT_EXT_MEROITIC_HIEROGLYPHS_RANGES,
+    ),
     ("miao", SCRIPT_EXT_MIAO_RANGES),
     ("mlym", SCRIPT_EXT_MALAYALAM_RANGES),
     ("modi", SCRIPT_EXT_MODI_RANGES),
@@ -3568,7 +3270,10 @@ pub const SCRIPT_EXT_BY_NAME: &[(&str, &[(char, char)])] = &[
     ("nkoo", SCRIPT_EXT_NKO_RANGES),
     ("nshu", SCRIPT_EXT_NUSHU_RANGES),
     ("nushu", SCRIPT_EXT_NUSHU_RANGES),
-    ("nyiakengpuachuehmong", SCRIPT_EXT_NYIAKENG_PUACHUE_HMONG_RANGES),
+    (
+        "nyiakengpuachuehmong",
+        SCRIPT_EXT_NYIAKENG_PUACHUE_HMONG_RANGES,
+    ),
     ("ogam", SCRIPT_EXT_OGHAM_RANGES),
     ("ogham", SCRIPT_EXT_OGHAM_RANGES),
     ("olchiki", SCRIPT_EXT_OL_CHIKI_RANGES),

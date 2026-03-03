@@ -31,6 +31,11 @@ PCRE2's JIT (by Zoltan Herczeg, using Sljit) reports 2–10× improvements for
 character-intensive patterns.  We expect similar gains for the subset of Oniai
 patterns that are JIT-eligible.
 
+The current JIT (`src/jit/`) takes `Vec<Inst>` as input and reconstructs a
+CFG implicitly.  A second JIT path (`src/jit/ir_jit.rs`, planned) will compile
+`IrProgram` directly to Cranelift, enabling higher-quality code generation and
+wider eligibility.  See [`doc/IR_DESIGN.md`](IR_DESIGN.md) for details.
+
 ---
 
 ## 2. Design Goals and Non-Goals
@@ -51,7 +56,7 @@ patterns that are JIT-eligible.
 |---|----------|
 | N1 | DFA or NFA simulation — the engine remains backtracking; the JIT accelerates the *same* algorithm. |
 | N2 | Profile-guided or adaptive re-compilation (no tiered JIT). |
-| N3 | JIT compilation of patterns with back-references or subexpression calls (`\g<…>`) — interpreter fallback is used. |
+| N3 | JIT compilation of patterns with back-references or subexpression calls (`\g<…>`) for the *current* flat-VM JIT — interpreter fallback is used.  The planned IR-based JIT path (§Phase 9) may lift this restriction for subexpression calls. |
 | N4 | Windows support. |
 
 ---
@@ -526,6 +531,36 @@ Impact: `charclass/posix_digit_iter/jit` −4% additional; no regressions.
 
 ---
 
+### Phase 9 — IR-based JIT (planned)
+
+Introduce a second JIT path (`src/jit/ir_jit.rs`) that compiles `IrProgram`
+directly to Cranelift IR instead of going through `Vec<Inst>`.
+
+Key improvements over the current flat-VM JIT:
+
+- **Wider eligibility**: `RepeatInit`/`RepeatNext` (counter-based exact loops)
+  and `Call`/`RetIfCalled` (subexpression calls) become eligible because the
+  IR expresses their semantics explicitly.
+- **Capture snapshot minimization**: the IR's capture liveness pass (see
+  [`doc/IR_DESIGN.md`](IR_DESIGN.md) §6–7) annotates each `Fork` terminator
+  with a `live_slots` bitset.  The JIT snapshot routine saves and restores only
+  those slots, eliminating the largest remaining allocation on the fast path.
+- **Possessive forks**: when all candidates in a `Fork` have mutually exclusive
+  character-class guards (`IrGuard::Char` / `IrGuard::Class`) the Guard Analysis
+  pass sets `disjoint: true`.  The JIT emits no bt-snapshot code for such forks,
+  turning them into simple branch chains.
+- **Lookahead inlining**: `IrGuard::LookAround { pol: Positive, dir: Ahead, body }`
+  in a Fork candidate compiles to a Cranelift `call` to the body region's function
+  (or is inlined when small).  The lookaround result cache in `MemoState` is
+  accessed via a Cranelift memory operation, preserving the O(|prog|×|text|)
+  bound.
+- **Sub-program functions**: each `IrRegion` (lookaround body, atomic body)
+  compiles to a separate Cranelift function.  Inlining small regions eliminates
+  the `jit_lookaround` / `jit_atomic_*` helper calls entirely for simple cases.
+- **No implicit CFG reconstruction**: the current JIT assigns one Cranelift
+  `Block` per PC and reconstructs edges by scanning for `Fork`/`Jump`.  The
+  IR-based JIT maps `IrBlock` → Cranelift `Block` directly.
+
 ## 10. Measured Performance
 
 The table below gives measured median times (x86-64, Apple Silicon M-series via
@@ -561,11 +596,19 @@ src/
     mod.rs       — JitModule; is_eligible(); try_compile(); exec_jit()
     builder.rs   — Cranelift IR construction (one Block per PC)
     helpers.rs   — extern "C" Rust helpers; register_symbols()
+    ir_jit.rs    — (planned) IR-based JIT: IrProgram → Cranelift IR (Phase 9)
+  ir/
+    mod.rs       — IrProgram, IrRegion, IrBlock, IrStmt, IrTerminator
+    build.rs     — IrBuilder: AST → IrProgram
+    lower.rs     — IrProgram → Vec<Inst> (compatibility lowering)
+    verify.rs    — debug-mode IR invariant checker
+    pass/        — optimization passes (liveness, DCE, guard, span, …)
   vm.rs          — ExecScratch; BtJit; JitExecCtx; find_with_scratch()
   lib.rs         — FindIter/CapturesIter with persistent ExecScratch
 doc/
   JIT.md         — this file
   DESIGN.md      — overall architecture; cross-references JIT.md
+  IR_DESIGN.md   — IR specification and optimization pass design
   BENCHMARKS.md  — per-phase benchmark comparison tables
 ```
 

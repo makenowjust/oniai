@@ -3274,4 +3274,3 @@ pub const ALPHANUMERIC_RANGES: &[(char, char)] = &[
     ('\u{30000}', '\u{3134A}'),
     ('\u{31350}', '\u{33479}'),
 ];
-

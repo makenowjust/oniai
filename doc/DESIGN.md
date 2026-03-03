@@ -2,7 +2,7 @@
 
 Oniai is a pure-Rust regular expression engine compatible with
 [Onigmo](https://github.com/k-takata/Onigmo) (the regex library used by Ruby).
-It follows the classic *compile-then-execute* pipeline:
+It follows a *compile-then-execute* pipeline with an explicit IR layer:
 
 ```
 pattern (str)
@@ -10,14 +10,21 @@ pattern (str)
     ▼  parser.rs
    AST  (ast.rs)
     │
-    ▼  compile.rs
-  VM program  (Vec<Inst>)
+    ▼  ir/build.rs
+  IrProgram  ← explicit CFG; basic blocks + terminators  (ir/)
     │
-    ▼  vm.rs
-  match result
+    ├─▶  ir/pass/   ← optimization passes (liveness, DCE, …)
+    │
+    ├─▶  ir/lower.rs   ─▶  Vec<Inst>  ─▶  vm.rs
+    │                                        │
+    │                                        ▼  jit/
+    │                                     native code (optional)
+    │
+    └─▶  ir/jit.rs     ─▶  Cranelift IR  ─▶  native code (planned)
 ```
 
-No external dependencies are used.
+No external dependencies are used by the library core; the optional `jit`
+feature adds Cranelift dependencies.
 
 ---
 
@@ -28,7 +35,12 @@ No external dependencies are used.
 | `src/lib.rs` | Public API: `Regex`, `Match`, `Captures`, `FindIter`, `CapturesIter` |
 | `src/ast.rs` | AST node types produced by the parser |
 | `src/parser.rs` | Recursive-descent parser: `&str` → `(Node, named_groups)` |
-| `src/compile.rs` | Compiler: `Node` → `Vec<Inst>` + `Vec<CharSet>` |
+| `src/ir/mod.rs` | IR types: `IrProgram`, `IrRegion`, `IrBlock`, `IrStmt`, `IrTerminator` |
+| `src/ir/build.rs` | IR builder: `Node` → `IrProgram` |
+| `src/ir/lower.rs` | IR lowering: `IrProgram` → `Vec<Inst>` + `Vec<CharSet>` (compatibility path) |
+| `src/ir/verify.rs` | Debug-mode IR invariant checker |
+| `src/ir/pass/` | Optimization passes: DCE, block merge, capture liveness, fork guard, span detection |
+| `src/compile.rs` | Legacy compiler entry point: delegates to `ir/build.rs` + `ir/lower.rs` |
 | `src/vm.rs` | Backtracking executor: `Vec<Inst>` × `&str` → match |
 | `src/charset.rs` | Character-property helpers (POSIX, Unicode, shorthands); binary-searches pre-generated static range tables |
 | `src/casefold.rs` | Runtime Unicode full case folding: `case_fold(ch) → CaseFold` |
@@ -174,17 +186,27 @@ Supporting types: `Flags`, `FlagMod`, `QuantRange`, `QuantKind`, `ClassItem`,
 
 ---
 
-## Compiler (`compile.rs`)
+## IR Builder and Compiler (`ir/build.rs`, `compile.rs`)
 
-Entry point:
+The compiler pipeline now passes through the IR layer:
+
+1. `ir/build.rs` — `IrBuilder` walks the AST and produces an `IrProgram` (see
+   [`doc/IR_DESIGN.md`](IR_DESIGN.md) for the full IR specification).
+2. `ir/pass/` — optimization passes run on the `IrProgram` (capture liveness,
+   dead block elimination, fork guard propagation, span detection).
+3. `ir/lower.rs` — `IrLower` converts the optimized `IrProgram` back to a flat
+   `Vec<Inst>` for the existing interpreter and JIT.
+
+The public entry point (unchanged):
 
 ```rust
 pub fn compile(node: &Node, named_groups: Vec<(String, u32)>, opts: CompileOptions)
     -> Result<CompiledProgram, Error>
 ```
 
-The compiler walks the AST and emits a flat `Vec<Inst>`.  Jump targets that are
-not yet known are patched in a second pass via `patch_jump` / `patch_no_jump`.
+Internally `compile` calls `IrBuilder::build`, runs the pass pipeline, then
+calls `IrLower::lower`.  Jump targets that are not yet known are patched in a
+second pass via `patch_jump` / `patch_no_jump` in the lowering step.
 
 ### Instruction set (`Inst`)
 
@@ -577,6 +599,11 @@ UTF-8 code point forward to avoid infinite loops.
 - **No NFA / DFA compilation**: the engine is a pure backtracking interpreter;
   exponential worst-case exists for ambiguous patterns on adversarial inputs
   (mitigated for many patterns by the memoization framework).
-- **JIT compilation** (optional, behind the `jit` feature flag) is planned to
-  replace the interpreter loop with native machine code for eligible patterns;
-  see [`doc/JIT.md`](JIT.md) for the full design and implementation plan.
+- **JIT compilation** (optional, behind the `jit` feature flag) compiles
+  eligible patterns to native code at `Regex::new()` time; see
+  [`doc/JIT.md`](JIT.md) for the full design.  Patterns containing
+  backreferences, subexpression calls, or the absence operator fall back to the
+  interpreter transparently.
+- **IR layer**: the compiler now produces an `IrProgram` (explicit CFG) before
+  lowering to `Vec<Inst>`; see [`doc/IR_DESIGN.md`](IR_DESIGN.md) for the IR
+  specification and planned optimization passes.

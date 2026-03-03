@@ -15,9 +15,11 @@ mod bytetrie;
 mod casefold;
 mod casefold_trie;
 mod charset;
+#[allow(dead_code)]
 mod compile;
 mod data;
 mod error;
+mod ir;
 #[cfg(feature = "jit")]
 mod jit;
 mod parser;

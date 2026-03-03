@@ -43,7 +43,6 @@ fn test_fuzz_regression_3() {
     let _ = re.find(subject);
 }
 
-
 #[test]
 fn test_fuzz_regression_4() {
     // Fuzz artifact: panic in JIT `emit_range_check` (subtract overflow) when
@@ -65,9 +64,10 @@ fn test_fuzz_regression_5() {
     // Fix: use `c.encode_utf8(&mut buf)[0]` for the correct leading byte.
     let pattern_bytes: &[u8] = &[0x2a, 0xff, 0x2a];
     let pattern = String::from_utf8_lossy(pattern_bytes);
-    let subject_bytes: &[u8] = &[0x2a, 0xcf, 0x2a, 0xa3, 0x29, 0x9b, 0x00, 0x0c,
-                                  0xff, 0xff, 0xff, 0x0e, 0xd4, 0x9b, 0x88, 0xc3,
-                                  0xd4, 0x9b, 0x5c];
+    let subject_bytes: &[u8] = &[
+        0x2a, 0xcf, 0x2a, 0xa3, 0x29, 0x9b, 0x00, 0x0c, 0xff, 0xff, 0xff, 0x0e, 0xd4, 0x9b, 0x88,
+        0xc3, 0xd4, 0x9b, 0x5c,
+    ];
     let subject = String::from_utf8_lossy(subject_bytes);
     let re = oniai::Regex::new(&pattern).unwrap();
     assert_eq!(

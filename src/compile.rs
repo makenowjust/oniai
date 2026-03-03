@@ -1148,9 +1148,8 @@ fn shorthand_charset(sh: Shorthand, ascii_range: bool, ignore_case: bool) -> Cha
 
 /// Build a `CharSet` for a Unicode property (`\p{...}`) at compile time.
 fn unicode_prop_charset(name: &str, negate: bool, ignore_case: bool) -> Result<CharSet, Error> {
-    let raw = charset::unicode_prop_direct_ranges(name).ok_or_else(|| {
-        Error::Compile(format!("unknown Unicode property: {name:?}"))
-    })?;
+    let raw = charset::unicode_prop_direct_ranges(name)
+        .ok_or_else(|| Error::Compile(format!("unknown Unicode property: {name:?}")))?;
     let ranges = merge_ranges(raw);
     let ranges = if ignore_case {
         expand_case_folds(ranges)
@@ -1216,9 +1215,8 @@ fn expand_class_item(
             }
         }
         ClassItem::Unicode(name, neg) => {
-            let raw = charset::unicode_prop_direct_ranges(name).ok_or_else(|| {
-                Error::Compile(format!("unknown Unicode property: {name:?}"))
-            })?;
+            let raw = charset::unicode_prop_direct_ranges(name)
+                .ok_or_else(|| Error::Compile(format!("unknown Unicode property: {name:?}")))?;
             if *neg {
                 let negated = complement_ranges(&merge_ranges(raw));
                 out.extend(negated);

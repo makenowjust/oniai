@@ -4,8 +4,9 @@ use crate::casefold::case_fold;
 use crate::casefold_trie::{
     charset_to_bytetrie, charset_to_bytetrie_back, fold_seq_to_trie, fold_seq_to_trie_back,
 };
-use crate::compile::{CompileOptions, compile};
+use crate::compile::CompileOptions;
 use crate::error::Error;
+use crate::ir;
 use crate::parser::parse;
 use std::collections::HashMap;
 
@@ -148,6 +149,7 @@ pub enum Inst {
     /// Advance `pos` by one character without a bounds or match check.
     /// Only emitted immediately after a `Fork`/`ForkNext` whose guard has
     /// already verified that `text[pos]` equals this character.
+    #[allow(dead_code)]
     CharFast(char),
 
     /// Possessive greedy span for a single character.
@@ -1966,7 +1968,11 @@ pub struct CompiledRegex {
 impl CompiledRegex {
     pub fn new(pattern: &str, _opts: CompileOptions) -> Result<Self, Error> {
         let (ast, named) = parse(pattern)?;
-        let prog_data = compile(&ast, named, _opts)?;
+        let ir_prog = ir::build::build(&ast, named, _opts)?;
+        if cfg!(debug_assertions) {
+            ir::verify::verify(&ir_prog).map_err(Error::Compile)?;
+        }
+        let prog_data = ir::lower::lower(&ir_prog);
 
         let named_groups: Vec<(String, usize)> = prog_data
             .named_groups
@@ -1985,16 +1991,8 @@ impl CompiledRegex {
             &prog_data.alt_tries,
         );
         let required_char = compute_required_char(&prog_data.prog);
-        // Disable memoization for patterns where the fork/lookaround outcome
-        // can depend on the current capture-slot state (not just on pc + pos):
-        //   • BackRef / BackRefRelBack  — outcome depends on captured text
-        //   • CheckGroup               — branches on whether a group matched
-        let use_memo = !prog_data.prog.iter().any(|i| {
-            matches!(
-                i,
-                Inst::BackRef(..) | Inst::BackRefRelBack(..) | Inst::CheckGroup { .. }
-            )
-        });
+        // use_memo from IR (already correctly computed during building)
+        let use_memo = ir_prog.use_memo;
 
         #[cfg(feature = "jit")]
         let fork_pc_indices = compute_fork_pc_indices(&prog_data.prog);

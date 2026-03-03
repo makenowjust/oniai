@@ -1281,9 +1281,9 @@ fn unicode_prop_scx_common_inherited_exclusion() {
     // UAX #24: characters listed in ScriptExtensions.txt have their Script_Extensions
     // overridden — they do NOT fall back to Common/Inherited in scx.
     // ー (U+30FC) has Script=Common but ScriptExtensions={Hira,Kana}.
-    assert_match!(r"\p{sc=Common}", "ー");       // Script=Common ✓
-    assert_no_match!(r"\p{scx=Common}", "ー");   // scx overridden to {Hira,Kana}, not Common
-    assert_match!(r"\p{scx=Hira}", "ー");         // listed under Hira extensions
+    assert_match!(r"\p{sc=Common}", "ー"); // Script=Common ✓
+    assert_no_match!(r"\p{scx=Common}", "ー"); // scx overridden to {Hira,Kana}, not Common
+    assert_match!(r"\p{scx=Hira}", "ー"); // listed under Hira extensions
     // U+0300 COMBINING GRAVE ACCENT: Script=Inherited, scx includes Latin (not Inherited).
     assert_match!(r"\p{sc=Inherited}", "\u{0300}");
     assert_no_match!(r"\p{scx=Inherited}", "\u{0300}");

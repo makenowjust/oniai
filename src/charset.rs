@@ -1,9 +1,9 @@
 /// Character set matching utilities.
 use crate::ast::{PosixClass, Shorthand};
 use crate::data::general_category_data::{
-    GC_CC, GC_CF, GC_CN, GC_CO, GC_CS, GC_LL, GC_LM, GC_LO, GC_LT, GC_LU, GC_MC, GC_ME,
-    GC_MN, GC_ND, GC_NL, GC_NO, GC_PC, GC_PD, GC_PE, GC_PF, GC_PI, GC_PO, GC_PS, GC_RANGES,
-    GC_SC, GC_SK, GC_SM, GC_SO, GC_ZL, GC_ZP, GC_ZS,
+    GC_CC, GC_CF, GC_CN, GC_CO, GC_CS, GC_LL, GC_LM, GC_LO, GC_LT, GC_LU, GC_MC, GC_ME, GC_MN,
+    GC_ND, GC_NL, GC_NO, GC_PC, GC_PD, GC_PE, GC_PF, GC_PI, GC_PO, GC_PS, GC_RANGES, GC_SC, GC_SK,
+    GC_SM, GC_SO, GC_ZL, GC_ZP, GC_ZS,
 };
 use crate::data::script_data::{SCRIPT_BY_NAME, SCRIPT_EXT_BY_NAME};
 use crate::data::unicode_prop_ranges_data::{
@@ -135,16 +135,11 @@ pub fn unicode_prop_direct_ranges(name: &str) -> Option<Vec<(char, char)>> {
                 ('\x0C', '\x0C'),
                 ('\r', '\r'),
                 (' ', ' '),
-            ])
+            ]);
         }
         "punct" => {
             // ASCII punctuation: !"#$%&'()*+,-./:;<=>?@[\]^_`{|}~ and DEL-adjacent
-            return Some(vec![
-                ('!', '/'),
-                (':', '@'),
-                ('[', '`'),
-                ('{', '~'),
-            ])
+            return Some(vec![('!', '/'), (':', '@'), ('[', '`'), ('{', '~')]);
         }
         _ => None,
     };
@@ -248,17 +243,15 @@ fn complement_full(ranges: &[(char, char)]) -> Vec<(char, char)> {
             }
         } else {
             if lo_u < SUR_LO
-                && let (Some(lo), Some(hi)) =
-                    (char::from_u32(lo_u), char::from_u32(SUR_LO - 1))
-                {
-                    out.push((lo, hi));
-                }
+                && let (Some(lo), Some(hi)) = (char::from_u32(lo_u), char::from_u32(SUR_LO - 1))
+            {
+                out.push((lo, hi));
+            }
             if hi_u > SUR_HI
-                && let (Some(lo), Some(hi)) =
-                    (char::from_u32(SUR_HI + 1), char::from_u32(hi_u))
-                {
-                    out.push((lo, hi));
-                }
+                && let (Some(lo), Some(hi)) = (char::from_u32(SUR_HI + 1), char::from_u32(hi_u))
+            {
+                out.push((lo, hi));
+            }
         }
     }
 
@@ -295,7 +288,9 @@ pub fn shorthand_direct_ranges(sh: Shorthand, ascii_range: bool) -> Vec<(char, c
                 sort_merge(v)
             }
         }
-        Shorthand::NonWord => complement_full(&shorthand_direct_ranges(Shorthand::Word, ascii_range)),
+        Shorthand::NonWord => {
+            complement_full(&shorthand_direct_ranges(Shorthand::Word, ascii_range))
+        }
         Shorthand::Digit => {
             if ascii_range {
                 vec![('0', '9')]
@@ -303,7 +298,9 @@ pub fn shorthand_direct_ranges(sh: Shorthand, ascii_range: bool) -> Vec<(char, c
                 NUMERIC_RANGES.to_vec()
             }
         }
-        Shorthand::NonDigit => complement_full(&shorthand_direct_ranges(Shorthand::Digit, ascii_range)),
+        Shorthand::NonDigit => {
+            complement_full(&shorthand_direct_ranges(Shorthand::Digit, ascii_range))
+        }
         Shorthand::Space => vec![
             ('\t', '\t'),
             ('\n', '\n'),
@@ -312,9 +309,13 @@ pub fn shorthand_direct_ranges(sh: Shorthand, ascii_range: bool) -> Vec<(char, c
             ('\r', '\r'),
             (' ', ' '),
         ],
-        Shorthand::NonSpace => complement_full(&shorthand_direct_ranges(Shorthand::Space, ascii_range)),
+        Shorthand::NonSpace => {
+            complement_full(&shorthand_direct_ranges(Shorthand::Space, ascii_range))
+        }
         Shorthand::HexDigit => vec![('0', '9'), ('A', 'F'), ('a', 'f')],
-        Shorthand::NonHexDigit => complement_full(&shorthand_direct_ranges(Shorthand::HexDigit, ascii_range)),
+        Shorthand::NonHexDigit => {
+            complement_full(&shorthand_direct_ranges(Shorthand::HexDigit, ascii_range))
+        }
     }
 }
 
