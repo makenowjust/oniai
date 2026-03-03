@@ -1443,6 +1443,15 @@ enum StartStrategy {
         /// non-ASCII codepoint.  When `false`, non-ASCII bytes are skipped.
         can_match_non_ascii: bool,
     },
+    /// There is a mandatory ASCII byte somewhere at a fixed offset range in every
+    /// match.  Use `memchr` to find each occurrence, then try NFA starts within
+    /// the lookbehind window.
+    RequiredByte {
+        byte: u8,
+        /// Maximum distance from the NFA start position to where `byte` appears.
+        /// I.e., `byte` appears at most this many bytes after `text[pos]`.
+        max_offset: usize,
+    },
     /// No restriction; try every byte-aligned position.
     Anywhere,
 }
@@ -2013,6 +2022,13 @@ impl CompiledRegex {
                 }
             }
         }
+        // If still Anywhere, try required-byte prefilter.
+        if matches!(start_strategy, StartStrategy::Anywhere)
+            && let Some((byte, max_offset)) = ir::prefilter::required_byte(&ir_prog)
+            && max_offset <= 256
+        {
+            start_strategy = StartStrategy::RequiredByte { byte, max_offset };
+        }
         let required_char = compute_required_char(&prog_data.prog);
         // use_memo from IR (already correctly computed during building)
         let use_memo = ir_prog.use_memo;
@@ -2357,6 +2373,27 @@ impl CompiledRegex {
                 }
             }
 
+            // Use memchr to find required byte, then try NFA from lookbehind window.
+            StartStrategy::RequiredByte { byte, max_offset } => {
+                let bytes = text.as_bytes();
+                let byte = *byte;
+                let max_offset = *max_offset;
+                let mut scan_pos = start_pos;
+                loop {
+                    // Jump to next occurrence of the required byte.
+                    let found = memchr::memchr(byte, &bytes[scan_pos..])?;
+                    let byte_pos = scan_pos + found;
+                    // Try NFA from positions in the lookbehind window.
+                    let try_from = byte_pos.saturating_sub(max_offset).max(start_pos);
+                    for start in try_from..=byte_pos {
+                        if let Some(r) = self.try_at(text, start, &mut memo, scratch) {
+                            return Some(r);
+                        }
+                    }
+                    scan_pos = byte_pos + 1;
+                }
+            }
+
             // Original: try every byte-aligned position.
             StartStrategy::Anywhere => {
                 let mut pos = start_pos;
@@ -2582,6 +2619,23 @@ impl CompiledRegex {
                         }
                         pos += ch_len;
                     }
+                }
+            }
+            StartStrategy::RequiredByte { byte, max_offset } => {
+                let bytes = text.as_bytes();
+                let byte = *byte;
+                let max_offset = *max_offset;
+                let mut scan_pos = start_pos;
+                loop {
+                    let found = memchr::memchr(byte, &bytes[scan_pos..])?;
+                    let byte_pos = scan_pos + found;
+                    let try_from = byte_pos.saturating_sub(max_offset).max(start_pos);
+                    for start in try_from..=byte_pos {
+                        if let Some(r) = self.exec_interp(text, start, &mut memo) {
+                            return Some(r);
+                        }
+                    }
+                    scan_pos = byte_pos + 1;
                 }
             }
             StartStrategy::Anywhere => {

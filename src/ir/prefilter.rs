@@ -106,3 +106,107 @@ fn first_byte_set_block(
         _ => None,
     }
 }
+
+/// Walk the main region forward to find the first mandatory ASCII byte that
+/// must be matched on every execution path from the entry block to `Match`.
+/// Returns `(byte, max_prefix_len)` where `max_prefix_len` is the maximum
+/// number of bytes that can appear in the text BEFORE `byte` in any match
+/// (the lookbehind window).
+///
+/// Returns `None` if no such byte can be determined.
+pub fn required_byte(prog: &IrProgram) -> Option<(u8, usize)> {
+    required_byte_block(prog, 0, prog.regions[0].entry, 0, &mut 0)
+}
+
+/// Returns `Some((byte, max_prefix_len))` if `byte` must appear on every path
+/// from `block_id` to `Match`, with at most `max_prefix_len` bytes before it.
+/// `prefix_so_far` is the number of bytes already consumed before entering this block.
+fn required_byte_block(
+    prog: &IrProgram,
+    region_idx: usize,
+    block_id: usize,
+    prefix_so_far: usize,
+    depth: &mut u32,
+) -> Option<(u8, usize)> {
+    if *depth > 16 {
+        return None;
+    }
+    *depth += 1;
+    let block = &prog.regions[region_idx].blocks[block_id];
+
+    let mut prefix = prefix_so_far;
+    for stmt in &block.stmts {
+        match stmt {
+            // Zero-width: skip.
+            IrStmt::SaveCapture(_)
+            | IrStmt::KeepStart
+            | IrStmt::CounterInit(_)
+            | IrStmt::NullCheckBegin(_)
+            | IrStmt::CheckAnchor(_, _) => {}
+            // Single-char consuming: check if it's the required byte.
+            IrStmt::MatchChar(c) if c.is_ascii() => {
+                // Found a mandatory ASCII byte!
+                return Some((*c as u8, prefix));
+            }
+            // Multi-byte or non-ASCII consuming stmt: update prefix and continue.
+            IrStmt::MatchChar(c) => {
+                prefix += c.len_utf8();
+            }
+            IrStmt::MatchClass { .. } | IrStmt::MatchAnyChar { .. } => {
+                prefix += 1; // advance by at least 1 byte
+            }
+            IrStmt::MatchFoldSeq(seq) => {
+                if seq.is_empty() {
+                    return None;
+                }
+                prefix += seq[0].len_utf8(); // conservative: first char length
+            }
+            IrStmt::MatchAltTrie(_) => {
+                prefix += 1; // conservative
+            }
+            // Backward matchers, backrefs: bail out
+            _ => return None,
+        }
+    }
+
+    // Analyse terminator.
+    match &block.term {
+        IrTerminator::Branch(b) => {
+            required_byte_block(prog, region_idx, *b, prefix, depth)
+        }
+        IrTerminator::Fork { candidates, .. } => {
+            // All candidates must have the same required byte at the same depth.
+            // Take the intersection.
+            let mut result: Option<(u8, usize)> = None;
+            for cand in candidates {
+                let cand_result =
+                    required_byte_block(prog, region_idx, cand.block, prefix, depth)?;
+                match result {
+                    None => result = Some(cand_result),
+                    Some((b, max_pre)) => {
+                        if b != cand_result.0 {
+                            return None; // different required bytes → no common byte
+                        }
+                        // Take the maximum prefix (worst case).
+                        result = Some((b, max_pre.max(cand_result.1)));
+                    }
+                }
+            }
+            result
+        }
+        // SpanChar/SpanClass: advance prefix conservatively.
+        IrTerminator::SpanChar { exit, .. } => {
+            // Span advances by 0..N bytes, so prefix is unchanged on the zero path.
+            required_byte_block(prog, region_idx, *exit, prefix, depth)
+        }
+        IrTerminator::SpanClass { exit, .. } => {
+            required_byte_block(prog, region_idx, *exit, prefix, depth)
+        }
+        IrTerminator::CounterNext { exit, .. } => {
+            // Body is the loop; exit is after. Use exit for the mandatory-byte search.
+            required_byte_block(prog, region_idx, *exit, prefix, depth)
+        }
+        IrTerminator::Match => None, // empty match, no required byte
+        _ => None,
+    }
+}

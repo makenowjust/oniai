@@ -716,6 +716,52 @@ pub unsafe extern "C" fn jit_match_alt_trie_back(
     }
 }
 
+/// Returns the number of consecutive bytes starting at `text[pos]` that equal
+/// `byte`. Used by the JIT SpanChar terminator to advance past a span in one
+/// call instead of one Cranelift iteration per byte.
+///
+/// LLVM auto-vectorizes the inner loop on ARM NEON / x86 SSE2.
+#[unsafe(no_mangle)]
+pub extern "C" fn jit_span_char_len(
+    text_ptr: *const u8,
+    text_len: u64,
+    pos: u64,
+    byte: u32,
+) -> u64 {
+    if pos >= text_len {
+        return 0;
+    }
+    let slice = unsafe {
+        std::slice::from_raw_parts(text_ptr.add(pos as usize), (text_len - pos) as usize)
+    };
+    slice.iter().position(|&b| b != byte as u8).unwrap_or(slice.len()) as u64
+}
+
+/// Returns the number of consecutive bytes starting at `text[pos]` that are
+/// accepted by the ASCII class bitmap pointed to by `bits_ptr` (`[u64; 2]`).
+/// Stops at the first byte ≥ 0x80 (non-ASCII).
+///
+/// LLVM auto-vectorizes the inner loop.
+#[unsafe(no_mangle)]
+pub extern "C" fn jit_span_class_ascii_len(
+    text_ptr: *const u8,
+    text_len: u64,
+    pos: u64,
+    bits_ptr: *const u64,
+) -> u64 {
+    if pos >= text_len {
+        return 0;
+    }
+    let slice = unsafe {
+        std::slice::from_raw_parts(text_ptr.add(pos as usize), (text_len - pos) as usize)
+    };
+    let bits = unsafe { std::slice::from_raw_parts(bits_ptr, 2) };
+    slice
+        .iter()
+        .position(|&b| b >= 0x80 || (bits[(b >> 6) as usize] >> (b & 63)) & 1 == 0)
+        .unwrap_or(slice.len()) as u64
+}
+
 /// Symbol table: maps helper name → raw function pointer.
 /// Used by `JITBuilder::symbol()` to resolve external calls in JIT code.
 pub(super) fn register_symbols(jit_builder: &mut cranelift_jit::JITBuilder) {
@@ -748,4 +794,6 @@ pub(super) fn register_symbols(jit_builder: &mut cranelift_jit::JITBuilder) {
     sym!(jit_null_check_end);
     sym!(jit_match_alt_trie);
     sym!(jit_match_alt_trie_back);
+    sym!(jit_span_char_len);
+    sym!(jit_span_class_ascii_len);
 }
