@@ -2,3 +2,4 @@
 /scripts/gen_unicode_tables/target
 log/
 /fuzz-*
+/data/

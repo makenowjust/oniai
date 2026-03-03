@@ -133,3 +133,33 @@ the engine commits the current captures and exits the loop — matching Onigmo's
 behaviour.  Non-nullable bodies (e.g. `[a-z]+`) are unaffected and incur no
 overhead.  
 **Regression test:** `null_loop_check_empty_body`
+
+---
+
+### `\u{FFFD}??\x02\u{FFFD}` — JIT/interpreter divergence via wrong CharFast at ForkNext alt (fixed)
+
+**Target:** `fuzz_match_diff`  
+**Minimised input:** pattern `\u{FFFD}??\x02\u{FFFD}`, subject `6\u{FFFD}\u{FFFD}\x02\x02\x02`  
+**Root cause:** The JIT emitted a `CharFast` pre-filter at the *alternate* (fall-through) branch of a `ForkNext` instruction without verifying that the current subject byte matched the pre-filter before executing the `CharFast` instruction. When the non-ASCII body of a lazy repetition was bypassed, the fall-through landed directly on `CharFast` for the *next* atom, which then mismatched against a byte it was never supposed to consume.  
+**Fix:** Restrict `CharFast` promotion so it is not emitted at positions reachable as the `ForkNext` alternate without first re-validating the leading byte.  
+**Regression tests:** `test_fuzz_regression_2`, `test_fuzz_regression_3`
+
+---
+
+### `[\x7fe-\x7fa--]` — subtract-with-overflow panic in JIT `emit_range_check` (fixed)
+
+**Target:** `fuzz_match_diff`  
+**Minimised input:** pattern `[\x7fe-\x7fa--]`  
+**Root cause:** The parser accepted character class ranges where `lo > hi` (e.g. `[a--]` where `'a'=0x61 > '-'=0x2D`). `emit_range_check` in the JIT then computed `(hi - lo)` as a `u8` subtraction, panicking on underflow.  
+**Fix:** `parse_class_item` in `src/parser.rs` now returns a parse error when `lo > hi`. Defense-in-depth: `charset_ascii_ranges` in the JIT skips clamped ranges where `hi < lo`.  
+**Regression test:** `test_fuzz_regression_4`
+
+---
+
+### `*\u{FFFD}*` — JIT SpanChar non-ASCII pre-filter wrong leading byte (fixed)
+
+**Target:** `fuzz_match_diff`  
+**Minimised input:** pattern `*\u{FFFD}*`, subject contains `\xff` bytes (lossy-decoded to `\u{FFFD}`)  
+**Root cause:** The JIT `SpanChar` handler for non-ASCII chars computed the expected UTF-8 leading byte as `(*c as u32).to_le_bytes()[0]` — the first byte of the little-endian Unicode codepoint, **not** the UTF-8 leading byte. For U+FFFD (codepoint 0xFFFD), this gives `0xFD` instead of the correct UTF-8 leading byte `0xEF`. The pre-filter comparison always failed, causing `SpanChar` to exit immediately without consuming any U+FFFD characters.  
+**Fix:** Use `c.encode_utf8(&mut buf)[0]` to obtain the correct UTF-8 leading byte.  
+**Regression tests:** `test_fuzz_regression_5`, `test_fuzz_regression_6`

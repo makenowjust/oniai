@@ -30,7 +30,7 @@ No external dependencies are used.
 | `src/parser.rs` | Recursive-descent parser: `&str` → `(Node, named_groups)` |
 | `src/compile.rs` | Compiler: `Node` → `Vec<Inst>` + `Vec<CharSet>` |
 | `src/vm.rs` | Backtracking executor: `Vec<Inst>` × `&str` → match |
-| `src/charset.rs` | Character-property helpers (POSIX, Unicode, shorthands) |
+| `src/charset.rs` | Character-property helpers (POSIX, Unicode, shorthands); binary-searches pre-generated static range tables |
 | `src/casefold.rs` | Runtime Unicode full case folding: `case_fold(ch) → CaseFold` |
 | `src/casefold_trie.rs` | Compile-time case-fold expansion: `fold_seq_to_trie`, `charset_to_bytetrie` |
 | `src/general_category.rs` | Unicode General Category: `get_general_category(ch) → GeneralCategory` |
@@ -38,6 +38,7 @@ No external dependencies are used.
 | `src/error.rs` | `Error` enum (`Parse`, `Compile`) |
 | `src/data/casefold_data.rs` | Pre-generated case fold tables (from `data/CaseFolding.txt`) |
 | `src/data/general_category_data.rs` | Pre-generated GC range table (from `data/extracted/DerivedGeneralCategory.txt`) |
+| `src/data/unicode_prop_ranges_data.rs` | Pre-generated property range tables (from `data/DerivedCoreProperties.txt`, `data/PropList.txt`, `data/extracted/DerivedGeneralCategory.txt`) |
 | `src/bin/oniai.rs` | `grep`-like CLI binary |
 
 ### Unicode data files and generator
@@ -49,13 +50,20 @@ and committed to the repository so that builds require no network access.
 |------|----------|
 | `data/CaseFolding.txt` | Unicode 17.0.0 case folding data |
 | `data/extracted/DerivedGeneralCategory.txt` | Unicode 17.0.0 General Category data |
-| `scripts/fetch_unicode_data.sh` | Downloads both files from unicode.org |
+| `data/DerivedCoreProperties.txt` | Unicode 17.0.0 derived core properties (Alphabetic, Uppercase, Lowercase, Math, …) |
+| `data/PropList.txt` | Unicode 17.0.0 property list (White_Space, Hex_Digit, …) |
+| `scripts/fetch_unicode_data.sh` | Downloads all four files from unicode.org |
 | `scripts/gen_unicode_tables/` | Standalone Rust binary; reads `data/` and writes `src/data/` |
 
-To regenerate after a Unicode update:
+The `data/` directory is **git-ignored**; regenerate its contents by running:
 
 ```sh
 sh scripts/fetch_unicode_data.sh [VERSION]
+```
+
+To regenerate the `src/data/` source files after updating `data/`:
+
+```sh
 cargo run --manifest-path scripts/gen_unicode_tables/Cargo.toml
 ```
 
