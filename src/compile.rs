@@ -1178,7 +1178,10 @@ fn shorthand_charset(sh: Shorthand, ascii_range: bool, ignore_case: bool) -> Cha
 
 /// Build a `CharSet` for a Unicode property (`\p{...}`) at compile time.
 fn unicode_prop_charset(name: &str, negate: bool, ignore_case: bool) -> CharSet {
-    let raw = codepoints_matching(|c| charset::matches_unicode_prop(name, c, false));
+    // Fast path: for GC-based properties we filter the static range table directly
+    // instead of iterating all 1.1 M Unicode codepoints.
+    let raw = charset::unicode_prop_direct_ranges(name)
+        .unwrap_or_else(|| codepoints_matching(|c| charset::matches_unicode_prop(name, c, false)));
     let ranges = merge_ranges(raw);
     let ranges = if ignore_case {
         expand_case_folds(ranges)
@@ -1248,11 +1251,15 @@ fn expand_class_item(
                     "unknown Unicode property: {name:?}"
                 )));
             }
-            let raw = codepoints_matching(|c| {
-                let m = charset::matches_unicode_prop(name, c, false);
-                if *neg { !m } else { m }
+            let raw = charset::unicode_prop_direct_ranges(name).unwrap_or_else(|| {
+                codepoints_matching(|c| charset::matches_unicode_prop(name, c, false))
             });
-            out.extend(raw);
+            if *neg {
+                let negated = complement_ranges(&merge_ranges(raw));
+                out.extend(negated);
+            } else {
+                out.extend(raw);
+            }
         }
         ClassItem::Nested(inner_cc) => {
             let inner_cs = compile_charset(inner_cc, ignore_case, ascii_range)?;

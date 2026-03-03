@@ -5,3 +5,4 @@
 
 pub mod casefold_data;
 pub mod general_category_data;
+pub mod unicode_prop_ranges_data;

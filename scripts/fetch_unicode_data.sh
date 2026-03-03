@@ -27,3 +27,5 @@ fetch() {
 
 fetch "${BASE}/CaseFolding.txt"                        "data/CaseFolding.txt"
 fetch "${BASE}/extracted/DerivedGeneralCategory.txt"   "data/extracted/DerivedGeneralCategory.txt"
+fetch "${BASE}/DerivedCoreProperties.txt"              "data/DerivedCoreProperties.txt"
+fetch "${BASE}/PropList.txt"                           "data/PropList.txt"
