@@ -106,8 +106,8 @@ fn class_disjoint(idx: usize, exit_first: &ExitFirst, charsets: &[CharSet]) -> b
             if body_cs.negate || cont_cs.negate {
                 return false;
             }
-            let body_nonascii = body_cs.ranges.iter().any(|&(lo, _)| lo as u32 >= 128);
-            let cont_nonascii = cont_cs.ranges.iter().any(|&(lo, _)| lo as u32 >= 128);
+            let body_nonascii = body_cs.ranges.last().is_some_and(|&(_, hi)| hi as u32 >= 128);
+            let cont_nonascii = cont_cs.ranges.last().is_some_and(|&(_, hi)| hi as u32 >= 128);
             if body_nonascii || cont_nonascii {
                 return false;
             }

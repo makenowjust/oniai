@@ -28,6 +28,7 @@ mod vm;
 pub use error::Error;
 
 use std::ops::Range;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -88,7 +89,7 @@ impl Regex {
             match_start: start,
             match_end: end,
             slots: caps,
-            named: self.inner.named_groups.clone(),
+            named: Arc::clone(&self.inner.named_groups),
         })
     }
 
@@ -160,7 +161,7 @@ pub struct Captures<'t> {
     /// Flat list: slots[2*n] = start of group n+1, slots[2*n+1] = end
     /// Group 0 (whole match) uses match_start/match_end.
     slots: Vec<Option<usize>>,
-    named: Vec<(String, usize)>,
+    named: Arc<Vec<(String, usize)>>,
 }
 
 impl<'t> Captures<'t> {
@@ -262,7 +263,7 @@ impl<'r, 't> Iterator for CapturesIter<'r, 't> {
             match_start: start,
             match_end: end,
             slots: caps,
-            named: self.re.inner.named_groups.clone(),
+            named: Arc::clone(&self.re.inner.named_groups),
         })
     }
 }

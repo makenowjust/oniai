@@ -25,7 +25,6 @@ pub type RegionId = usize;
 /// Bit set for tracking live capture slots.
 #[derive(Debug, Clone, Default)]
 pub struct LiveSlots {
-    #[allow(dead_code)]
     words: Vec<u64>,
 }
 
@@ -43,7 +42,6 @@ impl LiveSlots {
         Default::default()
     }
 
-    #[allow(dead_code)]
     pub fn set(&mut self, slot: usize) {
         let (w, b) = (slot / 64, slot % 64);
         while self.words.len() <= w {
@@ -52,7 +50,6 @@ impl LiveSlots {
         self.words[w] |= 1u64 << b;
     }
 
-    #[allow(dead_code)]
     pub fn get(&self, slot: usize) -> bool {
         let (w, b) = (slot / 64, slot % 64);
         if w >= self.words.len() {
@@ -61,7 +58,6 @@ impl LiveSlots {
         (self.words[w] >> b) & 1 != 0
     }
 
-    #[allow(dead_code)]
     pub fn union_with(&mut self, o: &LiveSlots) {
         while self.words.len() < o.words.len() {
             self.words.push(0);
@@ -71,10 +67,6 @@ impl LiveSlots {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.words.iter().all(|&w| w == 0)
-    }
 }
 
 /// A candidate in an IR fork (guard + target block).
@@ -90,23 +82,10 @@ pub enum IrGuard {
     /// Always true — unconditional candidate.
     Always,
     /// Peek: `text[pos] == c` (does not advance pos).
-    #[allow(dead_code)]
     Char(char),
-    /// Peek backward: character before pos == c.
-    #[allow(dead_code)]
-    CharBack(char),
     /// Peek: `charsets[id].matches(text[pos])`.
     #[allow(dead_code)]
     Class { id: usize, ignore_case: bool },
-    /// Peek backward.
-    #[allow(dead_code)]
-    ClassBack { id: usize, ignore_case: bool },
-    /// Peek: text matches the folded character sequence at pos.
-    #[allow(dead_code)]
-    FoldSeq(Vec<char>),
-    /// Peek backward.
-    #[allow(dead_code)]
-    FoldSeqBack(Vec<char>),
     /// True iff capture slot `slot` has matched.
     GroupMatched(usize),
     /// Run sub-region as zero-width lookaround guard.
@@ -172,16 +151,12 @@ pub enum IrTerminator {
     /// N-way fork.
     Fork {
         candidates: Vec<IrForkCandidate>,
-        #[allow(dead_code)]
         disjoint: bool,
-        #[allow(dead_code)]
         live_slots: LiveSlots,
     },
     /// Advance pos while text[pos] == c; then jump to exit.
-    #[allow(dead_code)]
     SpanChar { c: char, exit: BlockId },
     /// Advance pos while charsets[id] matches; then jump to exit.
-    #[allow(dead_code)]
     SpanClass { id: usize, exit: BlockId },
     /// Null-check end: if pos == saved_pos → exit, else → cont.
     NullCheckEnd {

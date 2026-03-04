@@ -9,6 +9,7 @@ use crate::error::Error;
 use crate::ir;
 use crate::parser::parse;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Character set types (used by instructions)
@@ -2030,7 +2031,7 @@ fn build_class_tries(charsets: &[CharSet]) -> Vec<Option<ByteTrie>> {
 pub struct CompiledRegex {
     prog: Vec<Inst>,
     charsets: Vec<CharSet>,
-    pub named_groups: Vec<(String, usize)>, // (name, 1-based index)
+    pub named_groups: Arc<Vec<(String, usize)>>, // (name, 1-based index)
     num_groups: usize,
     /// Number of null-check guard slots emitted by the compiler.
     num_null_checks: usize,
@@ -2087,11 +2088,13 @@ impl CompiledRegex {
         ir::pass::run_passes(&mut ir_prog);
         let prog_data = ir::lower::lower(&ir_prog);
 
-        let named_groups: Vec<(String, usize)> = prog_data
-            .named_groups
-            .into_iter()
-            .map(|(n, i)| (n, i as usize))
-            .collect();
+        let named_groups: Arc<Vec<(String, usize)>> = Arc::new(
+            prog_data
+                .named_groups
+                .into_iter()
+                .map(|(n, i)| (n, i as usize))
+                .collect(),
+        );
 
         // Build per-PC byte tries for FoldSeq/FoldSeqBack and case-insensitive
         // Class/ClassBack.  `None` at all other PCs.

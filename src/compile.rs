@@ -1,3 +1,5 @@
+//! Compiler: transforms a parsed AST into a VM instruction sequence.
+
 use crate::ast::*;
 use crate::bytetrie::ByteTrie;
 use crate::casefold::{CaseFold, case_fold};
@@ -5,7 +7,6 @@ use crate::charset;
 use crate::data::casefold_data::SIMPLE_CASE_FOLDS;
 use crate::error::Error;
 use crate::vm::{CharSet, Inst};
-/// Compiler: transforms a parsed AST into a VM instruction sequence.
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
