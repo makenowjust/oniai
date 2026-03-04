@@ -964,22 +964,44 @@ pub(crate) fn exec(
             }
 
             Inst::SpanChar { c, exit_pc } => {
-                while let Some((ch, len)) = ctx.char_at(pos) {
-                    if ch != *c {
-                        break;
+                if c.is_ascii() {
+                    // ASCII fast path: LLVM auto-vectorizes the byte comparison.
+                    let byte = *c as u8;
+                    let n = ctx.text.as_bytes()[pos..]
+                        .iter()
+                        .position(|&b| b != byte)
+                        .unwrap_or(ctx.text.len() - pos);
+                    pos += n;
+                } else {
+                    while let Some((ch, len)) = ctx.char_at(pos) {
+                        if ch != *c {
+                            break;
+                        }
+                        pos += len;
                     }
-                    pos += len;
                 }
                 pc = *exit_pc;
             }
 
             Inst::SpanClass { idx, exit_pc } => {
                 let cs = &ctx.charsets[*idx];
-                while let Some((ch, len)) = ctx.char_at(pos) {
-                    if !cs.matches(ch) {
-                        break;
+                if !cs.negate && cs.ranges.last().map(|&(_, hi)| (hi as u32) < 128).unwrap_or(true) {
+                    // ASCII-only charset: LLVM auto-vectorizes the bitmap scan.
+                    let bits = cs.ascii_bits;
+                    let n = ctx.text.as_bytes()[pos..]
+                        .iter()
+                        .position(|&b| {
+                            b >= 0x80 || (bits[(b >> 6) as usize] >> (b & 63)) & 1 == 0
+                        })
+                        .unwrap_or(ctx.text.len() - pos);
+                    pos += n;
+                } else {
+                    while let Some((ch, len)) = ctx.char_at(pos) {
+                        if !cs.matches(ch) {
+                            break;
+                        }
+                        pos += len;
                     }
-                    pos += len;
                 }
                 pc = *exit_pc;
             }
@@ -1454,6 +1476,79 @@ enum StartStrategy {
     },
     /// No restriction; try every byte-aligned position.
     Anywhere,
+}
+
+// ---------------------------------------------------------------------------
+// Pure-span fast path
+// ---------------------------------------------------------------------------
+
+/// Describes the kind of "pure span" pattern.
+///
+/// When the whole program reduces to a single greedy repetition of one char or
+/// ASCII character class with only the implicit group-0 capture, `find_with_scratch`
+/// and `find_interp` can bypass the NFA entirely and run a direct byte scan.
+#[derive(Debug, Clone)]
+enum SpanOnlyKind {
+    /// `c+` where `c` is an ASCII character.
+    Char(char),
+    /// `[class]+` where the class is non-negated and ASCII-only.
+    AsciiClass { bits: [u64; 2] },
+}
+
+/// Detect whether the IR program is a pure-span pattern.
+///
+/// Returns `Some(SpanOnlyKind)` when:
+/// 1. Only the main region (no lookarounds / atomic / subroutines).
+/// 2. Only the implicit group-0 capture (`num_captures == 1`).
+/// 3. Entry block: stmts are all `SaveCapture`, terminator is `SpanChar`/`SpanClass`.
+/// 4. Exit block: stmts are all `SaveCapture`, terminator is `Match`.
+fn detect_span_only(ir: &ir::IrProgram) -> Option<SpanOnlyKind> {
+    if ir.regions.len() != 1 || ir.num_captures != 1 {
+        return None;
+    }
+    let region = &ir.regions[0];
+    let entry_block = &region.blocks[region.entry];
+    // Entry block stmts must be only SaveCapture (no anchors, KeepStart, counters, etc.)
+    if !entry_block
+        .stmts
+        .iter()
+        .all(|s| matches!(s, ir::IrStmt::SaveCapture(_)))
+    {
+        return None;
+    }
+    match &entry_block.term {
+        ir::IrTerminator::SpanChar { c, exit } => {
+            if !c.is_ascii() {
+                return None;
+            }
+            let exit_block = &region.blocks[*exit];
+            if is_span_exit_block(exit_block) {
+                return Some(SpanOnlyKind::Char(*c));
+            }
+            None
+        }
+        ir::IrTerminator::SpanClass { id, exit } => {
+            let cs = &ir.charsets[*id];
+            // Only use fast path for non-negated, all-ASCII charsets.
+            if cs.negate || !cs.ranges.last().map(|&(_, hi)| (hi as u32) < 128).unwrap_or(true) {
+                return None;
+            }
+            let exit_block = &region.blocks[*exit];
+            if is_span_exit_block(exit_block) {
+                return Some(SpanOnlyKind::AsciiClass { bits: cs.ascii_bits });
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn is_span_exit_block(block: &ir::IrBlock) -> bool {
+    block
+        .stmts
+        .iter()
+        .all(|s| matches!(s, ir::IrStmt::SaveCapture(_)))
+        && matches!(block.term, ir::IrTerminator::Match)
 }
 
 /// If `ascii_bits` has exactly one contiguous run of set bits in [0, 127],
@@ -1942,6 +2037,9 @@ pub struct CompiledRegex {
     /// Number of repeat-counter slots emitted by the compiler.
     num_repeat_counters: usize,
     start_strategy: StartStrategy,
+    /// When `Some`, the entire pattern is a pure greedy span — `find_with_scratch`
+    /// and `find_interp` bypass the NFA and run a direct byte scan instead.
+    span_only: Option<SpanOnlyKind>,
     /// A character that must appear in the text for any match to be possible.
     required_char: Option<char>,
     /// Whether memoization is safe to use for this pattern.
@@ -2032,6 +2130,8 @@ impl CompiledRegex {
         let required_char = compute_required_char(&prog_data.prog);
         // use_memo from IR (already correctly computed during building)
         let use_memo = ir_prog.use_memo;
+        // Detect pure-span pattern for NFA-bypassing fast path.
+        let span_only = detect_span_only(&ir_prog);
 
         #[cfg(feature = "jit")]
         let fork_pc_indices = compute_fork_pc_indices(&prog_data.prog);
@@ -2070,6 +2170,7 @@ impl CompiledRegex {
             num_null_checks: prog_data.num_null_checks,
             num_repeat_counters: prog_data.num_repeat_counters,
             start_strategy,
+            span_only,
             required_char,
             use_memo,
             match_tries,
@@ -2133,6 +2234,87 @@ impl CompiledRegex {
         Some((match_start, end, state.slots.to_vec_options()))
     }
 
+    /// Fast path for pure-span patterns like `\d+` and `a+`.
+    ///
+    /// Bypasses the NFA entirely: finds the first byte matching the span class
+    /// (using the existing start-strategy scan), then scans forward to find the
+    /// end of the span, and returns the match without any NFA setup overhead.
+    fn find_span_only(
+        &self,
+        text: &str,
+        start_pos: usize,
+        sk: &SpanOnlyKind,
+    ) -> Option<(usize, usize, Vec<Option<usize>>)> {
+        let bytes = text.as_bytes();
+        let mut pos = start_pos;
+        loop {
+            // --- Find the start of the next span (vectorizable candidate scan) ---
+            let start = match &self.start_strategy {
+                StartStrategy::RangeStart { lo, hi } => {
+                    let lo = *lo;
+                    let span = hi.wrapping_sub(lo);
+                    pos + bytes[pos..]
+                        .iter()
+                        .position(|&b| b.wrapping_sub(lo) <= span)?
+                }
+                StartStrategy::AsciiClassStart { ascii_bits, .. } => {
+                    let bits = *ascii_bits;
+                    pos + bytes[pos..].iter().position(|&b| {
+                        b < 0x80 && (bits[(b >> 6) as usize] >> (b & 63)) & 1 != 0
+                    })?
+                }
+                StartStrategy::Anywhere => {
+                    if pos >= bytes.len() {
+                        return None;
+                    }
+                    pos
+                }
+                // Anchored patterns are not pure-span (detect_span_only won't fire for them).
+                // Other strategies (LiteralPrefix, etc.) are also excluded.
+                _ => {
+                    if pos >= bytes.len() {
+                        return None;
+                    }
+                    pos
+                }
+            };
+
+            // --- Scan forward consuming the span ---
+            let end = match sk {
+                SpanOnlyKind::Char(c) => {
+                    let byte = *c as u8;
+                    start
+                        + bytes[start..]
+                            .iter()
+                            .position(|&b| b != byte)
+                            .unwrap_or(bytes.len() - start)
+                }
+                SpanOnlyKind::AsciiClass { bits } => {
+                    let bits = *bits;
+                    start
+                        + bytes[start..]
+                            .iter()
+                            .position(|&b| {
+                                b >= 0x80 || (bits[(b >> 6) as usize] >> (b & 63)) & 1 == 0
+                            })
+                            .unwrap_or(bytes.len() - start)
+                }
+            };
+
+            if end > start {
+                let mut slots = vec![None; 2];
+                slots[0] = Some(start);
+                slots[1] = Some(end);
+                return Some((start, end, slots));
+            }
+            // No match here (shouldn't happen for valid start strategies, but guard anyway).
+            if pos >= bytes.len() {
+                return None;
+            }
+            pos += 1;
+        }
+    }
+
     /// Find the leftmost match starting search from `start_pos`.
     /// Returns `(match_start, match_end, capture_slots)`.
     ///
@@ -2146,6 +2328,10 @@ impl CompiledRegex {
         start_pos: usize,
         scratch: &mut ExecScratch,
     ) -> Option<(usize, usize, Vec<Option<usize>>)> {
+        // Pure-span fast path: bypasses the NFA entirely for patterns like `\d+`, `a+`.
+        if let Some(ref sk) = self.span_only {
+            return self.find_span_only(text, start_pos, sk);
+        }
         // Fast pre-filter: if the pattern requires a specific character, check
         // that it appears before running the search loop.  For `Anchored` we
         // skip the scan (one exec() call is cheaper than a memchr over the whole
@@ -2342,33 +2528,51 @@ impl CompiledRegex {
                 can_match_non_ascii,
             } => {
                 let bytes = text.as_bytes();
+                let bits = *ascii_bits;
                 let mut pos = start_pos;
-                loop {
-                    if pos >= bytes.len() {
-                        return None;
+                if !can_match_non_ascii {
+                    // Fast path: vectorizable scan skipping non-matching bytes.
+                    loop {
+                        let offset = bytes[pos..].iter().position(|&b| {
+                            b < 0x80 && (bits[(b >> 6) as usize] >> (b & 63)) & 1 != 0
+                        })?;
+                        let candidate = pos + offset;
+                        if let Some(result) =
+                            self.try_at(text, candidate, &mut memo, scratch)
+                        {
+                            return Some(result);
+                        }
+                        pos = candidate + 1;
                     }
-                    let b = bytes[pos];
-                    if b < 0x80 {
-                        // ASCII byte: one bitmap lookup.
-                        if (ascii_bits[(b >> 6) as usize] >> (b & 63)) & 1 != 0
-                            && let Some(result) = self.try_at(text, pos, &mut memo, scratch)
-                        {
-                            return Some(result);
+                } else {
+                    loop {
+                        if pos >= bytes.len() {
+                            return None;
                         }
-                        pos += 1;
-                    } else {
-                        // Non-ASCII: advance by full char length.
-                        let ch_len = text[pos..]
-                            .chars()
-                            .next()
-                            .map(|c| c.len_utf8())
-                            .unwrap_or(1);
-                        if *can_match_non_ascii
-                            && let Some(result) = self.try_at(text, pos, &mut memo, scratch)
-                        {
-                            return Some(result);
+                        let b = bytes[pos];
+                        if b < 0x80 {
+                            // ASCII byte: one bitmap lookup.
+                            if (bits[(b >> 6) as usize] >> (b & 63)) & 1 != 0
+                                && let Some(result) =
+                                    self.try_at(text, pos, &mut memo, scratch)
+                            {
+                                return Some(result);
+                            }
+                            pos += 1;
+                        } else {
+                            // Non-ASCII: try at this position, then advance by char.
+                            let ch_len = text[pos..]
+                                .chars()
+                                .next()
+                                .map(|c| c.len_utf8())
+                                .unwrap_or(1);
+                            if let Some(result) =
+                                self.try_at(text, pos, &mut memo, scratch)
+                            {
+                                return Some(result);
+                            }
+                            pos += ch_len;
                         }
-                        pos += ch_len;
                     }
                 }
             }
@@ -2434,6 +2638,10 @@ impl CompiledRegex {
         text: &str,
         start_pos: usize,
     ) -> Option<(usize, usize, Vec<Option<usize>>)> {
+        // Pure-span fast path: bypasses the NFA entirely.
+        if let Some(ref sk) = self.span_only {
+            return self.find_span_only(text, start_pos, sk);
+        }
         if !matches!(self.start_strategy, StartStrategy::Anchored)
             && let Some(rc) = self.required_char
             && !text[start_pos..].contains(rc)
@@ -2590,34 +2798,46 @@ impl CompiledRegex {
                 ascii_bits,
                 can_match_non_ascii,
             } => {
-                let ascii_bits = *ascii_bits;
+                let bits = *ascii_bits;
                 let can_match_non_ascii = *can_match_non_ascii;
                 let bytes = text.as_bytes();
                 let mut pos = start_pos;
-                loop {
-                    if pos >= bytes.len() {
-                        return None;
+                if !can_match_non_ascii {
+                    // Fast path: vectorizable scan skipping non-matching bytes.
+                    loop {
+                        let offset = bytes[pos..].iter().position(|&b| {
+                            b < 0x80 && (bits[(b >> 6) as usize] >> (b & 63)) & 1 != 0
+                        })?;
+                        let candidate = pos + offset;
+                        if let Some(r) = self.exec_interp(text, candidate, &mut memo) {
+                            return Some(r);
+                        }
+                        pos = candidate + 1;
                     }
-                    let b = bytes[pos];
-                    if b < 0x80 {
-                        if (ascii_bits[(b >> 6) as usize] >> (b & 63)) & 1 != 0
-                            && let Some(r) = self.exec_interp(text, pos, &mut memo)
-                        {
-                            return Some(r);
+                } else {
+                    loop {
+                        if pos >= bytes.len() {
+                            return None;
                         }
-                        pos += 1;
-                    } else {
-                        let ch_len = text[pos..]
-                            .chars()
-                            .next()
-                            .map(|c| c.len_utf8())
-                            .unwrap_or(1);
-                        if can_match_non_ascii
-                            && let Some(r) = self.exec_interp(text, pos, &mut memo)
-                        {
-                            return Some(r);
+                        let b = bytes[pos];
+                        if b < 0x80 {
+                            if (bits[(b >> 6) as usize] >> (b & 63)) & 1 != 0
+                                && let Some(r) = self.exec_interp(text, pos, &mut memo)
+                            {
+                                return Some(r);
+                            }
+                            pos += 1;
+                        } else {
+                            let ch_len = text[pos..]
+                                .chars()
+                                .next()
+                                .map(|c| c.len_utf8())
+                                .unwrap_or(1);
+                            if let Some(r) = self.exec_interp(text, pos, &mut memo) {
+                                return Some(r);
+                            }
+                            pos += ch_len;
                         }
-                        pos += ch_len;
                     }
                 }
             }

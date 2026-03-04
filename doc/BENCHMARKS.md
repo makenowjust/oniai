@@ -12,7 +12,8 @@ Five engine variants are compared side-by-side:
 
 Run on: 2026-03-04 (macOS, Apple Silicon M-series, PCRE2 10.47)
 
-Source logs: `log/bench-perf-opts-2026-03-04.txt` (oniai variants, after prefilter + SIMD-span optimizations),
+Source logs: `log/bench-span-opts-2026-03-04.txt` (oniai variants, after interp SIMD span + pure-span fast path + AsciiClassStart vectorization),
+`log/bench-perf-opts-2026-03-04.txt` (previous oniai run, after prefilter + JIT SIMD-span),
 `log/bench-smallslots-full-2026-03-02.txt` (regex / fancy-regex / pcre2).
 
 ### Running benchmarks
@@ -79,11 +80,12 @@ Improvements vs previous baseline: 4-alt −22%/−16%, 10-alt −63%/−68%.
 | Benchmark | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
 |-----------|----------:|-------------:|------:|------------:|------:|
 | `a*b` no-match — 500 'a's | **27 ns** | 28 ns | 816 ns | 812 ns | 30 ns |
-| **`a+` match — 500 'a's** | **199 ns** | 430 ns | 2.29 µs | 2.28 µs | 362 ns |
+| **`a+` match — 500 'a's** | **197 ns** | 249 ns | 2.29 µs | 2.28 µs | 362 ns |
 
 `SpanChar`/`SpanClass` instructions eliminate backtrack-stack overhead for simple greedy loops.
-`a+` on 500-char input: oniai/jit (199 ns) now **beats pcre2** (362 ns) by 1.8× and regex (2.29 µs) by 11.5×.
-The JIT `SpanChar` path uses a SIMD-vectorized helper (`jit_span_char_len`), improving from 343 ns to 199 ns (−42%).
+`a+` on 500-char input: oniai/jit (197 ns) now **beats pcre2** (362 ns) by 1.8× and regex (2.29 µs) by 11.6×.
+The JIT `SpanChar` path uses a SIMD-vectorized helper (`jit_span_char_len`), improving from 343 ns to 197 ns (−42%).
+The interpreter pure-span fast path bypasses the NFA entirely for `a+`-like patterns, cutting interp from 430 ns to **249 ns (−42%)**.
 `a*b` all-'a' no-match: oniai and pcre2 exit immediately; regex/fancy-regex pay ~30× more.
 
 ### Captures `(\w+)\s+(\w+)`
@@ -107,12 +109,14 @@ The IR pass pipeline adds ~5% overhead on captures; `pcre2` remains fastest for 
 
 | Benchmark | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
 |-----------|----------:|-------------:|------:|------------:|------:|
-| **`[a-zA-Z]+` — 900 chars** | **2.37 µs** | 3.27 µs | 2.96 µs | 5.73 µs | 4.25 µs |
-| **`[[:digit:]]+` — 900 chars** | **2.00 µs** | 3.06 µs | 3.74 µs | 6.05 µs | 4.23 µs |
+| **`[a-zA-Z]+` — 900 chars** | **2.21 µs** | 3.10 µs | 2.96 µs | 5.73 µs | 4.25 µs |
+| **`[[:digit:]]+` — 900 chars** | **2.11 µs** | 2.99 µs | 3.74 µs | 6.05 µs | 4.23 µs |
 
 oniai/jit is **fastest on both** character-class iteration benchmarks.
 `SpanClass` removes per-character backtrack-stack pushes for the inner loop;
 `AsciiClassStart` + `RangeStart` strategies skip non-matching positions efficiently.
+Interpreter gains from SIMD span fast path: `alpha_iter/interp` 3.61→3.10 µs (−14%),
+`posix_digit_iter/interp` 3.49→2.99 µs (−14%).
 
 ### Case-insensitive `(?i)hello` — 600 chars
 
@@ -233,8 +237,8 @@ arithmetic comparison (`b.wrapping_sub(lo) <= span`) that LLVM auto-vectorizes.
 
 | Benchmark | oniai/jit | oniai/interp | regex | fancy-regex | pcre2 |
 |-----------|----------:|-------------:|------:|------------:|------:|
-| **`\d+` — digit sparse** | **4.47 µs** | 6.17 µs | 3.67 µs | 6.51 µs | 8.74 µs |
-| `\w+` — word sparse | 2.58 µs | 1.65 µs | 4.68 µs | 9.30 µs | **1.06 µs** |
+| **`\d+` — digit sparse** | **4.43 µs** | 6.32 µs | 3.67 µs | 6.51 µs | 8.74 µs |
+| `\w+` — word sparse | 2.57 µs | 1.64 µs | 4.68 µs | 9.30 µs | **1.06 µs** |
 
 oniai/jit beats pcre2 and regex on `\d+` sparse thanks to `RangeStart` + `SpanClass`.
 `pcre2` is exceptionally fast on `\w+` sparse (1.06 µs), likely using a JIT-compiled SIMD word scan.
@@ -266,7 +270,7 @@ Previous-previous (naive scan): 14.8 ms — total **830× speedup** from the pre
 | Multi-string alternation (10 alts) | **regex** | DFA; oniai 4.3× slower (first-byte scan) |
 | Case-insensitive `find_iter` | **regex** | SIMD; oniai (17.7 µs) beats pcre2/fancy-regex |
 | Character class iteration | **oniai/jit** | Beats regex, fancy-regex, and pcre2 |
-| `a+` greedy match | **oniai/jit** | 199 ns — beats pcre2 (362 ns) by 1.8× and regex (2.3 µs) by 11.5× |
+| `a+` greedy match | **oniai/jit** | 197 ns — beats pcre2 (362 ns) by 1.8× and regex (2.3 µs) by 11.6× |
 | `a*b` no-match (memoization) | **oniai/jit** | ~30× faster than regex |
 | Captures (two groups) | **pcre2** | oniai 3.7× slower; SmallSlots cut from 770→562 ns |
 | Real-world `[A-Z][a-z]+` | **oniai/jit** | 269 µs — beats regex (558 µs) and pcre2 (417 µs) |
@@ -280,3 +284,5 @@ Previous-previous (naive scan): 14.8 ms — total **830× speedup** from the pre
 | Direct IR→Cranelift JIT | **oniai/jit** | No regressions vs Vec\<Inst\> JIT; direct block jumps, CounterNext JIT-compiled |
 | SIMD span helper | **oniai/jit** | `jit_span_char_len` LLVM-vectorized: `a+` 343→199 ns (−42%) |
 | First-byte + required-byte prefilter | **oniai/jit** | IR-based analysis upgrades `AsciiClassStart`/`RequiredByte` start strategies |
+| Interp SIMD span (SpanChar/SpanClass) | **oniai/interp** | Byte-slice `position()` scan: `alpha_iter` 3.61→3.10 µs (−14%), `posix_digit_iter` 3.49→2.99 µs (−14%) |
+| Pure-span fast path (`find_span_only`) | **oniai/interp** | NFA bypass for `a+`/`\d+`/`\w+`: interp `a+` 430→249 ns (−42%); closes JIT/interp gap |
